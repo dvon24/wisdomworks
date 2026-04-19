@@ -2,6 +2,5 @@
   "buildCommand": "pnpm turbo build --filter=@wisdomworks/web",
   "outputDirectory": "apps/web/.next",
   "installCommand": "pnpm install",
-  "framework": "nextjs",
-  "rootDirectory": "apps/web"
+  "framework": "nextjs"
 }
