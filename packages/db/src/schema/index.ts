@@ -6,3 +6,8 @@ export type { UserRole } from './auth';
 
 export { usageEvents, usageEventTypeEnum } from './metering';
 export type { UsageEventType } from './metering';
+
+export { governanceRules, governanceEvaluations, ruleEffectEnum, evaluationResultEnum } from './governance';
+export type { RuleEffect, EvaluationResult } from './governance';
+
+export { auditLogs } from './audit';

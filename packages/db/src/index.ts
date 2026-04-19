@@ -12,6 +12,13 @@ export {
   sessions,
   accounts,
   userRoleEnum,
+  usageEvents,
+  usageEventTypeEnum,
+  governanceRules,
+  governanceEvaluations,
+  ruleEffectEnum,
+  evaluationResultEnum,
+  auditLogs,
 } from './schema';
 
 // Types
@@ -38,3 +45,14 @@ export {
   cleanupTestTenant,
 } from './testing';
 export type { TestTenant, TestUser } from './testing';
+
+// Governance
+export { evaluateGovernance } from './governance';
+export type { GovernanceCheckRequest, GovernanceCheckResult } from './governance';
+
+// Audit
+export { logAudit } from './audit';
+export type { AuditLogEntry } from './audit';
+
+// Additional types
+export type { RuleEffect, EvaluationResult, UsageEventType } from './schema';

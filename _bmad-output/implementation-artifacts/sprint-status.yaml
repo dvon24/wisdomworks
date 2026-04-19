@@ -55,7 +55,7 @@ development_status:
   0-5-ci-cd-pipeline-and-schema-contract-testing: done
   0-6-test-infrastructure-and-data-seeding: done
   0-7-model-abstraction-layer: done
-  0-8-governance-and-audit-foundations: backlog
+  0-8-governance-and-audit-foundations: done
   0-9-axis-deployment-spec-schema-and-validation: backlog
   0-10-payment-infrastructure-and-billing-foundation: backlog
   0-11-communication-channel-abstraction-layer: backlog
