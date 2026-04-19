@@ -47,7 +47,7 @@ development_status:
   # Epic 0: Repository, Dev Pipeline & Platform Foundation
   # Sprint: 0
   # ============================================================
-  epic-0: in-progress
+  epic-0: done
   0-1-monorepo-initialization-and-dev-toolchain: done
   0-2-database-foundation-and-core-schema: done
   0-3-authentication-and-tenant-isolation: done
@@ -56,9 +56,9 @@ development_status:
   0-6-test-infrastructure-and-data-seeding: done
   0-7-model-abstraction-layer: done
   0-8-governance-and-audit-foundations: done
-  0-9-axis-deployment-spec-schema-and-validation: backlog
-  0-10-payment-infrastructure-and-billing-foundation: backlog
-  0-11-communication-channel-abstraction-layer: backlog
+  0-9-axis-deployment-spec-schema-and-validation: done
+  0-10-payment-infrastructure-and-billing-foundation: done
+  0-11-communication-channel-abstraction-layer: done
   epic-0-retrospective: optional
 
   # ============================================================

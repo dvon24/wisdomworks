@@ -19,6 +19,9 @@ export {
   ruleEffectEnum,
   evaluationResultEnum,
   auditLogs,
+  billingRecords,
+  billingRecordTypeEnum,
+  billingStatusEnum,
 } from './schema';
 
 // Types

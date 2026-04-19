@@ -11,3 +11,6 @@ export { governanceRules, governanceEvaluations, ruleEffectEnum, evaluationResul
 export type { RuleEffect, EvaluationResult } from './governance';
 
 export { auditLogs } from './audit';
+
+export { billingRecords, billingRecordTypeEnum, billingStatusEnum } from './billing';
+export type { BillingRecordType, BillingStatus } from './billing';

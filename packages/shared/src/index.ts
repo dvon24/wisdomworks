@@ -31,3 +31,29 @@ export type {
   UsageEvent,
   UsageTrackingCallback,
 } from './ai';
+
+// Deployment Spec
+export { BLUEPRINTS, SOLO_EXAMPLE, MID_SIZE_EXAMPLE } from './types/deployment-spec';
+export type {
+  AxisDeploymentSpec,
+  AgentSpec,
+  ModelRoutingEntry,
+  AgentGovernanceRule,
+  IntegrationSpec,
+  PricingSpec,
+  BlueprintType,
+  BlueprintDefinition,
+} from './types/deployment-spec';
+export { axisDeploymentSpecSchema } from './schemas/deployment-spec-schema';
+export type { AxisDeploymentSpecInput } from './schemas/deployment-spec-schema';
+
+// Communication Channels
+export { CHANNEL_TYPES, DEFAULT_CHANNEL_ROUTING, ChannelRegistry } from './channels';
+export type {
+  ChannelMessage,
+  ChannelMessageFilter,
+  ChannelStatus,
+  CommunicationChannel,
+  ChannelType,
+  ChannelRoutingConfig,
+} from './channels';
