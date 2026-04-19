@@ -1,0 +1,30 @@
+name: Deploy Web
+
+# Vercel auto-deploys via GitHub integration.
+# This workflow is a backup/manual trigger.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/web/**'
+      - 'apps/website/**'
+      - 'packages/ui/**'
+      - 'packages/shared/**'
+      - 'packages/auth/**'
+      - 'packages/api/**'
+
+jobs:
+  deploy:
+    name: Deploy to Vercel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Note
+        run: |
+          echo "Vercel deploys automatically via GitHub integration."
+          echo "This workflow is a backup trigger."
+          echo "To deploy manually, use: vercel deploy --prod"

@@ -1,0 +1,44 @@
+name: Deploy Services
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'services/**'
+      - 'packages/shared/**'
+      - 'packages/db/**'
+
+env:
+  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+jobs:
+  deploy-agents:
+    name: Deploy Agent Service
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.modified, 'services/agents')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to Railway
+        run: |
+          echo "Deploy services/agents to Railway"
+          echo "Requires: RAILWAY_TOKEN secret configured"
+          echo "Manual: railway up --service agents"
+          # npx @railway/cli up --service agents
+
+  deploy-signal-layer:
+    name: Deploy Signal Layer
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.modified, 'services/signal-layer')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to Railway
+        run: |
+          echo "Deploy services/signal-layer to Railway"
+          echo "Requires: RAILWAY_TOKEN secret configured"
+          echo "Manual: railway up --service signal-layer"
+          # npx @railway/cli up --service signal-layer

@@ -1,0 +1,13 @@
+{
+  "name": "@wisdomworks/agents",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "echo 'Python service — no build step needed (interpreted)'",
+    "lint": "cd ../../services/agents && python -m ruff check src || echo 'ruff not installed — run: pip install ruff'",
+    "typecheck": "cd ../../services/agents && python -m mypy src || echo 'mypy not installed — run: pip install mypy'",
+    "test": "cd ../../services/agents && python -m pytest src -q || echo 'pytest not installed — run: pip install pytest'",
+    "dev": "cd ../../services/agents && python -m uvicorn src.main:app --reload --port 8001",
+    "schema:export": "cd ../../services/agents && python -m src.schemas.export_schemas"
+  }
+}

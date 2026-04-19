@@ -1,0 +1,23 @@
+{
+  "name": "@wisdomworks/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'Tauri dev — requires Rust toolchain. Install via rustup.'",
+    "build": "echo 'Tauri build — requires Rust toolchain.'",
+    "lint": "eslint --max-warnings 0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@wisdomworks/eslint-config": "workspace:*",
+    "@wisdomworks/typescript-config": "workspace:*",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "eslint": "^9.39.4",
+    "typescript": "5.9.2"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@wisdomworks/signal-layer",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@wisdomworks/shared": "workspace:*",
+    "nats": "^2.29.3",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/uuid": "^11.0.0",
+    "@wisdomworks/eslint-config": "workspace:*",
+    "@wisdomworks/typescript-config": "workspace:*",
+    "eslint": "^9.39.4",
+    "typescript": "5.9.2",
+    "vitest": "^4.1.4"
+  }
+}

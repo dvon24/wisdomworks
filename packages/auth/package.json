@@ -1,0 +1,28 @@
+{
+  "name": "@wisdomworks/auth",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@wisdomworks/eslint-config": "workspace:*",
+    "@wisdomworks/typescript-config": "workspace:*",
+    "eslint": "^9.39.4",
+    "vitest": "^4.1.4"
+  },
+  "dependencies": {
+    "@auth/core": "^0.34.3",
+    "@auth/drizzle-adapter": "^1.11.2",
+    "@trpc/server": "^11.13.0",
+    "@wisdomworks/db": "workspace:*",
+    "next": "16.2.0",
+    "next-auth": "5.0.0-beta.31"
+  }
+}

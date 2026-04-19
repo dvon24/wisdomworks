@@ -1,0 +1,160 @@
+# generated: 2026-04-19
+# last_updated: 2026-04-19
+# project: WisdomWorks
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-04-19
+last_updated: 2026-04-19
+project: WisdomWorks
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+last_story_created: 0-1-monorepo-initialization-and-dev-toolchain
+
+development_status:
+  # ============================================================
+  # Epic 0: Repository, Dev Pipeline & Platform Foundation
+  # Sprint: 0
+  # ============================================================
+  epic-0: in-progress
+  0-1-monorepo-initialization-and-dev-toolchain: done
+  0-2-database-foundation-and-core-schema: done
+  0-3-authentication-and-tenant-isolation: done
+  0-4-nats-event-system-and-docker-compose: done
+  0-5-ci-cd-pipeline-and-schema-contract-testing: done
+  0-6-test-infrastructure-and-data-seeding: done
+  0-7-model-abstraction-layer: done
+  0-8-governance-and-audit-foundations: backlog
+  0-9-axis-deployment-spec-schema-and-validation: backlog
+  0-10-payment-infrastructure-and-billing-foundation: backlog
+  0-11-communication-channel-abstraction-layer: backlog
+  epic-0-retrospective: optional
+
+  # ============================================================
+  # Epic 1: AI Onboarding & Axis Intelligence Engine
+  # Sprint: 1
+  # ============================================================
+  epic-1: backlog
+  1-1-ontology-schema-and-entity-model: backlog
+  1-2-business-type-framework-dictionary: backlog
+  1-3-industry-templates-and-blueprint-library: backlog
+  1-4-personal-templates-and-privacy-governance: backlog
+  1-5-leadership-coach-agent-behavior: backlog
+  1-6-conversational-ai-onboarding-flow: backlog
+  1-7-axis-deployment-spec-generation-from-conversation: backlog
+  1-8-demo-preview-generation: backlog
+  1-9-security-deposit-and-trial-agreement: backlog
+  1-10-ontology-construction-from-onboarding-data: backlog
+  1-11-agent-derivation-and-model-routing-assignment: backlog
+  1-12-automated-agent-provisioning: backlog
+  1-13-axis-integration-discovery-and-org-documentation: backlog
+  1-14-agent-operating-protocol-and-behavioral-framework: backlog
+  epic-1-retrospective: optional
+
+  # ============================================================
+  # Epic 2a: Agent Runtime & Core Intelligence
+  # Sprint: 2
+  # ============================================================
+  epic-2a: backlog
+  2-1-agent-execution-engine: backlog
+  2-2-email-ingestion-pipeline: backlog
+  2-3-email-classification-and-privacy-boundary: backlog
+  2-4-signal-layer-agent-to-agent-communication: backlog
+  2-5-data-extraction-and-ontology-mapping: backlog
+  2-6-personal-agent-and-morning-briefing: backlog
+  2-7-email-drafting-and-grammar-correction: backlog
+  2-8-task-management-and-calendar-awareness: backlog
+  2-9-knowledge-base-and-error-prevention: backlog
+  2-10-agent-state-persistence-and-recovery: backlog
+  2-11-bmad-innovation-engine: backlog
+  2-12-workflow-execution-and-pdf-generation: backlog
+  2-13-classification-learning-and-qa-monitoring: backlog
+  2-14-process-capture-and-experience-logging: backlog
+  2-15-skill-formation-and-cross-agent-learning: backlog
+  epic-2a-retrospective: optional
+
+  # ============================================================
+  # Epic 2b: Client Intelligence & Communication Channels
+  # Sprint: 2-3
+  # ============================================================
+  epic-2b: backlog
+  2b-1-client-profiles-and-visual-intelligence: backlog
+  2b-2-business-intelligence-and-actionable-insights: backlog
+  2b-3-mobile-device-integration-and-messaging-channels: backlog
+  2b-4-telephony-integration-and-inbound-call-routing: backlog
+  2b-5-voice-appointment-scheduling: backlog
+  2b-6-voice-personality-and-client-recognition: backlog
+  2b-7-client-website-generation-and-deployment: backlog
+  2b-8-embeddable-widgets-for-existing-websites: backlog
+  epic-2b-retrospective: optional
+
+  # ============================================================
+  # Epic 3: Operations Console & Intelligence Dashboard
+  # Sprint: 3
+  # ============================================================
+  epic-3: backlog
+  3-1-admin-portal-shell-and-navigation: backlog
+  3-2-environment-overview-and-agent-health: backlog
+  3-3-dashboard-views-individual-team-enterprise: backlog
+  3-4-real-time-agent-activity-feed: backlog
+  3-5-agent-lifecycle-management: backlog
+  3-6-governance-framework-ui: backlog
+  3-7-bmad-solution-brief-review-interface: backlog
+  3-8-tenant-management-and-deployment-tracking: backlog
+  3-9-consulting-engagement-management: backlog
+  3-10-public-website-and-onboarding-entry-point: backlog
+  epic-3-retrospective: optional
+
+  # ============================================================
+  # Epic 4: 3D Intelligence Globe
+  # Sprint: 3-4
+  # ============================================================
+  epic-4: backlog
+  4-1-globe-renderer-and-entity-visualization: backlog
+  4-2-connection-lines-and-relationship-display: backlog
+  4-3-connected-fractured-toggle-and-animation: backlog
+  4-4-quality-tier-system-and-gpu-detection: backlog
+  4-5-intelligence-views-tabular-cards-and-accessible-alternatives: backlog
+  epic-4-retrospective: optional
+
+  # ============================================================
+  # Epic 5: Desktop Agent & Tauri Shell
+  # Sprint: 4
+  # ============================================================
+  epic-5: backlog
+  5-1-tauri-app-shell-and-web-view: backlog
+  5-2-desktop-chat-window: backlog
+  5-3-terminal-channel: backlog
+  5-4-cross-channel-agent-interaction-and-unified-logging: backlog
+  epic-5-retrospective: optional

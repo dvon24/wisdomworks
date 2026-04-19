@@ -1,0 +1,32 @@
+# Isolated test infrastructure — separate ports from development
+# Dev: PostgreSQL 5432, NATS 4222
+# Test: PostgreSQL 5433, NATS 4223
+
+services:
+  test-postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_PASSWORD: testpassword
+      POSTGRES_DB: wisdomworks_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  test-nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4223:4222"
+    command: ["--jetstream"]
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 5

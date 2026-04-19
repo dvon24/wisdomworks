@@ -1,0 +1,11 @@
+{
+  "name": "@wisdomworks/ingestion",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "echo 'Ingestion service — build pending'",
+    "lint": "echo 'Ingestion service — no lint configured yet'",
+    "typecheck": "echo 'Ingestion service — no typecheck configured yet'",
+    "test": "echo 'Ingestion service — no tests configured yet'"
+  }
+}
