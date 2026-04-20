@@ -103,7 +103,7 @@ export const DEFAULT_ROUTING_TABLE: ModelRoutingTable = {
   code_generation: {
     task: 'code_generation',
     provider: 'anthropic',
-    model: 'claude-sonnet-4-6-20260416',
+    model: 'claude-opus-4-7-20260420',
     fallback: { provider: 'openai', model: 'gpt-5.4' },
   },
   writing: {
