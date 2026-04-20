@@ -86,22 +86,22 @@ development_status:
   # Epic 2a: Agent Runtime & Core Intelligence
   # Sprint: 2
   # ============================================================
-  epic-2a: backlog
-  2-1-agent-execution-engine: backlog
-  2-2-email-ingestion-pipeline: backlog
-  2-3-email-classification-and-privacy-boundary: backlog
-  2-4-signal-layer-agent-to-agent-communication: backlog
-  2-5-data-extraction-and-ontology-mapping: backlog
-  2-6-personal-agent-and-morning-briefing: backlog
-  2-7-email-drafting-and-grammar-correction: backlog
-  2-8-task-management-and-calendar-awareness: backlog
-  2-9-knowledge-base-and-error-prevention: backlog
-  2-10-agent-state-persistence-and-recovery: backlog
-  2-11-bmad-innovation-engine: backlog
-  2-12-workflow-execution-and-pdf-generation: backlog
-  2-13-classification-learning-and-qa-monitoring: backlog
-  2-14-process-capture-and-experience-logging: backlog
-  2-15-skill-formation-and-cross-agent-learning: backlog
+  epic-2a: done
+  2-1-agent-execution-engine: done
+  2-2-email-ingestion-pipeline: done
+  2-3-email-classification-and-privacy-boundary: done
+  2-4-signal-layer-agent-to-agent-communication: done
+  2-5-data-extraction-and-ontology-mapping: done
+  2-6-personal-agent-and-morning-briefing: done
+  2-7-email-drafting-and-grammar-correction: done
+  2-8-task-management-and-calendar-awareness: done
+  2-9-knowledge-base-and-error-prevention: done
+  2-10-agent-state-persistence-and-recovery: done
+  2-11-bmad-innovation-engine: done
+  2-12-workflow-execution-and-pdf-generation: done
+  2-13-classification-learning-and-qa-monitoring: done
+  2-14-process-capture-and-experience-logging: done
+  2-15-skill-formation-and-cross-agent-learning: done
   epic-2a-retrospective: optional
 
   # ============================================================

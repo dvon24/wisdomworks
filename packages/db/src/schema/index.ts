@@ -26,3 +26,7 @@ export {
 
 export { agentConfigs, agentInstances, agentStatusEnum } from './agents';
 export type { AgentStatus } from './agents';
+
+export { signalTypes, signals, DEFAULT_SIGNAL_TYPES } from './signals';
+
+export { processRecords, agentSkills, lessonsLearned } from './learning';

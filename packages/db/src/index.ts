@@ -31,6 +31,12 @@ export {
   agentConfigs,
   agentInstances,
   agentStatusEnum,
+  signalTypes,
+  signals,
+  DEFAULT_SIGNAL_TYPES,
+  processRecords,
+  agentSkills,
+  lessonsLearned,
 } from './schema';
 
 // Types

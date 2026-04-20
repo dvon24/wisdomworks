@@ -108,3 +108,16 @@ export {
   createAgentProtocol,
 } from './protocols';
 export type { AutonomyLevel, AutonomyLevelDefinition, AgentOperatingProtocol } from './protocols';
+
+// Agent Features (Epic 2a)
+export type {
+  ExtractedData,
+  MorningBriefing,
+  BriefingItem,
+  AgentTask,
+  AgentState,
+  SolutionBrief,
+  ProcessRecord,
+  AgentSkill,
+  LessonLearned,
+} from './agents';
