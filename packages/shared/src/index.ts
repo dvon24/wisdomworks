@@ -72,10 +72,28 @@ export {
   PERSONAL_TEMPLATES,
   PERSONAL_BLUEPRINTS,
   getPersonalTemplate,
+  HUMAN_COACHING_CAPABILITIES,
+  AGENT_COACHING_SIGNALS,
+  FEEDBACK_DIMENSIONS,
+  DEFAULT_LEADERSHIP_COACH_CONFIG,
+  createLeadershipCoachSpec,
+  shouldProvisionLeadershipCoach,
 } from './frameworks';
 export type {
   BusinessTypeFramework,
   BusinessCategory,
   IndustryTemplate,
   PersonalTemplate,
+  LeadershipCoachConfig,
+  FeedbackCadence,
 } from './frameworks';
+
+// Onboarding Engine
+export {
+  getRequiredFields,
+  suggestBlueprint,
+  suggestTemplate,
+  getOnboardingSystemPrompt,
+  createOnboardingState,
+} from './onboarding';
+export type { OnboardingState, OnboardingData, ConversationMessage } from './onboarding';

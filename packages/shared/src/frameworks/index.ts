@@ -21,3 +21,13 @@ export {
   getPersonalTemplate,
 } from './personal-templates';
 export type { PersonalTemplate } from './personal-templates';
+
+export {
+  HUMAN_COACHING_CAPABILITIES,
+  AGENT_COACHING_SIGNALS,
+  FEEDBACK_DIMENSIONS,
+  DEFAULT_LEADERSHIP_COACH_CONFIG,
+  createLeadershipCoachSpec,
+  shouldProvisionLeadershipCoach,
+} from './leadership-coach';
+export type { LeadershipCoachConfig, FeedbackCadence } from './leadership-coach';

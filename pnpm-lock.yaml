@@ -91,9 +91,21 @@ importers:
 
   apps/website:
     dependencies:
+      '@ai-sdk/anthropic':
+        specifier: ^3.0.71
+        version: 3.0.71(zod@4.3.6)
+      '@ai-sdk/openai':
+        specifier: ^3.0.53
+        version: 3.0.53(zod@4.3.6)
+      '@wisdomworks/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@wisdomworks/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      ai:
+        specifier: ^6.0.168
+        version: 6.0.168(zod@4.3.6)
       next:
         specifier: 16.2.0
         version: 16.2.0(@opentelemetry/api@1.9.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
