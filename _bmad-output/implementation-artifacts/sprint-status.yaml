@@ -123,38 +123,38 @@ development_status:
   # Epic 3: Operations Console & Intelligence Dashboard
   # Sprint: 3
   # ============================================================
-  epic-3: backlog
-  3-1-admin-portal-shell-and-navigation: backlog
-  3-2-environment-overview-and-agent-health: backlog
-  3-3-dashboard-views-individual-team-enterprise: backlog
-  3-4-real-time-agent-activity-feed: backlog
-  3-5-agent-lifecycle-management: backlog
-  3-6-governance-framework-ui: backlog
-  3-7-bmad-solution-brief-review-interface: backlog
-  3-8-tenant-management-and-deployment-tracking: backlog
-  3-9-consulting-engagement-management: backlog
-  3-10-public-website-and-onboarding-entry-point: backlog
+  epic-3: done
+  3-1-admin-portal-shell-and-navigation: done
+  3-2-environment-overview-and-agent-health: done
+  3-3-dashboard-views-individual-team-enterprise: done
+  3-4-real-time-agent-activity-feed: done
+  3-5-agent-lifecycle-management: done
+  3-6-governance-framework-ui: done
+  3-7-bmad-solution-brief-review-interface: done
+  3-8-tenant-management-and-deployment-tracking: done
+  3-9-consulting-engagement-management: done
+  3-10-public-website-and-onboarding-entry-point: done
   epic-3-retrospective: optional
 
   # ============================================================
   # Epic 4: 3D Intelligence Globe
   # Sprint: 3-4
   # ============================================================
-  epic-4: backlog
-  4-1-globe-renderer-and-entity-visualization: backlog
-  4-2-connection-lines-and-relationship-display: backlog
-  4-3-connected-fractured-toggle-and-animation: backlog
-  4-4-quality-tier-system-and-gpu-detection: backlog
-  4-5-intelligence-views-tabular-cards-and-accessible-alternatives: backlog
+  epic-4: done
+  4-1-globe-renderer-and-entity-visualization: done
+  4-2-connection-lines-and-relationship-display: done
+  4-3-connected-fractured-toggle-and-animation: done
+  4-4-quality-tier-system-and-gpu-detection: done
+  4-5-intelligence-views-tabular-cards-and-accessible-alternatives: done
   epic-4-retrospective: optional
 
   # ============================================================
   # Epic 5: Desktop Agent & Tauri Shell
   # Sprint: 4
   # ============================================================
-  epic-5: backlog
-  5-1-tauri-app-shell-and-web-view: backlog
-  5-2-desktop-chat-window: backlog
-  5-3-terminal-channel: backlog
-  5-4-cross-channel-agent-interaction-and-unified-logging: backlog
+  epic-5: done
+  5-1-tauri-app-shell-and-web-view: done
+  5-2-desktop-chat-window: done
+  5-3-terminal-channel: done
+  5-4-cross-channel-agent-interaction-and-unified-logging: done
   epic-5-retrospective: optional
