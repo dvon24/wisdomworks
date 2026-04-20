@@ -97,7 +97,7 @@ export const DEFAULT_ROUTING_TABLE: ModelRoutingTable = {
   classification: {
     task: 'classification',
     provider: 'anthropic',
-    model: 'claude-sonnet-4-6-20260416',
+    model: 'claude-opus-4-7-20260420',
     fallback: { provider: 'openai', model: 'gpt-5.4' },
   },
   code_generation: {
@@ -115,7 +115,7 @@ export const DEFAULT_ROUTING_TABLE: ModelRoutingTable = {
   analysis: {
     task: 'analysis',
     provider: 'anthropic',
-    model: 'claude-sonnet-4-6-20260416',
+    model: 'claude-opus-4-7-20260420',
     fallback: { provider: 'openai', model: 'gpt-5.4' },
   },
   coaching: {
@@ -149,7 +149,7 @@ export const DEFAULT_ROUTING_TABLE: ModelRoutingTable = {
   oversight: {
     task: 'oversight',
     provider: 'anthropic',
-    model: 'claude-sonnet-4-6-20260416',
+    model: 'claude-opus-4-7-20260420',
     fallback: { provider: 'openai', model: 'gpt-5.4' },
   },
   // EMBEDDINGS — specialized, no reasoning needed
