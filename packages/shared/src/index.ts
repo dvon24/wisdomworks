@@ -58,11 +58,24 @@ export type {
   ChannelRoutingConfig,
 } from './channels';
 
-// Business Type Framework Dictionary
+// Frameworks: Business Types, Industry Templates, Personal Templates
 export {
   BUSINESS_TYPE_DICTIONARY,
   BUSINESS_CATEGORIES,
   getBusinessType,
   getBusinessTypesByCategory,
+  INDUSTRY_TEMPLATES,
+  PROFESSIONAL_SERVICES_TEMPLATE,
+  SMALL_BUSINESS_TEMPLATE,
+  getTemplate,
+  findTemplateForBusiness,
+  PERSONAL_TEMPLATES,
+  PERSONAL_BLUEPRINTS,
+  getPersonalTemplate,
 } from './frameworks';
-export type { BusinessTypeFramework, BusinessCategory } from './frameworks';
+export type {
+  BusinessTypeFramework,
+  BusinessCategory,
+  IndustryTemplate,
+  PersonalTemplate,
+} from './frameworks';

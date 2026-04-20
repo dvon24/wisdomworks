@@ -68,8 +68,8 @@ development_status:
   epic-1: in-progress
   1-1-ontology-schema-and-entity-model: done
   1-2-business-type-framework-dictionary: done
-  1-3-industry-templates-and-blueprint-library: backlog
-  1-4-personal-templates-and-privacy-governance: backlog
+  1-3-industry-templates-and-blueprint-library: done
+  1-4-personal-templates-and-privacy-governance: done
   1-5-leadership-coach-agent-behavior: backlog
   1-6-conversational-ai-onboarding-flow: backlog
   1-7-axis-deployment-spec-generation-from-conversation: backlog
