@@ -190,8 +190,8 @@ export const MID_SIZE_EXAMPLE: AxisDeploymentSpec = {
       role: 'founder',
       name: 'Founder Agent',
       modelRouting: {
-        orchestration: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-        strategy: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+        orchestration: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        strategy: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
       },
       outputChannels: ['email', 'dashboard'],
       governanceRules: [{ action: '*', effect: 'allow' }],
@@ -200,8 +200,8 @@ export const MID_SIZE_EXAMPLE: AxisDeploymentSpec = {
       role: 'cto',
       name: 'CTO Agent',
       modelRouting: {
-        architecture: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-        code_review: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+        architecture: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        code_review: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
       },
       outputChannels: ['email', 'terminal', 'dashboard'],
       governanceRules: [{ action: '*', effect: 'allow' }],

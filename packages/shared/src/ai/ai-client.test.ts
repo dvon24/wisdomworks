@@ -25,7 +25,7 @@ const testRoutingTable: ModelRoutingTable = {
   writing: {
     task: 'writing',
     provider: 'anthropic',
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6-20260416',
   },
 };
 

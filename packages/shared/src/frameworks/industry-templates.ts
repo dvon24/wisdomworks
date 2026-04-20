@@ -31,9 +31,9 @@ export const PROFESSIONAL_SERVICES_TEMPLATE: IndustryTemplate = {
       role: 'founder',
       name: 'Founder Agent',
       modelRouting: {
-        orchestration: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-        strategy: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-        delegation: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+        orchestration: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        strategy: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        delegation: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
       },
       outputChannels: ['email', 'dashboard'],
       governanceRules: [{ action: '*', effect: 'allow' }],
@@ -53,8 +53,8 @@ export const PROFESSIONAL_SERVICES_TEMPLATE: IndustryTemplate = {
       role: 'business_analyst',
       name: 'Business Analyst Agent',
       modelRouting: {
-        analysis: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-        requirements: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+        analysis: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        requirements: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
         documentation: { provider: 'openai', model: 'gpt-4o' },
       },
       outputChannels: ['email', 'dashboard'],

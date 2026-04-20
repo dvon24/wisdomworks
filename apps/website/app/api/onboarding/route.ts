@@ -15,7 +15,7 @@ export async function POST(request: Request) {
   const systemPrompt = getOnboardingSystemPrompt(collectedData ?? {});
 
   const result = streamText({
-    model: anthropic('claude-sonnet-4-20250514'),
+    model: anthropic('claude-sonnet-4-6-20260416'),
     system: systemPrompt,
     messages: messages?.map((m: ConversationMessage) => ({
       role: m.role as 'user' | 'assistant',

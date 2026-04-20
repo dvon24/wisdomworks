@@ -23,9 +23,9 @@ export interface UsageEvent {
 /** Rough cost estimation per 1M tokens */
 const COST_PER_MILLION_TOKENS: Record<string, { input: number; output: number }> = {
   'gpt-4o-mini': { input: 0.15, output: 0.6 },
-  'gpt-4o': { input: 2.5, output: 10 },
+  'gpt-5.4': { input: 3, output: 12 },
   'claude-haiku-4-5-20251001': { input: 1, output: 5 },
-  'claude-sonnet-4-20250514': { input: 3, output: 15 },
+  'claude-sonnet-4-6-20260416': { input: 3, output: 15 },
   'text-embedding-3-small': { input: 0.02, output: 0 },
 };
 

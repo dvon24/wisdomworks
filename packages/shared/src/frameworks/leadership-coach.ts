@@ -99,12 +99,12 @@ export function createLeadershipCoachSpec(
     modelRouting: {
       coaching: {
         provider: 'anthropic',
-        model: 'claude-sonnet-4-20250514',
-        fallback: { provider: 'openai', model: 'gpt-4o' },
+        model: 'claude-sonnet-4-6-20260416',
+        fallback: { provider: 'openai', model: 'gpt-5.4' },
       },
       scenario_practice: {
         provider: 'anthropic',
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6-20260416',
       },
       agent_performance_analysis: {
         provider: 'openai',
@@ -116,7 +116,7 @@ export function createLeadershipCoachSpec(
       },
       friction_mediation: {
         provider: 'anthropic',
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6-20260416',
       },
     },
     outputChannels: [finalConfig.feedbackChannel, 'dashboard'],

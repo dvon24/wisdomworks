@@ -104,8 +104,8 @@ export const PERSONAL_TEMPLATES: PersonalTemplate[] = [
         role: 'wellness_coach',
         name: 'Wellness Coach',
         modelRouting: {
-          journaling_prompts: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-          wellness_planning: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+          journaling_prompts: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+          wellness_planning: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
           health_tracking: { provider: 'openai', model: 'gpt-4o-mini' },
         },
         outputChannels: ['whatsapp'],
@@ -115,8 +115,8 @@ export const PERSONAL_TEMPLATES: PersonalTemplate[] = [
         role: 'session_notes',
         name: 'Session Notes Agent',
         modelRouting: {
-          note_taking: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-          summary: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+          note_taking: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+          summary: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
         },
         outputChannels: ['dashboard'],
         governanceRules: HIPAA_GOVERNANCE,
@@ -134,7 +134,7 @@ export const PERSONAL_TEMPLATES: PersonalTemplate[] = [
         role: 'study_assistant',
         name: 'Study Assistant',
         modelRouting: {
-          homework_help: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+          homework_help: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
           scheduling: { provider: 'openai', model: 'gpt-4o-mini' },
           research: { provider: 'openai', model: 'gpt-4o' },
         },
@@ -146,7 +146,7 @@ export const PERSONAL_TEMPLATES: PersonalTemplate[] = [
         name: 'Career Prep Agent',
         modelRouting: {
           resume_review: { provider: 'openai', model: 'gpt-4o' },
-          interview_prep: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+          interview_prep: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
         },
         outputChannels: ['whatsapp', 'email'],
         governanceRules: [{ action: '*', effect: 'allow' }],
@@ -164,8 +164,8 @@ export const PERSONAL_TEMPLATES: PersonalTemplate[] = [
         role: 'leadership_coach',
         name: 'Leadership Coach',
         modelRouting: {
-          coaching: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-          scenario_practice: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+          coaching: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+          scenario_practice: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
           feedback_analysis: { provider: 'openai', model: 'gpt-4o' },
         },
         outputChannels: ['whatsapp', 'email'],

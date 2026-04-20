@@ -14,7 +14,7 @@ export interface ModelRouteConfig {
   task: string;
   /** Primary provider */
   provider: AIProvider;
-  /** Model identifier (e.g., 'claude-sonnet-4-20250514', 'gpt-4o') */
+  /** Model identifier (e.g., 'claude-sonnet-4-6-20260416', 'gpt-4o') */
   model: string;
   /** Fallback if primary fails */
   fallback?: {
@@ -79,32 +79,80 @@ export interface BenchmarkResult {
   costEstimate: number;
 }
 
-/** Default routing table — sensible defaults for common tasks */
+/**
+ * Default routing table — accuracy-first model selection.
+ *
+ * Philosophy: The cost of getting it wrong (leaked personal emails, bad coaching advice,
+ * wrong agents deployed) far exceeds the cost of premium models. Use the best available
+ * model for every critical task. Cheaper models only for routine/mechanical tasks —
+ * and those routine tasks are OVERSEEN by a smarter model that validates their output.
+ *
+ * Critical tasks → Claude Sonnet 4.6 / GPT-5.4 (highest accuracy)
+ * Routine tasks → Haiku 4.5 / GPT-4o-mini (fast, overseen by critical model)
+ * Oversight → Critical model spot-checks routine model output periodically
+ * Embeddings → text-embedding-3-small (specialized, no reasoning needed)
+ */
 export const DEFAULT_ROUTING_TABLE: ModelRoutingTable = {
+  // CRITICAL TASKS — premium models, accuracy is everything
   classification: {
     task: 'classification',
-    provider: 'openai',
-    model: 'gpt-4o-mini',
-    fallback: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6-20260416',
+    fallback: { provider: 'openai', model: 'gpt-5.4' },
   },
   code_generation: {
     task: 'code_generation',
     provider: 'anthropic',
-    model: 'claude-sonnet-4-20250514',
-    fallback: { provider: 'openai', model: 'gpt-4o' },
+    model: 'claude-sonnet-4-6-20260416',
+    fallback: { provider: 'openai', model: 'gpt-5.4' },
   },
   writing: {
     task: 'writing',
-    provider: 'openai',
-    model: 'gpt-4o',
-    fallback: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6-20260416',
+    fallback: { provider: 'openai', model: 'gpt-5.4' },
   },
   analysis: {
     task: 'analysis',
     provider: 'anthropic',
-    model: 'claude-sonnet-4-20250514',
-    fallback: { provider: 'openai', model: 'gpt-4o' },
+    model: 'claude-sonnet-4-6-20260416',
+    fallback: { provider: 'openai', model: 'gpt-5.4' },
   },
+  coaching: {
+    task: 'coaching',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6-20260416',
+    fallback: { provider: 'openai', model: 'gpt-5.4' },
+  },
+  onboarding: {
+    task: 'onboarding',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6-20260416',
+    fallback: { provider: 'openai', model: 'gpt-5.4' },
+  },
+  // ROUTINE TASKS — fast models, overseen by critical model
+  // The oversight model (classification/analysis) spot-checks routine output
+  // periodically to catch errors before they reach the customer
+  reminders: {
+    task: 'reminders',
+    provider: 'anthropic',
+    model: 'claude-haiku-4-5-20251001',
+    fallback: { provider: 'openai', model: 'gpt-4o-mini' },
+  },
+  formatting: {
+    task: 'formatting',
+    provider: 'openai',
+    model: 'gpt-4o-mini',
+    fallback: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+  },
+  // OVERSIGHT — smart model validates routine model output
+  oversight: {
+    task: 'oversight',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6-20260416',
+    fallback: { provider: 'openai', model: 'gpt-5.4' },
+  },
+  // EMBEDDINGS — specialized, no reasoning needed
   embedding: {
     task: 'embedding',
     provider: 'openai',
