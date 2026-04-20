@@ -94,6 +94,41 @@ export const PROFESSIONAL_SERVICES_TEMPLATE: IndustryTemplate = {
         { action: 'financial_transaction', effect: 'deny', conditions: { requiresApproval: true } },
       ],
     },
+    {
+      role: 'cto',
+      name: 'CTO Agent',
+      modelRouting: {
+        architecture: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        technology_strategy: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        technical_review: { provider: 'openai', model: 'gpt-5.4' },
+      },
+      outputChannels: ['email', 'dashboard'],
+      governanceRules: [{ action: '*', effect: 'allow' }],
+    },
+    {
+      role: 'marketing',
+      name: 'Marketing Agent',
+      modelRouting: {
+        content_creation: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        campaign_strategy: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        analytics: { provider: 'openai', model: 'gpt-5.4' },
+      },
+      outputChannels: ['email', 'dashboard'],
+      governanceRules: [
+        { action: 'send_external', effect: 'deny', conditions: { requiresApproval: true } },
+      ],
+    },
+    {
+      role: 'qa',
+      name: 'QA Agent',
+      modelRouting: {
+        test_planning: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        quality_review: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
+        automation: { provider: 'openai', model: 'gpt-5.4' },
+      },
+      outputChannels: ['email', 'dashboard'],
+      governanceRules: [{ action: '*', effect: 'allow' }],
+    },
   ],
   defaultIntegrations: ['email', 'calendar', 'directory', 'project_management', 'document_management'],
   defaultOutputChannels: ['email', 'dashboard', 'desktop', 'calendar'],

@@ -32,3 +32,44 @@ export function assertTenantMatch(
 export function tenantFilter(column: PgColumn, tenantId: string) {
   return eq(column, tenantId);
 }
+
+/**
+ * Generates SQL strings for creating Row-Level Security (RLS) policies on all
+ * tenant-scoped tables. These policies should be applied to Supabase to enforce
+ * tenant isolation at the database level, preventing cross-tenant data access
+ * even if application-level checks are bypassed.
+ *
+ * Usage: Run the returned SQL statements against your Supabase/PostgreSQL instance.
+ * Requires that the application sets `app.current_tenant_id` on each connection
+ * (e.g., via `SET LOCAL app.current_tenant_id = '<tenant-id>'`).
+ */
+export function generateRLSPolicies(): string[] {
+  const tenantScopedTables = [
+    'users',
+    'entity_types',
+    'entities',
+    'relationship_types',
+    'relationships',
+    'governance_rules',
+    'governance_evaluations',
+    'audit_logs',
+    'tenant_configs',
+    'signals',
+  ];
+
+  const statements: string[] = [];
+
+  for (const table of tenantScopedTables) {
+    statements.push(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`);
+    statements.push(
+      `CREATE POLICY tenant_isolation_${table} ON ${table} ` +
+      `USING (tenant_id = current_setting('app.current_tenant_id')::uuid);`,
+    );
+    statements.push(
+      `CREATE POLICY tenant_isolation_insert_${table} ON ${table} ` +
+      `FOR INSERT WITH CHECK (tenant_id = current_setting('app.current_tenant_id')::uuid);`,
+    );
+  }
+
+  return statements;
+}

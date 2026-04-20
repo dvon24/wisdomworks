@@ -11,11 +11,15 @@ export interface PersonalTemplate {
   name: string;
   description: string;
   defaultAgents: AgentSpec[];
-  privacyLevel: 'standard' | 'strict' | 'hipaa';
+  privacyLevel: 'standard' | 'strict' | 'hipaa_intent';
   defaultGovernanceOverrides: AgentGovernanceRule[];
 }
 
-/** HIPAA-grade governance rules for health/wellness templates */
+/**
+ * HIPAA-intent governance rules — actual HIPAA compliance requires BAA,
+ * encrypted channels (not WhatsApp), and compliance certification.
+ * This label indicates architectural readiness, not certification.
+ */
 const HIPAA_GOVERNANCE: AgentGovernanceRule[] = [
   { action: 'share_data', effect: 'deny' },
   { action: 'export_data', effect: 'deny', conditions: { requiresApproval: true } },
@@ -108,7 +112,7 @@ export const PERSONAL_TEMPLATES: PersonalTemplate[] = [
           wellness_planning: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
           health_tracking: { provider: 'openai', model: 'gpt-4o-mini' },
         },
-        outputChannels: ['whatsapp'],
+        outputChannels: ['dashboard'],
         governanceRules: HIPAA_GOVERNANCE,
       },
       {
@@ -122,7 +126,7 @@ export const PERSONAL_TEMPLATES: PersonalTemplate[] = [
         governanceRules: HIPAA_GOVERNANCE,
       },
     ],
-    privacyLevel: 'hipaa',
+    privacyLevel: 'hipaa_intent',
     defaultGovernanceOverrides: HIPAA_GOVERNANCE,
   },
   {

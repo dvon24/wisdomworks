@@ -20,7 +20,7 @@ export interface GovernanceCheckResult {
  * Evaluate governance rules for an agent action.
  * Checks active rules for the tenant, matching by scope and action.
  * Higher priority rules evaluated first. First match wins.
- * If no rules match, action is permitted by default.
+ * If no rules match, action is denied by default (fail-closed).
  */
 export async function evaluateGovernance(
   request: GovernanceCheckRequest,
@@ -56,12 +56,12 @@ export async function evaluateGovernance(
     }
   }
 
-  // No matching rule — permit by default
+  // No matching rule — deny by default (fail-closed)
   const defaultResult: GovernanceCheckResult = {
-    permitted: true,
-    effect: 'allow',
+    permitted: false,
+    effect: 'deny',
     ruleId: null,
-    reasoning: 'No matching governance rule — permitted by default',
+    reasoning: 'No matching governance rule — denied by default (fail-closed)',
   };
 
   await logGovernanceEvaluation(request, null, defaultResult);

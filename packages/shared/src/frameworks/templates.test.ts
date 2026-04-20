@@ -17,8 +17,8 @@ describe('Industry Templates', () => {
     expect(getTemplate('small_business')).toBeDefined();
   });
 
-  it('Professional Services has 6 agents', () => {
-    expect(PROFESSIONAL_SERVICES_TEMPLATE.defaultAgents).toHaveLength(6);
+  it('Professional Services has 9 agents', () => {
+    expect(PROFESSIONAL_SERVICES_TEMPLATE.defaultAgents).toHaveLength(9);
     const roles = PROFESSIONAL_SERVICES_TEMPLATE.defaultAgents.map((a) => a.role);
     expect(roles).toContain('founder');
     expect(roles).toContain('project_manager');
@@ -76,7 +76,7 @@ describe('Personal Templates', () => {
 
   it('Health & Wellness has HIPAA privacy level', () => {
     const hw = getPersonalTemplate('health_wellness');
-    expect(hw?.privacyLevel).toBe('hipaa');
+    expect(hw?.privacyLevel).toBe('hipaa_intent');
     expect(hw?.defaultGovernanceOverrides.length).toBeGreaterThan(0);
     expect(hw?.defaultGovernanceOverrides.some((r) => r.action === 'share_data' && r.effect === 'deny')).toBe(true);
   });

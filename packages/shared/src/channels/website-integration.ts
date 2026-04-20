@@ -50,7 +50,14 @@ export interface WidgetEmbed {
 
 /**
  * Generate embed code for a widget.
+ *
+ * WARNING: This implementation passes the raw API key in the URL query string.
+ * Production implementation should use short-lived signed tokens instead of
+ * raw API keys to prevent key leakage via referrer headers, browser history,
+ * and server access logs.
  */
+// TODO: implement generateWidgetToken(tenantId, widgetType, ttlSeconds) that
+// returns a short-lived HMAC-signed token to replace raw apiKey in URLs.
 export function generateEmbedCode(config: WidgetConfig): WidgetEmbed {
   const baseUrl = 'https://widgets.wisdomworks.com';
   const widgetUrl = `${baseUrl}/${config.widgetType}?key=${config.apiKey}`;

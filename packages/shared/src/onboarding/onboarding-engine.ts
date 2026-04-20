@@ -28,6 +28,7 @@ export interface OnboardingData {
   industry?: string;
   businessType?: string;
   employeeCount?: number;
+  useCase?: 'business' | 'personal';
   teamStructure?: string[];
   keyWorkflows?: string[];
   painPoints?: string[];
@@ -78,9 +79,13 @@ export function getRequiredFields(data: OnboardingData): {
 }
 
 /**
- * Suggest the best blueprint based on employee count.
+ * Suggest the best blueprint based on onboarding data.
  */
-export function suggestBlueprint(employeeCount: number): BlueprintType {
+export function suggestBlueprint(data: OnboardingData): BlueprintType {
+  if (data.useCase === 'personal') return 'personal';
+  if (data.complianceRequirements?.includes('air_gapped')) return 'air_gapped';
+
+  const employeeCount = data.employeeCount ?? 1;
   if (employeeCount <= 2) return 'solo';
   if (employeeCount <= 20) return 'small_team';
   if (employeeCount <= 200) return 'mid_size';

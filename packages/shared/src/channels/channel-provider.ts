@@ -76,34 +76,43 @@ export const DEFAULT_CHANNEL_ROUTING: ChannelRoutingConfig = {
 
 /**
  * Channel registry — manages registered channels per tenant.
+ * Map key is `${tenantId}:${channelType}` to ensure tenant isolation.
  */
 export class ChannelRegistry {
   private channels = new Map<string, CommunicationChannel>();
 
-  register(channel: CommunicationChannel): void {
-    this.channels.set(channel.channelType, channel);
+  private key(tenantId: string, channelType: ChannelType): string {
+    return `${tenantId}:${channelType}`;
   }
 
-  get(channelType: ChannelType): CommunicationChannel | undefined {
-    return this.channels.get(channelType);
+  register(tenantId: string, channel: CommunicationChannel): void {
+    this.channels.set(this.key(tenantId, channel.channelType), channel);
   }
 
-  getAll(): CommunicationChannel[] {
-    return Array.from(this.channels.values());
+  get(tenantId: string, channelType: ChannelType): CommunicationChannel | undefined {
+    return this.channels.get(this.key(tenantId, channelType));
   }
 
-  has(channelType: ChannelType): boolean {
-    return this.channels.has(channelType);
+  getAll(tenantId: string): CommunicationChannel[] {
+    const prefix = `${tenantId}:`;
+    return Array.from(this.channels.entries())
+      .filter(([k]) => k.startsWith(prefix))
+      .map(([_, v]) => v);
+  }
+
+  has(tenantId: string, channelType: ChannelType): boolean {
+    return this.channels.has(this.key(tenantId, channelType));
   }
 
   /**
    * Route a message to the appropriate channel based on urgency.
    */
   route(
+    tenantId: string,
     urgency: keyof ChannelRoutingConfig,
     routing: ChannelRoutingConfig = DEFAULT_CHANNEL_ROUTING,
   ): CommunicationChannel | undefined {
     const channelType = routing[urgency];
-    return this.get(channelType) ?? this.get(routing.default);
+    return this.get(tenantId, channelType) ?? this.get(tenantId, routing.default);
   }
 }

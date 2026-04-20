@@ -1,8 +1,14 @@
 import { router } from './trpc';
-import { testSeedRouter } from './routers/test-seed';
+
+// Conditionally import testSeedRouter only in test environment to prevent
+// test utilities from shipping to production.
+const testSeedRouter =
+  process.env.NODE_ENV === 'test'
+    ? require('./routers/test-seed').testSeedRouter
+    : undefined;
 
 export const appRouter = router({
-  testSeed: testSeedRouter,
+  ...(testSeedRouter ? { testSeed: testSeedRouter } : {}),
   // Routers added by later stories:
   // entities, relationships, signals, agents, governance, search, audit, metering
 });

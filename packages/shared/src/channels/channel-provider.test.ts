@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { ChannelRegistry, DEFAULT_CHANNEL_ROUTING, CHANNEL_TYPES } from './channel-provider';
-import type { CommunicationChannel, ChannelMessage, ChannelStatus } from './channel-provider';
+import type { CommunicationChannel } from './channel-provider';
 
-// Mock channel for testing
+const TEST_TENANT = 'tenant-test-123';
+
 function createMockChannel(type: string): CommunicationChannel {
   return {
     channelType: type as any,
@@ -13,46 +14,51 @@ function createMockChannel(type: string): CommunicationChannel {
   };
 }
 
-describe('ChannelRegistry', () => {
-  it('registers and retrieves channels', () => {
+describe('ChannelRegistry (tenant-scoped)', () => {
+  it('registers and retrieves channels per tenant', () => {
     const registry = new ChannelRegistry();
     const channel = createMockChannel('whatsapp');
-    registry.register(channel);
-    expect(registry.get('whatsapp')).toBe(channel);
-    expect(registry.has('whatsapp')).toBe(true);
-    expect(registry.has('sms')).toBe(false);
+    registry.register(TEST_TENANT, channel);
+    expect(registry.get(TEST_TENANT, 'whatsapp')).toBe(channel);
+    expect(registry.has(TEST_TENANT, 'whatsapp')).toBe(true);
+    expect(registry.has(TEST_TENANT, 'sms')).toBe(false);
+  });
+
+  it('isolates channels between tenants', () => {
+    const registry = new ChannelRegistry();
+    const channelA = createMockChannel('whatsapp');
+    const channelB = createMockChannel('whatsapp');
+    registry.register('tenant-a', channelA);
+    registry.register('tenant-b', channelB);
+    expect(registry.get('tenant-a', 'whatsapp')).toBe(channelA);
+    expect(registry.get('tenant-b', 'whatsapp')).toBe(channelB);
+    expect(registry.get('tenant-a', 'whatsapp')).not.toBe(channelB);
   });
 
   it('routes to correct channel by urgency', () => {
     const registry = new ChannelRegistry();
-    registry.register(createMockChannel('sms'));
-    registry.register(createMockChannel('whatsapp'));
-    registry.register(createMockChannel('calendar'));
+    registry.register(TEST_TENANT, createMockChannel('sms'));
+    registry.register(TEST_TENANT, createMockChannel('whatsapp'));
+    registry.register(TEST_TENANT, createMockChannel('calendar'));
 
-    const urgent = registry.route('urgent');
-    expect(urgent?.channelType).toBe('sms');
-
-    const routine = registry.route('routine');
-    expect(routine?.channelType).toBe('whatsapp');
-
-    const scheduling = registry.route('scheduling');
-    expect(scheduling?.channelType).toBe('calendar');
+    expect(registry.route(TEST_TENANT, 'urgent')?.channelType).toBe('sms');
+    expect(registry.route(TEST_TENANT, 'routine')?.channelType).toBe('whatsapp');
+    expect(registry.route(TEST_TENANT, 'scheduling')?.channelType).toBe('calendar');
   });
 
   it('falls back to default when requested channel not registered', () => {
     const registry = new ChannelRegistry();
-    registry.register(createMockChannel('whatsapp'));
-    // SMS not registered, should fallback to default (whatsapp)
-    const result = registry.route('urgent');
+    registry.register(TEST_TENANT, createMockChannel('whatsapp'));
+    const result = registry.route(TEST_TENANT, 'urgent');
     expect(result?.channelType).toBe('whatsapp');
   });
 
-  it('returns all registered channels', () => {
+  it('returns all registered channels for a tenant', () => {
     const registry = new ChannelRegistry();
-    registry.register(createMockChannel('email'));
-    registry.register(createMockChannel('whatsapp'));
-    registry.register(createMockChannel('sms'));
-    expect(registry.getAll()).toHaveLength(3);
+    registry.register(TEST_TENANT, createMockChannel('email'));
+    registry.register(TEST_TENANT, createMockChannel('whatsapp'));
+    registry.register(TEST_TENANT, createMockChannel('sms'));
+    expect(registry.getAll(TEST_TENANT)).toHaveLength(3);
   });
 });
 

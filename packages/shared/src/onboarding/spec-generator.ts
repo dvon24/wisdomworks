@@ -12,6 +12,18 @@ import { findTemplateForBusiness, getTemplate } from '../frameworks';
 import { suggestBlueprint } from './onboarding-engine';
 import type { OnboardingData } from './onboarding-engine';
 
+type OrgSize = 'solo' | 'small_team' | 'mid_size' | 'enterprise';
+
+/** Maps each BlueprintType to the appropriate OrgSize value */
+const BLUEPRINT_TO_ORG_SIZE: Record<BlueprintType, OrgSize> = {
+  personal: 'solo',
+  solo: 'solo',
+  small_team: 'small_team',
+  mid_size: 'mid_size',
+  enterprise: 'enterprise',
+  air_gapped: 'enterprise',
+};
+
 /** Deposit amounts by tier */
 const DEPOSIT_AMOUNTS: Record<BlueprintType, number> = {
   personal: 10,
@@ -47,7 +59,7 @@ const BASE_PRICING: Record<BlueprintType, number> = {
  * Returns a validated spec or throws on validation failure.
  */
 export function generateDeploymentSpec(data: OnboardingData): AxisDeploymentSpec {
-  const blueprint = suggestBlueprint(data.employeeCount ?? 1);
+  const blueprint = suggestBlueprint(data);
   const businessType = data.businessType ?? data.industry ?? 'unknown';
   const templateMatch = findTemplateForBusiness(businessType);
   const template = templateMatch ?? getTemplate('small_business')!;
@@ -89,7 +101,7 @@ export function generateDeploymentSpec(data: OnboardingData): AxisDeploymentSpec
     organization: {
       name: data.organizationName ?? 'Unnamed Organization',
       industry: data.industry ?? 'unknown',
-      size: blueprint === 'personal' ? 'solo' : blueprint === 'air_gapped' ? 'enterprise' : blueprint as any,
+      size: BLUEPRINT_TO_ORG_SIZE[blueprint],
       compliance: data.complianceRequirements,
     },
     surfaces,

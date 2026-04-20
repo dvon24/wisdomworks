@@ -47,6 +47,7 @@ export async function GET(
   const readable = new ReadableStream({
     async start(controller) {
       let nc: NatsConnection | null = null;
+      let messages: { stop: () => void; [Symbol.asyncIterator]: () => AsyncIterator<any> } | null = null;
       try {
         nc = await getSSEConnection();
         const js = nc.jetstream();
@@ -54,16 +55,17 @@ export async function GET(
 
         // Create ephemeral consumer for this SSE session
         await jsm.consumers.add(streamName, {
+          name: consumerName,
           filter_subject: subject,
           deliver_policy: DeliverPolicy.New,
           inactive_threshold: 30_000_000_000, // 30s — auto-cleanup on disconnect
         });
 
-        const consumer = await js.consumers.get(streamName);
-        const messages = await consumer.consume();
+        const consumer = await js.consumers.get(streamName, consumerName);
+        messages = await consumer.consume();
 
         request.signal.addEventListener('abort', () => {
-          messages.stop();
+          messages?.stop();
         });
 
         for await (const msg of messages) {
@@ -76,6 +78,7 @@ export async function GET(
           encoder.encode(`data: ${JSON.stringify({ error: 'Stream connection failed' })}\n\n`),
         );
       } finally {
+        messages?.stop();
         controller.close();
       }
     },

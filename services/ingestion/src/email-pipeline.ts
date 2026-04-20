@@ -41,8 +41,11 @@ export function validateWebhookPayload(payload: unknown): payload is IncomingEma
     typeof p.tenantId === 'string' &&
     typeof p.sender === 'string' &&
     Array.isArray(p.recipients) &&
+    (p.recipients as unknown[]).every((r) => typeof r === 'string') &&
     typeof p.subject === 'string' &&
-    typeof p.body === 'string'
+    typeof p.body === 'string' &&
+    Array.isArray(p.attachments) &&
+    typeof p.receivedAt === 'string'
   );
 }
 
@@ -64,12 +67,13 @@ export function emailToEvent(email: IncomingEmail): Omit<DomainEvent<IncomingEma
  * Reclassified emails: all extracted data purged within 5 minutes (NFR13).
  */
 export function shouldPurgeData(
+  previousClassification: EmailClassification | undefined,
   classification: EmailClassification,
-  previousClassification?: EmailClassification,
 ): boolean {
   // Personal emails never enter the signal layer
-  // This also catches reclassification: business→personal triggers purge
   if (classification === 'personal') return true;
+  // Reclassification: if previously business and now anything else, purge extracted data
+  if (previousClassification === 'business' && classification !== 'business') return true;
   return false;
 }
 

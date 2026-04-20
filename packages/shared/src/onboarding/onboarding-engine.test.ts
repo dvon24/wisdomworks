@@ -42,23 +42,31 @@ describe('getRequiredFields', () => {
 
 describe('suggestBlueprint', () => {
   it('suggests solo for 1-2 employees', () => {
-    expect(suggestBlueprint(1)).toBe('solo');
-    expect(suggestBlueprint(2)).toBe('solo');
+    expect(suggestBlueprint({ employeeCount: 1 })).toBe('solo');
+    expect(suggestBlueprint({ employeeCount: 2 })).toBe('solo');
   });
 
   it('suggests small_team for 3-20 employees', () => {
-    expect(suggestBlueprint(3)).toBe('small_team');
-    expect(suggestBlueprint(20)).toBe('small_team');
+    expect(suggestBlueprint({ employeeCount: 3 })).toBe('small_team');
+    expect(suggestBlueprint({ employeeCount: 20 })).toBe('small_team');
   });
 
   it('suggests mid_size for 21-200 employees', () => {
-    expect(suggestBlueprint(50)).toBe('mid_size');
-    expect(suggestBlueprint(200)).toBe('mid_size');
+    expect(suggestBlueprint({ employeeCount: 50 })).toBe('mid_size');
+    expect(suggestBlueprint({ employeeCount: 200 })).toBe('mid_size');
   });
 
   it('suggests enterprise for 200+ employees', () => {
-    expect(suggestBlueprint(201)).toBe('enterprise');
-    expect(suggestBlueprint(1000)).toBe('enterprise');
+    expect(suggestBlueprint({ employeeCount: 201 })).toBe('enterprise');
+    expect(suggestBlueprint({ employeeCount: 1000 })).toBe('enterprise');
+  });
+
+  it('suggests personal when useCase is personal', () => {
+    expect(suggestBlueprint({ useCase: 'personal', employeeCount: 1 })).toBe('personal');
+  });
+
+  it('suggests air_gapped when compliance includes air_gapped', () => {
+    expect(suggestBlueprint({ employeeCount: 50, complianceRequirements: ['air_gapped'] })).toBe('air_gapped');
   });
 });
 

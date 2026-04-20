@@ -26,6 +26,7 @@ const COST_PER_MILLION_TOKENS: Record<string, { input: number; output: number }>
   'gpt-5.4': { input: 3, output: 12 },
   'claude-haiku-4-5-20251001': { input: 1, output: 5 },
   'claude-sonnet-4-6-20260416': { input: 3, output: 15 },
+  'claude-opus-4-7-20260420': { input: 5, output: 25 },
   'text-embedding-3-small': { input: 0.02, output: 0 },
 };
 

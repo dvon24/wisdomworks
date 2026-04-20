@@ -29,6 +29,12 @@ const authConfig = {
     maxAge: 8 * 60 * 60, // 8 hours — NIST SP 800-53 IA session timeout
   },
   callbacks: {
+    // TODO: Add periodic revalidation against DB before production.
+    // Currently the JWT is never revalidated after initial sign-in, meaning
+    // revoked users or role changes won't take effect until token expiry.
+    // Before production, add a check (e.g., every 5 minutes via a timestamp
+    // in the token) that queries the DB to confirm the user still exists,
+    // is not disabled, and their role/tenantId haven't changed.
     async jwt({ token, user }: any) {
       if (user) {
         token.userId = user.id;

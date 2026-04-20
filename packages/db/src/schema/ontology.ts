@@ -6,6 +6,10 @@ import { tenants } from './tenants';
 /**
  * Entity types — categories of things in an organization's ontology.
  * Seed data: employee, role, department, project, client, capability, risk, decision, task, innovation, contract
+ *
+ * Cross-tenant constraint: RLS policies (see tenant-scope.ts generateRLSPolicies())
+ * enforce that entity references cannot span tenants at the DB level.
+ * Application-level validation already exists via tenantFilter.
  */
 export const entityTypes = pgTable(
   'entity_types',

@@ -12,7 +12,7 @@ export const auditLogs = pgTable(
     id: uuid('id').primaryKey().$defaultFn(() => uuid7()),
     tenantId: uuid('tenant_id')
       .notNull()
-      .references(() => tenants.id, { onDelete: 'cascade' }),
+      .references(() => tenants.id, { onDelete: 'restrict' }),
     userId: uuid('user_id'),
     agentId: text('agent_id'),
     action: text('action').notNull(),

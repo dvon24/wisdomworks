@@ -36,6 +36,13 @@ export const sessions = pgTable('sessions', {
   expires: timestamp('expires', { withTimezone: true }).notNull(),
 });
 
+/**
+ * SECURITY NOTE: OAuth tokens (refresh_token, access_token, id_token) are stored
+ * in plaintext. This is a known risk requiring application-level encryption at
+ * Growth phase. A schema change alone cannot fix this — encryption/decryption
+ * must be handled in the auth adapter layer with a proper key management solution
+ * (e.g., AWS KMS, Azure Key Vault, or Supabase Vault).
+ */
 export const accounts = pgTable(
   'accounts',
   {

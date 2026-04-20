@@ -42,9 +42,7 @@ export class NatsKVCache implements CacheProvider {
 
   async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
     if (ttlSeconds !== undefined) {
-      console.warn(
-        `[NatsKVCache] Per-key TTL (${ttlSeconds}s) requested but NATS KV only supports bucket-level TTL. Entry will not auto-expire. Use Redis CacheProvider at Growth for per-key TTL.`,
-      );
+      throw new Error('NATS KV does not support per-key TTL. Use Redis CacheProvider for TTL support.');
     }
     const kv = await this.getKV();
     await kv.put(key, new TextEncoder().encode(value));

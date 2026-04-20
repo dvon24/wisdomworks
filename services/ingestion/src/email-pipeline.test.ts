@@ -49,19 +49,23 @@ describe('emailToEvent', () => {
 
 describe('shouldPurgeData', () => {
   it('purges personal emails', () => {
-    expect(shouldPurgeData('personal')).toBe(true);
+    expect(shouldPurgeData(undefined, 'personal')).toBe(true);
   });
 
   it('does not purge business emails', () => {
-    expect(shouldPurgeData('business')).toBe(false);
+    expect(shouldPurgeData(undefined, 'business')).toBe(false);
   });
 
   it('purges reclassified business→personal', () => {
-    expect(shouldPurgeData('personal', 'business')).toBe(true);
+    expect(shouldPurgeData('business', 'personal')).toBe(true);
   });
 
-  it('does not purge uncertain', () => {
-    expect(shouldPurgeData('uncertain')).toBe(false);
+  it('purges reclassified business→uncertain', () => {
+    expect(shouldPurgeData('business', 'uncertain')).toBe(true);
+  });
+
+  it('does not purge uncertain with no previous', () => {
+    expect(shouldPurgeData(undefined, 'uncertain')).toBe(false);
   });
 });
 
