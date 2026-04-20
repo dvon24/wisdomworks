@@ -108,15 +108,15 @@ development_status:
   # Epic 2b: Client Intelligence & Communication Channels
   # Sprint: 2-3
   # ============================================================
-  epic-2b: backlog
-  2b-1-client-profiles-and-visual-intelligence: backlog
-  2b-2-business-intelligence-and-actionable-insights: backlog
-  2b-3-mobile-device-integration-and-messaging-channels: backlog
-  2b-4-telephony-integration-and-inbound-call-routing: backlog
-  2b-5-voice-appointment-scheduling: backlog
-  2b-6-voice-personality-and-client-recognition: backlog
-  2b-7-client-website-generation-and-deployment: backlog
-  2b-8-embeddable-widgets-for-existing-websites: backlog
+  epic-2b: done
+  2b-1-client-profiles-and-visual-intelligence: done
+  2b-2-business-intelligence-and-actionable-insights: done
+  2b-3-mobile-device-integration-and-messaging-channels: done
+  2b-4-telephony-integration-and-inbound-call-routing: done
+  2b-5-voice-appointment-scheduling: done
+  2b-6-voice-personality-and-client-recognition: done
+  2b-7-client-website-generation-and-deployment: done
+  2b-8-embeddable-widgets-for-existing-websites: done
   epic-2b-retrospective: optional
 
   # ============================================================

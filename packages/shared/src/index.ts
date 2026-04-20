@@ -121,3 +121,13 @@ export type {
   AgentSkill,
   LessonLearned,
 } from './agents';
+
+// Client Profiles & Business Intelligence (Epic 2b)
+export type {
+  ClientProfile,
+  VisitRecord,
+  ClientPhoto,
+  SatisfactionSignal,
+  BusinessInsight,
+  InsightType,
+} from './clients';
