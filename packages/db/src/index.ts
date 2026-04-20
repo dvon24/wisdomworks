@@ -28,6 +28,9 @@ export {
   relationships,
   DEFAULT_ENTITY_TYPES,
   DEFAULT_RELATIONSHIP_TYPES,
+  agentConfigs,
+  agentInstances,
+  agentStatusEnum,
 } from './schema';
 
 // Types

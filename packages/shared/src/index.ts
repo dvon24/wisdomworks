@@ -95,5 +95,16 @@ export {
   suggestTemplate,
   getOnboardingSystemPrompt,
   createOnboardingState,
+  generateDeploymentSpec,
+  generatePreview,
 } from './onboarding';
-export type { OnboardingState, OnboardingData, ConversationMessage } from './onboarding';
+export type { OnboardingState, OnboardingData, ConversationMessage, DeploymentPreview } from './onboarding';
+
+// Agent Operating Protocol
+export {
+  AUTONOMY_LEVELS,
+  AUTONOMY_DEFINITIONS,
+  BASE_AGENT_PROTOCOL,
+  createAgentProtocol,
+} from './protocols';
+export type { AutonomyLevel, AutonomyLevelDefinition, AgentOperatingProtocol } from './protocols';

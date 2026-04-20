@@ -23,3 +23,6 @@ export {
   DEFAULT_ENTITY_TYPES,
   DEFAULT_RELATIONSHIP_TYPES,
 } from './ontology';
+
+export { agentConfigs, agentInstances, agentStatusEnum } from './agents';
+export type { AgentStatus } from './agents';

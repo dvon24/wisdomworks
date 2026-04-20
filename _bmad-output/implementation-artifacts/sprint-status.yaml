@@ -65,21 +65,21 @@ development_status:
   # Epic 1: AI Onboarding & Axis Intelligence Engine
   # Sprint: 1
   # ============================================================
-  epic-1: in-progress
+  epic-1: done
   1-1-ontology-schema-and-entity-model: done
   1-2-business-type-framework-dictionary: done
   1-3-industry-templates-and-blueprint-library: done
   1-4-personal-templates-and-privacy-governance: done
   1-5-leadership-coach-agent-behavior: done
   1-6-conversational-ai-onboarding-flow: done
-  1-7-axis-deployment-spec-generation-from-conversation: backlog
-  1-8-demo-preview-generation: backlog
-  1-9-security-deposit-and-trial-agreement: backlog
-  1-10-ontology-construction-from-onboarding-data: backlog
-  1-11-agent-derivation-and-model-routing-assignment: backlog
-  1-12-automated-agent-provisioning: backlog
-  1-13-axis-integration-discovery-and-org-documentation: backlog
-  1-14-agent-operating-protocol-and-behavioral-framework: backlog
+  1-7-axis-deployment-spec-generation-from-conversation: done
+  1-8-demo-preview-generation: done
+  1-9-security-deposit-and-trial-agreement: done
+  1-10-ontology-construction-from-onboarding-data: done
+  1-11-agent-derivation-and-model-routing-assignment: done
+  1-12-automated-agent-provisioning: done
+  1-13-axis-integration-discovery-and-org-documentation: done
+  1-14-agent-operating-protocol-and-behavioral-framework: done
   epic-1-retrospective: optional
 
   # ============================================================
