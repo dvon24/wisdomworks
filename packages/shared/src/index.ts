@@ -57,3 +57,12 @@ export type {
   ChannelType,
   ChannelRoutingConfig,
 } from './channels';
+
+// Business Type Framework Dictionary
+export {
+  BUSINESS_TYPE_DICTIONARY,
+  BUSINESS_CATEGORIES,
+  getBusinessType,
+  getBusinessTypesByCategory,
+} from './frameworks';
+export type { BusinessTypeFramework, BusinessCategory } from './frameworks';

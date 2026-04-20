@@ -14,3 +14,12 @@ export { auditLogs } from './audit';
 
 export { billingRecords, billingRecordTypeEnum, billingStatusEnum } from './billing';
 export type { BillingRecordType, BillingStatus } from './billing';
+
+export {
+  entityTypes,
+  entities,
+  relationshipTypes,
+  relationships,
+  DEFAULT_ENTITY_TYPES,
+  DEFAULT_RELATIONSHIP_TYPES,
+} from './ontology';

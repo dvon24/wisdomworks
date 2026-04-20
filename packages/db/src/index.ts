@@ -22,6 +22,12 @@ export {
   billingRecords,
   billingRecordTypeEnum,
   billingStatusEnum,
+  entityTypes,
+  entities,
+  relationshipTypes,
+  relationships,
+  DEFAULT_ENTITY_TYPES,
+  DEFAULT_RELATIONSHIP_TYPES,
 } from './schema';
 
 // Types
