@@ -386,6 +386,7 @@ export default function HomePage() {
                     agents={team.agents}
                     connections={team.connections}
                     estimatedPrice={team.price}
+                    employeeCount={employeeCount}
                     onStartTrial={() => alert('Trial signup coming soon! This will connect to Stripe.')}
                     onAskQuestion={() => setShowChatBelowPreview(true)}
                   />
