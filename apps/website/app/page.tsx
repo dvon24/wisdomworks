@@ -152,14 +152,37 @@ export default function HomePage() {
 
       setMessages((prev) => [...prev, { role: 'assistant', content: data.text }]);
 
-      // Detect when AI presents agent team recommendation (after cost education)
+      // Parse agents from ANY AI response that mentions agents
       const responseText = data.text;
+      const agentMatches = responseText.matchAll(/[•\-]\s*\*\*([^*]+)\*\*\s*[—–-]\s*([^\n]+)/g);
+      const parsed: { name: string; role: string; description: string }[] = [];
+      for (const match of agentMatches) {
+        if (match[1] && match[2]) {
+          parsed.push({
+            name: match[1].trim(),
+            role: match[1].trim(),
+            description: match[2].trim(),
+          });
+        }
+      }
+
+      // Update agents if AI mentioned new ones (even during Ask Questions phase)
+      if (parsed.length > 0) {
+        // If in preview mode, MERGE new agents with existing — don't replace
+        if (showPreview && parsed.length < aiRecommendedAgents.length) {
+          // AI mentioned fewer agents (probably just discussing a subset) — keep existing
+        } else {
+          setAiRecommendedAgents(parsed);
+        }
+      }
+
+      // Detect first team recommendation to trigger preview
       const lowerText = responseText.toLowerCase();
       if (
+        !showPreview &&
         (lowerText.includes('your ai team') || (lowerText.includes('agent') && lowerText.includes('next steps')))
         && messages.length >= 2
       ) {
-        // Extract business name from conversation
         if (!businessName) {
           const allText = messages.map((m) => m.content).join(' ');
           const urlMatch = allText.match(/(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9-]+)\.[a-z]{2,}/);
@@ -167,23 +190,6 @@ export default function HomePage() {
             setBusinessName(urlMatch[1]!.charAt(0).toUpperCase() + urlMatch[1]!.slice(1));
           }
         }
-
-        // Parse agents from AI's response — looks for "**Name** — description" or "• **Name** — description"
-        const agentMatches = responseText.matchAll(/[•\-]\s*\*\*([^*]+)\*\*\s*[—–-]\s*([^\n]+)/g);
-        const parsed: { name: string; role: string; description: string }[] = [];
-        for (const match of agentMatches) {
-          if (match[1] && match[2]) {
-            parsed.push({
-              name: match[1].trim(),
-              role: match[1].trim(),
-              description: match[2].trim(),
-            });
-          }
-        }
-        if (parsed.length > 0) {
-          setAiRecommendedAgents(parsed);
-        }
-
         setTimeout(() => setShowPreview(true), 1500);
       }
     } catch (err) {
