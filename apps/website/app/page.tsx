@@ -52,7 +52,8 @@ export default function HomePage() {
   const [showPreview, setShowPreview] = useState(false);
   const [showChatBelowPreview, setShowChatBelowPreview] = useState(false);
   const [businessName, setBusinessName] = useState('');
-  const [aiRecommendedAgents, setAiRecommendedAgents] = useState<{ name: string; role: string; description: string }[]>([]);
+  const [structuredData, setStructuredData] = useState<any>(null);
+  const [inputPlaceholder, setInputPlaceholder] = useState('Describe your business...');
 
   const videoARef = useRef<HTMLVideoElement>(null);
   const videoBRef = useRef<HTMLVideoElement>(null);
@@ -152,45 +153,25 @@ export default function HomePage() {
 
       setMessages((prev) => [...prev, { role: 'assistant', content: data.text }]);
 
-      // Parse agents from ANY AI response that mentions agents
-      const responseText = data.text;
-      const agentMatches = responseText.matchAll(/[•\-]\s*\*\*([^*]+)\*\*\s*[—–-]\s*([^\n]+)/g);
-      const parsed: { name: string; role: string; description: string }[] = [];
-      for (const match of agentMatches) {
-        if (match[1] && match[2]) {
-          parsed.push({
-            name: match[1].trim(),
-            role: match[1].trim(),
-            description: match[2].trim(),
-          });
-        }
-      }
+      // Use structured data from AI — no more regex parsing
+      if (data.structured) {
+        const s = data.structured;
+        setStructuredData(s);
 
-      // Update agents if AI mentioned new ones (even during Ask Questions phase)
-      if (parsed.length > 0) {
-        // If in preview mode, MERGE new agents with existing — don't replace
-        if (showPreview && parsed.length < aiRecommendedAgents.length) {
-          // AI mentioned fewer agents (probably just discussing a subset) — keep existing
-        } else {
-          setAiRecommendedAgents(parsed);
+        // Update business name
+        if (s.businessName && !businessName) {
+          setBusinessName(s.businessName);
         }
-      }
 
-      // Detect first team recommendation to trigger preview
-      const lowerText = responseText.toLowerCase();
-      if (
-        !showPreview &&
-        (lowerText.includes('your ai team') || (lowerText.includes('agent') && lowerText.includes('next steps')))
-        && messages.length >= 2
-      ) {
-        if (!businessName) {
-          const allText = messages.map((m) => m.content).join(' ');
-          const urlMatch = allText.match(/(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9-]+)\.[a-z]{2,}/);
-          if (urlMatch) {
-            setBusinessName(urlMatch[1]!.charAt(0).toUpperCase() + urlMatch[1]!.slice(1));
-          }
+        // Update input placeholder based on phase
+        if (s.inputPlaceholder) {
+          setInputPlaceholder(s.inputPlaceholder);
         }
-        setTimeout(() => setShowPreview(true), 1500);
+
+        // Trigger preview when AI says to show it
+        if (s.showAgentPreview && !showPreview && s.agents?.length > 0) {
+          setTimeout(() => setShowPreview(true), 1500);
+        }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -341,7 +322,7 @@ export default function HomePage() {
                 )}
               </div>
               <div style={{ padding: '1rem 1.5rem', borderTop: '1px solid rgba(255, 255, 255, 0.06)', display: 'flex', gap: '0.75rem' }}>
-                <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder="Describe your business..."
+                <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder={inputPlaceholder}
                   style={{ flex: 1, padding: '0.8rem 1rem', background: 'rgba(255, 255, 255, 0.06)', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '12px', color: 'white', fontSize: '0.95rem', outline: 'none' }} />
                 <button onClick={handleSend} disabled={isLoading || !input.trim()}
                   style={{ padding: '0.8rem 1.5rem', background: isLoading ? 'rgba(99, 102, 241, 0.5)' : '#6366f1', color: 'white', border: 'none', borderRadius: '12px', fontSize: '0.95rem', fontWeight: 600, cursor: isLoading ? 'wait' : 'pointer' }}>
@@ -354,21 +335,19 @@ export default function HomePage() {
 
         {/* PHASE 2: Agent Preview — fades in, replaces conversation */}
         {showPreview && (() => {
-          const allText = messages.map((m) => m.content).join(' ').toLowerCase();
-          const hasWebsite = allText.includes('website') || allText.includes('.com') || allText.includes('.de') || allText.includes('http');
-          const integrations: string[] = [];
-          if (hasWebsite) integrations.push('Your Website');
-          if (allText.includes('instagram')) integrations.push('Instagram');
-          if (allText.includes('calendar') || allText.includes('phone')) integrations.push('Phone Calendar');
-          if (allText.includes('whatsapp')) integrations.push('WhatsApp');
-          if (allText.includes('facebook')) integrations.push('Facebook');
-          if (allText.includes('tiktok')) integrations.push('TikTok');
-          if (integrations.length === 0) integrations.push('Calendar', 'WhatsApp');
-          // Detect employee count from conversation
-          const empMatch = messages.map((m) => m.content).join(' ').match(/(\d+)\s*employees/i);
-          const employeeCount = empMatch ? parseInt(empMatch[1]!) : 1;
+          const s = structuredData ?? {};
+          const integrations: string[] = s.detectedIntegrations ?? ['Calendar', 'WhatsApp'];
+          const employeeCount: number = s.employeeCount ?? 1;
 
-          const team = generateTeamForBusiness(businessName || 'Your Business', hasWebsite, integrations, employeeCount, aiRecommendedAgents);
+          // Build agents from structured data (fully dynamic)
+          const aiAgents = (s.agents ?? []).map((a: any) => a);
+          const team = generateTeamForBusiness(
+            businessName || s.businessName || 'Your Business',
+            integrations.some((i: string) => i.toLowerCase().includes('website')),
+            integrations,
+            employeeCount,
+            aiAgents,
+          );
 
           return (
             <div style={{ width: '100%', maxWidth: '1100px' }}>
@@ -388,11 +367,13 @@ export default function HomePage() {
                 }} />
                 <div style={{ position: 'relative', zIndex: 1, padding: '1.5rem' }}>
                   <AgentPreview
-                    businessName={businessName || 'Your Business'}
+                    businessName={businessName || s.businessName || 'Your Business'}
                     agents={team.agents}
                     connections={team.connections}
-                    estimatedPrice={team.price}
+                    estimatedPrice={s.estimatedPrice ?? team.price}
                     employeeCount={employeeCount}
+                    costData={s.costOfInaction}
+                    painPoints={s.painPoints}
                     onStartTrial={() => alert('Trial signup coming soon! This will connect to Stripe.')}
                     onAskQuestion={() => setShowChatBelowPreview(true)}
                   />

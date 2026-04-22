@@ -24,12 +24,20 @@ interface AgentPreviewProps {
   connections: string[];
   estimatedPrice: string;
   employeeCount: number;
+  costData?: {
+    timeWastePerMonth?: string;
+    missedRevenuePerMonth?: string;
+    otherLosses?: string;
+    totalPerMonth?: string;
+    citations?: string[];
+  };
+  painPoints?: string[];
   onStartTrial: () => void;
   onAskQuestion: (question: string) => void;
 }
 
 export default function AgentPreview({
-  businessName, agents, connections, estimatedPrice, employeeCount, onStartTrial, onAskQuestion,
+  businessName, agents, connections, estimatedPrice, employeeCount, costData, painPoints, onStartTrial, onAskQuestion,
 }: AgentPreviewProps) {
   const coordinator = agents[0];
   const teamAgents = agents.slice(1);
@@ -134,16 +142,18 @@ export default function AgentPreview({
         </div>
       </div>
 
-      {/* Side-by-side comparison */}
+      {/* Side-by-side comparison — uses AI-extracted cost data when available */}
       {(() => {
-        // Calculate costs based on employee count
+        // Use AI-provided cost data if available, otherwise calculate
+        const hasCostData = costData?.totalPerMonth;
         const hourlyRate = 25;
         const workDays = 250;
-        const timeWaste = Math.round(employeeCount * 0.28 * 8 * hourlyRate * workDays / 12); // McKinsey: 28% time on coordination
-        const missedOps = employeeCount <= 5 ? 800 : employeeCount <= 20 ? 3000 : employeeCount <= 100 ? 10000 : 30000;
-        const turnover = Math.round(employeeCount * 0.15 * hourlyRate * 8 * 130 / 12); // SHRM: 6-9 months salary
-        const totalWithout = timeWaste + missedOps + turnover;
+        const timeWaste = hasCostData ? 0 : Math.round(employeeCount * 0.28 * 8 * hourlyRate * workDays / 12);
+        const missedOps = hasCostData ? 0 : (employeeCount <= 5 ? 800 : employeeCount <= 20 ? 3000 : employeeCount <= 100 ? 10000 : 30000);
+        const turnover = hasCostData ? 0 : Math.round(employeeCount * 0.15 * hourlyRate * 8 * 130 / 12);
+        const totalWithout = hasCostData ? parseInt(costData!.totalPerMonth!.replace(/[^0-9]/g, '')) || 5000 : timeWaste + missedOps + turnover;
         const priceNum = parseInt(estimatedPrice.replace(/[^0-9]/g, '')) || 75;
+        const userPainPoints = painPoints ?? ['Missed opportunities from slow responses', 'Time lost to manual coordination', 'Knowledge leaves when employees do', 'Inconsistent processes across your team'];
 
         return (
           <div style={{
@@ -159,18 +169,11 @@ export default function AgentPreview({
               <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)', marginBottom: '0.5rem' }}>
                 ❌ Without WisdomWorks
               </div>
-              <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)', marginBottom: '0.3rem' }}>
-                • ~{Math.round(employeeCount * 0.28 * 8)}hrs/day lost to coordination¹
-              </div>
-              <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)', marginBottom: '0.3rem' }}>
-                • ${missedOps.toLocaleString()}/mo in missed opportunities²
-              </div>
-              <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)', marginBottom: '0.3rem' }}>
-                • Knowledge leaves when employees do³
-              </div>
-              <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)', marginBottom: '0.5rem' }}>
-                • Inconsistent processes across your team
-              </div>
+              {userPainPoints.slice(0, 4).map((point, i) => (
+                <div key={i} style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)', marginBottom: '0.3rem' }}>
+                  • {point}{i < 3 ? ['¹', '²', '³'][i] : ''}
+                </div>
+              ))}
               <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ef4444' }}>
                 ~${totalWithout.toLocaleString()}/mo
               </div>
@@ -262,16 +265,18 @@ export function generateTeamForBusiness(
 
   // IF the AI recommended specific agents, use THOSE instead of hardcoded ones
   if (aiParsedAgents.length > 0) {
-    const agents: PreviewAgent[] = aiParsedAgents.map((parsed, i) => ({
-      name: parsed.name,
-      role: parsed.role,
-      emoji: emojis[i % emojis.length]!,
-      whatTheyDo: parsed.description.split(/[,;]/).map((s) => s.trim()).filter(Boolean).slice(0, 4),
-      channels: i === 0 ? ['WhatsApp', 'SMS', 'Dashboard'] : ['WhatsApp', 'Dashboard'],
-      tools: integrations.slice(0, 3),
-      strengths: ['AI-powered', '24/7 availability', 'Learns and improves'],
-      limitations: ['Escalates complex decisions to you'],
-      aiModel: i === 0 ? 'Claude Sonnet 4.6' : 'Claude Opus 4.7',
+    const agents: PreviewAgent[] = aiParsedAgents.map((parsed: any, i: number) => ({
+      name: parsed.name ?? `Agent ${i + 1}`,
+      role: parsed.role ?? parsed.name ?? 'AI Agent',
+      emoji: parsed.emoji ?? emojis[i % emojis.length]!,
+      whatTheyDo: Array.isArray(parsed.description)
+        ? parsed.description
+        : (parsed.description ?? '').split(/[,;]/).map((s: string) => s.trim()).filter(Boolean).slice(0, 4),
+      channels: Array.isArray(parsed.channels) ? parsed.channels : ['WhatsApp', 'Dashboard'],
+      tools: Array.isArray(parsed.tools) ? parsed.tools : integrations.slice(0, 3),
+      strengths: Array.isArray(parsed.strengths) ? parsed.strengths : ['AI-powered', '24/7 availability', 'Learns and improves'],
+      limitations: Array.isArray(parsed.limitations) ? parsed.limitations : ['Escalates complex decisions to you'],
+      aiModel: parsed.aiModel ?? (i === 0 ? 'Claude Sonnet 4.6' : 'Claude Opus 4.7'),
       color: colors[i % colors.length]!,
     }));
 
