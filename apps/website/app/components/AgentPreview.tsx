@@ -155,10 +155,17 @@ export default function AgentPreview({
         let totalWithout: number;
 
         if (costData?.totalPerMonth) {
-          const parsed = parseInt(costData.totalPerMonth.replace(/[^0-9]/g, '')) || 0;
-          const maxCost = employeeCount <= 2 ? 10000 : employeeCount <= 20 ? 30000 : employeeCount <= 200 ? 100000 : 500000;
-          totalWithout = Math.min(parsed, maxCost);
-          if (totalWithout < 500) totalWithout = Math.round((employeeCount <= 2 ? 1800 : employeeCount <= 20 ? 8000 : 50000) * costMultiplier);
+          // Parse the number — handle formats like "$1,800", "€800-1,200", "$1,800-2,400/month"
+          const cleaned = costData.totalPerMonth.replace(/[^0-9,.-]/g, '');
+          // If it's a range like "1800-2400", take the average
+          const parts = cleaned.split('-').map((p) => parseInt(p.replace(/,/g, '')) || 0);
+          const parsed = parts.length > 1 ? Math.round((parts[0]! + parts[1]!) / 2) : parts[0]!;
+
+          // Strict caps by business size — solo stylist cannot be $10K
+          const maxCost = employeeCount <= 2 ? 5000 : employeeCount <= 20 ? 20000 : employeeCount <= 200 ? 100000 : 500000;
+          const minCost = employeeCount <= 2 ? 500 : employeeCount <= 20 ? 2000 : 10000;
+
+          totalWithout = Math.max(minCost, Math.min(parsed, maxCost));
         } else {
           const base = employeeCount <= 2 ? 1800
             : employeeCount <= 20 ? 3000 + (employeeCount * 250)
