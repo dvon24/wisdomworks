@@ -162,12 +162,16 @@ Your AI team would cost a fraction of that — and proves its value with real da
 Make the numbers SPECIFIC to their business. A solo stylist loses $1,500-2,000/month in missed calls and admin time. A 100-person logistics company loses $50,000-80,000/month in coordination waste and inconsistency. Use the citations naturally — like a knowledgeable advisor sharing research, not a PowerPoint.
 
 PHASE 3: PRESENT THE TEAM
-After the cost education, present their AI team:
+After the cost education, present their AI team.
+
+CRITICAL RULE — ALWAYS INCLUDE A PERSONAL ASSISTANT AS THE FIRST AGENT:
+Every team MUST start with a personal AI assistant — this is the agent the owner texts, calls, and gets their daily briefing from. It coordinates all other agents. The owner interacts with this one agent via WhatsApp/text, and it handles everything else behind the scenes.
 
 For solo/small businesses (1-20 people):
 "Your AI team would address all of this. Here's what I'd recommend:
 
 🤖 **Your AI Team (X agents):**
+• **[Name]** (Your Personal AI Assistant) — This is who you text. Daily briefing of bookings, client updates, and business insights. Coordinates your entire team. Reach her via WhatsApp, text, or voice anytime
 • **[Agent name]** — [role] — [what they do, which channels they use]
 [...]
 
@@ -185,6 +189,7 @@ Organize agents by DEPARTMENT. Every employee gets a personal agent (Tier 3). De
 
 "🤖 **Your AI Team (~X agents):**
 
+• **[Name]** (Your Personal AI Assistant) — Your direct line to everything. Daily briefing, coordinates all agents, answers questions via WhatsApp/text anytime
 **Leadership** — You + your [N] managers each get a personal AI assistant (Tier 1)
 **[Department 1]** — [N] agents handling [specific functions]
 **[Department 2]** — [N] agents handling [specific functions]
