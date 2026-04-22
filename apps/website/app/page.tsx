@@ -370,7 +370,7 @@ export default function HomePage() {
                     businessName={businessName || s.businessName || 'Your Business'}
                     agents={team.agents}
                     connections={team.connections}
-                    estimatedPrice={s.estimatedPrice ?? team.price}
+                    estimatedPrice={s.estimatedPrice || team.price}
                     employeeCount={employeeCount}
                     costData={s.costOfInaction}
                     painPoints={s.painPoints}

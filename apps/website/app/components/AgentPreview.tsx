@@ -280,8 +280,11 @@ export function generateTeamForBusiness(
       color: colors[i % colors.length]!,
     }));
 
-    const basePrice = employeeCount <= 2 ? 75 : employeeCount <= 20 ? 200 : employeeCount <= 100 ? 3000 : 10000;
-    const maxPrice = Math.round(basePrice * 1.3);
+    // Price scales with agent count AND employee count
+    const agentCount = agents.length;
+    const perAgentCost = employeeCount <= 2 ? 18 : employeeCount <= 20 ? 15 : employeeCount <= 100 ? 12 : 10;
+    const basePrice = Math.round(agentCount * perAgentCost);
+    const maxPrice = Math.round(basePrice * 1.25);
     return {
       agents,
       connections: integrations,
@@ -386,7 +389,8 @@ export function generateTeamForBusiness(
     });
   }
 
-  const basePrice = agents.length <= 3 ? 75 : agents.length <= 4 ? 90 : 110;
+  const perAgent = employeeCount <= 2 ? 18 : employeeCount <= 20 ? 15 : 12;
+  const basePrice = Math.round(agents.length * perAgent);
   return {
     agents,
     connections: integrations,
