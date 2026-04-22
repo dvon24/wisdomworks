@@ -63,14 +63,21 @@ Extract this JSON structure (include ALL fields, use null if unknown):
   ],
   "detectedIntegrations": ["tools/platforms the user mentioned"],
   "painPoints": ["specific pain points the user described"],
+  "location": {
+    "city": "city if mentioned or inferred from website domain/context, or null",
+    "country": "country code like US, DE, UK, etc — infer from website TLD (.de=Germany, .co.uk=UK), language cues, or explicit mention",
+    "currency": "USD, EUR, GBP, etc based on country",
+    "currencySymbol": "$, €, £, etc",
+    "costOfLivingMultiplier": "number: 1.0 = US average. LA/NYC = 1.4, rural US = 0.7, Germany = 0.9, UK = 1.1, India = 0.3. Adjust costs accordingly"
+  },
   "costOfInaction": {
-    "timeWastePerMonth": "estimated $ from conversation context",
-    "missedRevenuePerMonth": "estimated $",
-    "otherLosses": "estimated $",
-    "totalPerMonth": "estimated total $",
+    "timeWastePerMonth": "estimated in LOCAL CURRENCY based on location — e.g. €1,200 for Germany, $2,400 for LA",
+    "missedRevenuePerMonth": "estimated in LOCAL CURRENCY",
+    "otherLosses": "estimated in LOCAL CURRENCY",
+    "totalPerMonth": "estimated total in LOCAL CURRENCY with symbol — e.g. €3,500/month or $4,300/month",
     "citations": ["source: specific claim"]
   },
-  "estimatedPrice": "price range string like $75-100/month",
+  "estimatedPrice": "price range in LOCAL CURRENCY — e.g. €65-85/month or $75-100/month",
   "inputPlaceholder": "contextual placeholder for the chat input"
 }
 

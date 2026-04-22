@@ -31,13 +31,18 @@ interface AgentPreviewProps {
     totalPerMonth?: string;
     citations?: string[];
   };
+  location?: {
+    currency?: string;
+    currencySymbol?: string;
+    costOfLivingMultiplier?: number;
+  };
   painPoints?: string[];
   onStartTrial: () => void;
   onAskQuestion: (question: string) => void;
 }
 
 export default function AgentPreview({
-  businessName, agents, connections, estimatedPrice, employeeCount, costData, painPoints, onStartTrial, onAskQuestion,
+  businessName, agents, connections, estimatedPrice, employeeCount, costData, painPoints, location, onStartTrial, onAskQuestion,
 }: AgentPreviewProps) {
   const coordinator = agents[0];
   const teamAgents = agents.slice(1);
@@ -144,28 +149,22 @@ export default function AgentPreview({
 
       {/* Side-by-side comparison */}
       {(() => {
-        // Sensible cost-of-inaction estimates by business size
-        // Solo: $1,500-4,000/mo, Small: $5,000-15,000/mo, Mid: $30,000-80,000/mo
+        // Cost adjusted for location
+        const costMultiplier = location?.costOfLivingMultiplier ?? 1.0;
+        const sym = location?.currencySymbol ?? '$';
         let totalWithout: number;
 
         if (costData?.totalPerMonth) {
-          // Parse AI-provided cost, but sanity-check it
           const parsed = parseInt(costData.totalPerMonth.replace(/[^0-9]/g, '')) || 0;
-          // Cap: solo max $10K, small max $30K, mid max $100K, enterprise max $500K
           const maxCost = employeeCount <= 2 ? 10000 : employeeCount <= 20 ? 30000 : employeeCount <= 200 ? 100000 : 500000;
           totalWithout = Math.min(parsed, maxCost);
-          if (totalWithout < 500) totalWithout = employeeCount <= 2 ? 1800 : employeeCount <= 20 ? 8000 : 50000;
+          if (totalWithout < 500) totalWithout = Math.round((employeeCount <= 2 ? 1800 : employeeCount <= 20 ? 8000 : 50000) * costMultiplier);
         } else {
-          // Fallback: reasonable estimates per employee count
-          if (employeeCount <= 2) {
-            totalWithout = 1800; // solo: ~$1,800/mo in lost bookings + admin time
-          } else if (employeeCount <= 20) {
-            totalWithout = 3000 + (employeeCount * 250); // small team
-          } else if (employeeCount <= 200) {
-            totalWithout = 10000 + (employeeCount * 500); // mid-size
-          } else {
-            totalWithout = 50000 + (employeeCount * 300); // enterprise
-          }
+          const base = employeeCount <= 2 ? 1800
+            : employeeCount <= 20 ? 3000 + (employeeCount * 250)
+            : employeeCount <= 200 ? 10000 + (employeeCount * 500)
+            : 50000 + (employeeCount * 300);
+          totalWithout = Math.round(base * costMultiplier);
         }
 
         const priceNum = parseInt(estimatedPrice.replace(/[^0-9]/g, '')) || 75;
@@ -196,7 +195,7 @@ export default function AgentPreview({
                 </div>
               ))}
               <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ef4444' }}>
-                ~${totalWithout.toLocaleString()}/mo
+                ~{sym}{totalWithout.toLocaleString()}/mo
               </div>
               <div style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.3)' }}>
                 in productivity loss and missed revenue

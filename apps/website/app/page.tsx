@@ -374,6 +374,7 @@ export default function HomePage() {
                     employeeCount={employeeCount}
                     costData={s.costOfInaction}
                     painPoints={s.painPoints}
+                    location={s.location}
                     onStartTrial={() => alert('Trial signup coming soon! This will connect to Stripe.')}
                     onAskQuestion={() => setShowChatBelowPreview(true)}
                   />
