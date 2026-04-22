@@ -142,18 +142,39 @@ export default function AgentPreview({
         </div>
       </div>
 
-      {/* Side-by-side comparison — uses AI-extracted cost data when available */}
+      {/* Side-by-side comparison */}
       {(() => {
-        // Use AI-provided cost data if available, otherwise calculate
-        const hasCostData = costData?.totalPerMonth;
-        const hourlyRate = 25;
-        const workDays = 250;
-        const timeWaste = hasCostData ? 0 : Math.round(employeeCount * 0.28 * 8 * hourlyRate * workDays / 12);
-        const missedOps = hasCostData ? 0 : (employeeCount <= 5 ? 800 : employeeCount <= 20 ? 3000 : employeeCount <= 100 ? 10000 : 30000);
-        const turnover = hasCostData ? 0 : Math.round(employeeCount * 0.15 * hourlyRate * 8 * 130 / 12);
-        const totalWithout = hasCostData ? parseInt(costData!.totalPerMonth!.replace(/[^0-9]/g, '')) || 5000 : timeWaste + missedOps + turnover;
+        // Sensible cost-of-inaction estimates by business size
+        // Solo: $1,500-4,000/mo, Small: $5,000-15,000/mo, Mid: $30,000-80,000/mo
+        let totalWithout: number;
+
+        if (costData?.totalPerMonth) {
+          // Parse AI-provided cost, but sanity-check it
+          const parsed = parseInt(costData.totalPerMonth.replace(/[^0-9]/g, '')) || 0;
+          // Cap: solo max $10K, small max $30K, mid max $100K, enterprise max $500K
+          const maxCost = employeeCount <= 2 ? 10000 : employeeCount <= 20 ? 30000 : employeeCount <= 200 ? 100000 : 500000;
+          totalWithout = Math.min(parsed, maxCost);
+          if (totalWithout < 500) totalWithout = employeeCount <= 2 ? 1800 : employeeCount <= 20 ? 8000 : 50000;
+        } else {
+          // Fallback: reasonable estimates per employee count
+          if (employeeCount <= 2) {
+            totalWithout = 1800; // solo: ~$1,800/mo in lost bookings + admin time
+          } else if (employeeCount <= 20) {
+            totalWithout = 3000 + (employeeCount * 250); // small team
+          } else if (employeeCount <= 200) {
+            totalWithout = 10000 + (employeeCount * 500); // mid-size
+          } else {
+            totalWithout = 50000 + (employeeCount * 300); // enterprise
+          }
+        }
+
         const priceNum = parseInt(estimatedPrice.replace(/[^0-9]/g, '')) || 75;
-        const userPainPoints = painPoints ?? ['Missed opportunities from slow responses', 'Time lost to manual coordination', 'Knowledge leaves when employees do', 'Inconsistent processes across your team'];
+        const userPainPoints = painPoints ?? [
+          employeeCount <= 2 ? 'Missed calls and bookings while you\'re busy' : 'Time lost to coordination across teams',
+          employeeCount <= 2 ? 'Hours spent on admin instead of clients' : `${Math.round(employeeCount * 0.28 * 8)} hours/day lost to admin tasks`,
+          employeeCount <= 2 ? 'Clients who don\'t rebook because you forgot to follow up' : 'Inconsistent processes across departments',
+          employeeCount <= 2 ? 'No visibility into what\'s working and what\'s not' : 'Knowledge leaves when employees do',
+        ];
 
         return (
           <div style={{
