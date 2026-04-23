@@ -123,7 +123,8 @@ export async function POST(request: Request) {
 
     const validatedMessages = messages as ConversationMessage[];
     const systemPrompt = getOnboardingSystemPrompt(collectedData ?? {});
-    const maxTokens = validatedMessages.length >= 2 ? 2000 : 800;
+    // First message may include cost education + full team = needs room
+    const maxTokens = validatedMessages.length >= 1 ? 3000 : 1000;
 
     // Main conversation call
     const result = await generateText({
