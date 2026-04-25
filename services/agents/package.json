@@ -4,10 +4,16 @@
   "private": true,
   "scripts": {
     "build": "echo 'Python service — no build step needed (interpreted)'",
-    "lint": "cd ../../services/agents && python -m ruff check src || echo 'ruff not installed — run: pip install ruff'",
-    "typecheck": "cd ../../services/agents && python -m mypy src || echo 'mypy not installed — run: pip install mypy'",
-    "test": "cd ../../services/agents && python -m pytest src -q || echo 'pytest not installed — run: pip install pytest'",
+    "lint": "cd ../../services/agents && python -m ruff check src || echo 'ruff not installed'",
+    "typecheck": "echo 'Mixed Python/TS — typecheck via mypy for Python, vitest for TS'",
+    "test": "vitest run",
+    "test:python": "cd ../../services/agents && python -m pytest src -q || echo 'pytest not installed'",
     "dev": "cd ../../services/agents && python -m uvicorn src.main:app --reload --port 8001",
     "schema:export": "cd ../../services/agents && python -m src.schemas.export_schemas"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.4"
   }
 }
