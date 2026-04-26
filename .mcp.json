@@ -3,6 +3,14 @@
     "supabase": {
       "type": "http",
       "url": "https://mcp.supabase.com/mcp?project_ref=ovziorzrdfsonpahrlgz"
+    },
+    "whatsapp": {
+      "command": "npx",
+      "args": ["-y", "@sjawhar/whatsapp-mcp"]
+    },
+    "gmail": {
+      "command": "npx",
+      "args": ["-y", "gmail-mcp"]
     }
   }
 }

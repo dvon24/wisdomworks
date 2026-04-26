@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import AgentPreview, { generateTeamForBusiness } from './components/AgentPreview';
+import ConnectTools from './components/ConnectTools';
 
 /** Your local timelapse videos in public/ */
 const BG_VIDEOS = [
@@ -51,6 +52,8 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [showChatBelowPreview, setShowChatBelowPreview] = useState(false);
+  const [showConnectTools, setShowConnectTools] = useState(false);
+  const [agentsDeployed, setAgentsDeployed] = useState(false);
   const [businessName, setBusinessName] = useState('');
   const [structuredData, setStructuredData] = useState<any>(null);
   const [inputPlaceholder, setInputPlaceholder] = useState('Describe your business...');
@@ -375,14 +378,58 @@ export default function HomePage() {
                     costData={s.costOfInaction}
                     painPoints={s.painPoints}
                     location={s.location}
-                    onStartTrial={() => alert('Trial signup coming soon! This will connect to Stripe.')}
+                    onStartTrial={() => setShowConnectTools(true)}
                     onAskQuestion={() => setShowChatBelowPreview(true)}
                   />
                 </div>
               </div>
 
+              {/* Connect Tools — appears when "Start Trial" clicked */}
+              {showConnectTools && !agentsDeployed && (
+                <div style={{
+                  marginTop: '1.5rem', position: 'relative', borderRadius: '16px', overflow: 'hidden',
+                  border: '1px solid rgba(255, 255, 255, 0.08)', animation: 'fadeIn 0.5s ease',
+                }}>
+                  <div style={{
+                    position: 'absolute', inset: 0,
+                    background: 'linear-gradient(to right, rgba(10, 10, 30, 0.85) 0%, rgba(10, 10, 30, 0.5) 40%, rgba(10, 10, 30, 0.15) 70%, rgba(10, 10, 30, 0.0) 100%)',
+                    backdropFilter: 'blur(40px)',
+                    WebkitMaskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
+                    maskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
+                    zIndex: 0,
+                  }} />
+                  <div style={{ position: 'relative', zIndex: 1, padding: '1.5rem' }}>
+                    <ConnectTools
+                      onComplete={() => {
+                        setShowConnectTools(false);
+                        setAgentsDeployed(true);
+                      }}
+                      onSkip={() => setShowConnectTools(false)}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Agents Deployed confirmation */}
+              {agentsDeployed && (
+                <div style={{
+                  marginTop: '1.5rem', padding: '2rem', borderRadius: '16px', textAlign: 'center',
+                  background: 'rgba(34, 197, 94, 0.1)', border: '1px solid rgba(34, 197, 94, 0.2)',
+                  animation: 'fadeIn 0.8s ease',
+                }}>
+                  <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>🚀</div>
+                  <h3 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.5rem' }}>Your AI Team is Live!</h3>
+                  <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)', marginBottom: '1rem' }}>
+                    Your agents are deployed and ready. You'll receive your first briefing shortly.
+                  </p>
+                  <p style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.5)' }}>
+                    Text your personal assistant anytime — they're always available.
+                  </p>
+                </div>
+              )}
+
               {/* Chat below preview — appears when "Ask Questions" clicked */}
-              {showChatBelowPreview && (
+              {showChatBelowPreview && !showConnectTools && (
                 <div style={{
                   marginTop: '1.5rem', position: 'relative', borderRadius: '16px', overflow: 'hidden',
                   border: '1px solid rgba(255, 255, 255, 0.08)',
