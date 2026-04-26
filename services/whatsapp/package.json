@@ -1,0 +1,17 @@
+{
+  "name": "@wisdomworks/whatsapp",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "start": "npx tsx server.ts",
+    "dev": "npx tsx watch server.ts"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.5",
+    "tsx": "^4.19.0"
+  }
+}

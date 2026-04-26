@@ -174,7 +174,11 @@ export default function AgentPreview({
           totalWithout = Math.round(base * costMultiplier);
         }
 
-        const priceNum = parseInt(estimatedPrice.replace(/[^0-9]/g, '')) || 75;
+        // Parse price — handle formats like "$90-112/month", "Est. $75-100/month", "fraction of $8,000"
+        // Extract first reasonable number (under 50,000)
+        const priceMatches = estimatedPrice.match(/\d[\d,]*/g) ?? [];
+        const priceNumbers = priceMatches.map((m) => parseInt(m.replace(/,/g, ''))).filter((n) => n > 0 && n < 50000);
+        const priceNum = priceNumbers.length > 0 ? priceNumbers[0]! : 75;
         const userPainPoints = painPoints ?? [
           employeeCount <= 2 ? 'Missed calls and bookings while you\'re busy' : 'Time lost to coordination across teams',
           employeeCount <= 2 ? 'Hours spent on admin instead of clients' : `${Math.round(employeeCount * 0.28 * 8)} hours/day lost to admin tasks`,
@@ -234,7 +238,7 @@ export default function AgentPreview({
                 {estimatedPrice}
               </div>
               <div style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.3)' }}>
-                {Math.round((1 - priceNum / totalWithout) * 100)}% less than what you're losing
+                {totalWithout > priceNum ? `${Math.round((1 - priceNum / totalWithout) * 100)}% less than what you're losing` : 'A fraction of inefficiency costs'}
               </div>
             </div>
           </div>

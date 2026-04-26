@@ -41,7 +41,8 @@ export default function ConnectTools({ onComplete, onSkip }: ConnectToolsProps) 
 
       try {
         // Connect to WhatsApp API — streams QR codes via SSE
-        const eventSource = new EventSource('/api/whatsapp?tenantId=default');
+        // Connects to standalone WhatsApp server on port 3002
+        const eventSource = new EventSource('http://localhost:3002/connect?tenantId=default');
 
         eventSource.onmessage = (event) => {
           const data = JSON.parse(event.data);
