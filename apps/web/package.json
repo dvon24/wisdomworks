@@ -15,11 +15,13 @@
     "@wisdomworks/ui": "workspace:*",
     "nats": "^2.29.3",
     "next": "16.2.0",
+    "nodemailer": "^8.0.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
+    "@types/nodemailer": "^8.0.0",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
     "@wisdomworks/eslint-config": "workspace:*",
