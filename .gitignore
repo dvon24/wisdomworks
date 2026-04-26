@@ -47,4 +47,7 @@ src-tauri/target/
 # BMAD internals (keep _bmad-output for planning artifacts)
 _bmad/
 
+# WhatsApp sessions (per-tenant auth)
+.whatsapp-sessions/
+
 .vercel

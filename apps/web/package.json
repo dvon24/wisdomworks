@@ -11,17 +11,20 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc.9",
     "@wisdomworks/auth": "workspace:*",
     "@wisdomworks/ui": "workspace:*",
     "nats": "^2.29.3",
     "next": "16.2.0",
     "nodemailer": "^8.0.6",
+    "qrcode": "^1.5.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
     "@types/nodemailer": "^8.0.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
     "@wisdomworks/eslint-config": "workspace:*",
