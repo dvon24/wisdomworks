@@ -7,7 +7,7 @@
     "dev": "npx tsx watch server.ts"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "@whiskeysockets/baileys": "6.7.21",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
