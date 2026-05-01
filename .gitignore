@@ -41,6 +41,9 @@ src-tauri/target/
 *.log
 *.tsbuildinfo
 
+# Large media files
+*.mp4
+
 # Claude Code
 .claude/
 
