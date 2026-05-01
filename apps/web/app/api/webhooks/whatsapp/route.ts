@@ -9,7 +9,7 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN ?? 'wisdomworks-whatsapp-verify';
+const VERIFY_TOKEN = 'wisdomworks-whatsapp-verify';
 const GRAPH_API = 'https://graph.facebook.com/v25.0';
 
 /**
