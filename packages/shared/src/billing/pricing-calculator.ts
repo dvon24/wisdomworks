@@ -17,6 +17,62 @@ const TOKEN_COSTS = {
 
 type ModelTier = keyof typeof TOKEN_COSTS;
 
+// ─── Business Complexity Profiles ───
+// Business type determines what KIND of work agents do, which determines model mix
+
+interface ComplexityProfile {
+  /** Multiplier on base cost — complex work costs more */
+  costMultiplier: number;
+  /** Override model tier for client-facing agents */
+  clientFacingTier: ModelTier;
+  /** Override model tier for analysis/strategy agents */
+  analysisTier: ModelTier;
+  /** How often oversight needs to run (higher = more frequent) */
+  oversightFrequency: number;
+}
+
+const BUSINESS_COMPLEXITY: Record<string, ComplexityProfile> = {
+  // Simple operations — mostly scheduling, reminders, basic comms
+  beauty: { costMultiplier: 1.0, clientFacingTier: 'haiku', analysisTier: 'haiku', oversightFrequency: 0.5 },
+  salon: { costMultiplier: 1.0, clientFacingTier: 'haiku', analysisTier: 'haiku', oversightFrequency: 0.5 },
+  restaurant: { costMultiplier: 1.1, clientFacingTier: 'haiku', analysisTier: 'sonnet', oversightFrequency: 0.5 },
+  retail: { costMultiplier: 1.1, clientFacingTier: 'haiku', analysisTier: 'sonnet', oversightFrequency: 0.5 },
+  fitness: { costMultiplier: 1.0, clientFacingTier: 'haiku', analysisTier: 'haiku', oversightFrequency: 0.5 },
+  cleaning: { costMultiplier: 1.0, clientFacingTier: 'haiku', analysisTier: 'haiku', oversightFrequency: 0.5 },
+
+  // Moderate complexity — content, sales, coordination
+  marketing: { costMultiplier: 1.8, clientFacingTier: 'sonnet', analysisTier: 'sonnet', oversightFrequency: 1.0 },
+  real_estate: { costMultiplier: 1.5, clientFacingTier: 'sonnet', analysisTier: 'sonnet', oversightFrequency: 1.0 },
+  ecommerce: { costMultiplier: 1.3, clientFacingTier: 'haiku', analysisTier: 'sonnet', oversightFrequency: 0.8 },
+  construction: { costMultiplier: 1.4, clientFacingTier: 'haiku', analysisTier: 'sonnet', oversightFrequency: 1.0 },
+  logistics: { costMultiplier: 1.4, clientFacingTier: 'haiku', analysisTier: 'sonnet', oversightFrequency: 1.0 },
+  healthcare: { costMultiplier: 1.6, clientFacingTier: 'sonnet', analysisTier: 'sonnet', oversightFrequency: 1.5 },
+  education: { costMultiplier: 1.3, clientFacingTier: 'sonnet', analysisTier: 'sonnet', oversightFrequency: 0.8 },
+
+  // High complexity — analysis, compliance, reasoning-heavy
+  legal: { costMultiplier: 2.5, clientFacingTier: 'sonnet', analysisTier: 'opus', oversightFrequency: 2.0 },
+  finance: { costMultiplier: 2.3, clientFacingTier: 'sonnet', analysisTier: 'opus', oversightFrequency: 2.0 },
+  accounting: { costMultiplier: 2.3, clientFacingTier: 'sonnet', analysisTier: 'opus', oversightFrequency: 2.0 },
+  insurance: { costMultiplier: 2.0, clientFacingTier: 'sonnet', analysisTier: 'opus', oversightFrequency: 1.5 },
+  consulting: { costMultiplier: 2.0, clientFacingTier: 'sonnet', analysisTier: 'opus', oversightFrequency: 1.5 },
+  technology: { costMultiplier: 2.8, clientFacingTier: 'sonnet', analysisTier: 'opus', oversightFrequency: 2.0 },
+  engineering: { costMultiplier: 2.5, clientFacingTier: 'sonnet', analysisTier: 'opus', oversightFrequency: 2.0 },
+  defense: { costMultiplier: 3.0, clientFacingTier: 'sonnet', analysisTier: 'opus', oversightFrequency: 3.0 },
+};
+
+/** Default complexity for unknown business types */
+const DEFAULT_COMPLEXITY: ComplexityProfile = {
+  costMultiplier: 1.5,
+  clientFacingTier: 'haiku',
+  analysisTier: 'sonnet',
+  oversightFrequency: 1.0,
+};
+
+function getComplexity(businessType: string): ComplexityProfile {
+  const key = businessType.toLowerCase().replace(/[^a-z]/g, '_');
+  return BUSINESS_COMPLEXITY[key] ?? DEFAULT_COMPLEXITY;
+}
+
 // ─── Agent Cost Profiles ───
 
 /** Estimated monthly token usage per agent tier, based on task mix */
@@ -122,12 +178,15 @@ const PLATFORM_FEE = 5;     // Base platform cost per tenant (hosting, storage, 
  * Calculate the monthly price for a customer based on their profile.
  */
 export function calculatePricing(input: PricingInput): PricingBreakdown {
-  const agents = determineAgents(input);
+  const complexity = getComplexity(input.businessType);
+  const agents = determineAgents(input, complexity);
 
   // Calculate token costs for each agent
   const agentCosts = agents.map((agent) => {
     const profile = AGENT_PROFILES[agent.profileKey] ?? AGENT_PROFILES.employee_assistant!;
-    const costs = TOKEN_COSTS[profile.tier];
+    // Use complexity-adjusted tier if the agent has one
+    const effectiveTier = agent.tierOverride ?? profile.tier;
+    const costs = TOKEN_COSTS[effectiveTier];
 
     // Scale interactions by client volume
     const volumeMultiplier = getVolumeMultiplier(input.clientVolumeMonthly, agent.profileKey);
@@ -144,7 +203,7 @@ export function calculatePricing(input: PricingInput): PricingBreakdown {
 
     return {
       role: agent.role,
-      tier: profile.tier,
+      tier: effectiveTier,
       monthlyCost: inputCost + outputCost,
       inputTokens: uncachedInputTokens + cachedInputTokens,
       outputTokens,
@@ -152,7 +211,9 @@ export function calculatePricing(input: PricingInput): PricingBreakdown {
     };
   });
 
-  const totalCost = agentCosts.reduce((sum, a) => sum + a.monthlyCost, 0) + PLATFORM_FEE;
+  // Apply complexity multiplier — complex businesses generate longer outputs, more reasoning
+  const rawTokenCost = agentCosts.reduce((sum, a) => sum + a.monthlyCost, 0);
+  const totalCost = (rawTokenCost * complexity.costMultiplier) + PLATFORM_FEE;
   const totalInputTokens = agentCosts.reduce((sum, a) => sum + a.inputTokens, 0);
   const totalOutputTokens = agentCosts.reduce((sum, a) => sum + a.outputTokens, 0);
   const totalCachedTokens = agentCosts.reduce((sum, a) => sum + a.cachedTokens, 0);
@@ -194,54 +255,62 @@ export function calculatePricing(input: PricingInput): PricingBreakdown {
 interface AgentSpec {
   role: string;
   profileKey: string;
+  /** Override the default model tier based on business complexity */
+  tierOverride?: ModelTier;
 }
 
-function determineAgents(input: PricingInput): AgentSpec[] {
+function determineAgents(input: PricingInput, complexity: ComplexityProfile): AgentSpec[] {
   const agents: AgentSpec[] = [];
   const employeeCount = input.employeeCount || 1;
 
-  // Every customer gets a personal assistant (Tier 1)
-  agents.push({ role: 'Personal Assistant', profileKey: 'personal_assistant' });
+  // Every customer gets a personal assistant — tier based on complexity
+  // Law firm owner gets Sonnet PA, nail salon owner gets Haiku PA
+  agents.push({
+    role: 'Personal Assistant',
+    profileKey: 'personal_assistant',
+    tierOverride: complexity.analysisTier === 'opus' ? 'sonnet' : complexity.clientFacingTier === 'sonnet' ? 'sonnet' : undefined,
+  });
 
   if (employeeCount <= 2) {
     // Solo / micro business
-    agents.push({ role: 'Client Manager', profileKey: 'coordination' });
+    agents.push({ role: 'Client Manager', profileKey: 'coordination', tierOverride: complexity.clientFacingTier });
     if (input.communicationChannels?.length > 1) {
-      agents.push({ role: 'Communications', profileKey: 'coordination' });
+      agents.push({ role: 'Communications', profileKey: 'coordination', tierOverride: complexity.clientFacingTier });
     }
   } else if (employeeCount <= 20) {
     // Small team
-    agents.push({ role: 'Client Manager', profileKey: 'coordination' });
+    agents.push({ role: 'Client Manager', profileKey: 'coordination', tierOverride: complexity.clientFacingTier });
     agents.push({ role: 'Scheduler', profileKey: 'coordination' });
-    agents.push({ role: 'Analytics', profileKey: 'analytics' });
+    agents.push({ role: 'Analytics', profileKey: 'analytics', tierOverride: complexity.analysisTier });
     // Department heads
     const deptCount = Math.min(Math.floor(employeeCount / 5), 4);
     for (let i = 0; i < deptCount; i++) {
-      agents.push({ role: `Department Lead ${i + 1}`, profileKey: 'department_head' });
+      agents.push({ role: `Department Lead ${i + 1}`, profileKey: 'department_head', tierOverride: complexity.analysisTier });
     }
     // Employee assistants
     for (let i = 0; i < employeeCount; i++) {
-      agents.push({ role: `Employee ${i + 1} Assistant`, profileKey: 'employee_assistant' });
+      agents.push({ role: `Employee ${i + 1} Assistant`, profileKey: 'employee_assistant', tierOverride: complexity.clientFacingTier });
     }
   } else {
     // Mid-size / enterprise
-    agents.push({ role: 'Operations', profileKey: 'department_head' });
-    agents.push({ role: 'Client Relations', profileKey: 'coordination' });
-    agents.push({ role: 'Analytics', profileKey: 'analytics' });
+    agents.push({ role: 'Operations', profileKey: 'department_head', tierOverride: complexity.analysisTier });
+    agents.push({ role: 'Client Relations', profileKey: 'coordination', tierOverride: complexity.clientFacingTier });
+    agents.push({ role: 'Analytics', profileKey: 'analytics', tierOverride: complexity.analysisTier });
     agents.push({ role: 'HR', profileKey: 'coordination' });
-    agents.push({ role: 'Compliance', profileKey: 'analytics' });
+    agents.push({ role: 'Compliance', profileKey: 'analytics', tierOverride: complexity.analysisTier });
     // Department heads (1 per 10 employees)
     const deptCount = Math.min(Math.ceil(employeeCount / 10), 10);
     for (let i = 0; i < deptCount; i++) {
-      agents.push({ role: `Department Lead ${i + 1}`, profileKey: 'department_head' });
+      agents.push({ role: `Department Lead ${i + 1}`, profileKey: 'department_head', tierOverride: complexity.analysisTier });
     }
     // Employee assistants
     for (let i = 0; i < employeeCount; i++) {
-      agents.push({ role: `Employee ${i + 1} Assistant`, profileKey: 'employee_assistant' });
+      agents.push({ role: `Employee ${i + 1} Assistant`, profileKey: 'employee_assistant', tierOverride: complexity.clientFacingTier });
     }
   }
 
-  // Oversight agent — always present
+  // Oversight agent — frequency scales with complexity
+  // Law firm needs more oversight than a nail salon
   agents.push({ role: 'Quality Oversight', profileKey: 'oversight' });
 
   return agents;
