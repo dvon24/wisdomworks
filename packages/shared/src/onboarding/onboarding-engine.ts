@@ -28,6 +28,8 @@ export interface OnboardingData {
   industry?: string;
   businessType?: string;
   employeeCount?: number;
+  clientVolumeMonthly?: number;
+  communicationChannels?: string[];
   useCase?: 'business' | 'personal';
   teamStructure?: string[];
   keyWorkflows?: string[];
@@ -38,6 +40,7 @@ export interface OnboardingData {
   budgetRange?: string;
   contactEmail?: string;
   contactPhone?: string;
+  websiteUrl?: string;
 }
 
 export interface ConversationMessage {
@@ -150,7 +153,15 @@ If the user tells you: what they do, roughly how many clients/employees, and wha
 Only ask ONE question if you truly cannot determine their needs. Examples of when to skip:
 - "I do eyebrows and bridal styling, 20-30 clients a month" → SKIP to Phase 2. You know enough.
 - "I have a logistics company with 100 employees" → SKIP to Phase 2.
-- "I need help with my business" → Ask ONE question: "What kind of business do you run?"
+- "I need help with my business" → Ask ONE question: "What kind of business do you run, and roughly how many clients do you serve per month?"
+
+KEY DATA TO CAPTURE (naturally, not as an interrogation):
+- Client/customer volume per month — this determines their AI team size and plan
+- Employee count — each gets a personal agent
+- Communication channels they use (WhatsApp, email, Instagram, phone)
+- Website URL if they have one
+- Existing tools (scheduling, CRM, social media)
+If the user front-loads this info, capture it and move on. Never ask for something they already told you.
 
 NEVER ask "What's your biggest headache?" or "Do you have team members?" if they already told you. NEVER ask permission to show the team — just show it.
 

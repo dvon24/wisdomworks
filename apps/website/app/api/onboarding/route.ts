@@ -54,6 +54,9 @@ Extract this JSON structure (include ALL fields, use null if unknown):
   "businessName": "name of the business or null",
   "businessType": "industry/type or null",
   "employeeCount": number or null,
+  "clientVolumeMonthly": number or null (how many clients/customers per month),
+  "communicationChannels": ["WhatsApp", "Email", "Instagram", "Phone", etc — channels the user mentioned or would need],
+  "websiteUrl": "their website URL if mentioned, or null",
   "phase": "understanding" | "educating" | "recommending" | "discussing",
   "showAgentPreview": true if AI presented an agent team recommendation,
   "agents": [
