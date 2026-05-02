@@ -39,9 +39,12 @@ export function createDefaultSecurityConfig(tenantId: string, ownerId: string): 
         permissions: ['read', 'write', 'deploy'],
         active: true,
       },
-      // Add phone number when Twilio is configured
-      // { type: 'sms', identifier: '+1234567890', permissions: ['read', 'write', 'deploy'], active: true },
-      // { type: 'whatsapp', identifier: '+1234567890', permissions: ['read', 'write'], active: true },
+      {
+        type: 'whatsapp',
+        identifier: '+491703604562',
+        permissions: ['read', 'write', 'deploy'],
+        active: true,
+      },
     ],
     dailyPin: generateDailyPin(),
     pinExpiresAt: getNextMidnight(),
