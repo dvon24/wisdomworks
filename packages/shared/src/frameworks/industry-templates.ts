@@ -100,7 +100,7 @@ export const PROFESSIONAL_SERVICES_TEMPLATE: IndustryTemplate = {
       modelRouting: {
         architecture: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
         technology_strategy: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
-        technical_review: { provider: 'openai', model: 'gpt-5.4' },
+        technical_review: { provider: 'openai', model: 'gpt-5.5' },
       },
       outputChannels: ['email', 'dashboard'],
       governanceRules: [{ action: '*', effect: 'allow' }],
@@ -111,7 +111,7 @@ export const PROFESSIONAL_SERVICES_TEMPLATE: IndustryTemplate = {
       modelRouting: {
         content_creation: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
         campaign_strategy: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
-        analytics: { provider: 'openai', model: 'gpt-5.4' },
+        analytics: { provider: 'openai', model: 'gpt-5.5' },
       },
       outputChannels: ['email', 'dashboard'],
       governanceRules: [
@@ -124,7 +124,7 @@ export const PROFESSIONAL_SERVICES_TEMPLATE: IndustryTemplate = {
       modelRouting: {
         test_planning: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
         quality_review: { provider: 'anthropic', model: 'claude-sonnet-4-6-20260416' },
-        automation: { provider: 'openai', model: 'gpt-5.4' },
+        automation: { provider: 'openai', model: 'gpt-5.5' },
       },
       outputChannels: ['email', 'dashboard'],
       governanceRules: [{ action: '*', effect: 'allow' }],

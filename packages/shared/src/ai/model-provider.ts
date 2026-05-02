@@ -98,37 +98,37 @@ export const DEFAULT_ROUTING_TABLE: ModelRoutingTable = {
     task: 'classification',
     provider: 'anthropic',
     model: 'claude-opus-4-7-20260420',
-    fallback: { provider: 'openai', model: 'gpt-5.4' },
+    fallback: { provider: 'openai', model: 'gpt-5.5' },
   },
   code_generation: {
     task: 'code_generation',
     provider: 'anthropic',
     model: 'claude-opus-4-7-20260420',
-    fallback: { provider: 'openai', model: 'gpt-5.4' },
+    fallback: { provider: 'openai', model: 'gpt-5.5' },
   },
   writing: {
     task: 'writing',
     provider: 'anthropic',
     model: 'claude-sonnet-4-6-20260416',
-    fallback: { provider: 'openai', model: 'gpt-5.4' },
+    fallback: { provider: 'openai', model: 'gpt-5.5' },
   },
   analysis: {
     task: 'analysis',
     provider: 'anthropic',
     model: 'claude-opus-4-7-20260420',
-    fallback: { provider: 'openai', model: 'gpt-5.4' },
+    fallback: { provider: 'openai', model: 'gpt-5.5' },
   },
   coaching: {
     task: 'coaching',
     provider: 'anthropic',
     model: 'claude-sonnet-4-6-20260416',
-    fallback: { provider: 'openai', model: 'gpt-5.4' },
+    fallback: { provider: 'openai', model: 'gpt-5.5' },
   },
   onboarding: {
     task: 'onboarding',
     provider: 'anthropic',
     model: 'claude-sonnet-4-6-20260416',
-    fallback: { provider: 'openai', model: 'gpt-5.4' },
+    fallback: { provider: 'openai', model: 'gpt-5.5' },
   },
   // ROUTINE TASKS — fast models, overseen by critical model
   // The oversight model (classification/analysis) spot-checks routine output
@@ -150,7 +150,7 @@ export const DEFAULT_ROUTING_TABLE: ModelRoutingTable = {
     task: 'oversight',
     provider: 'anthropic',
     model: 'claude-opus-4-7-20260420',
-    fallback: { provider: 'openai', model: 'gpt-5.4' },
+    fallback: { provider: 'openai', model: 'gpt-5.5' },
   },
   // EMBEDDINGS — specialized, no reasoning needed
   embedding: {

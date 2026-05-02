@@ -100,7 +100,7 @@ export function createLeadershipCoachSpec(
       coaching: {
         provider: 'anthropic',
         model: 'claude-sonnet-4-6-20260416',
-        fallback: { provider: 'openai', model: 'gpt-5.4' },
+        fallback: { provider: 'openai', model: 'gpt-5.5' },
       },
       scenario_practice: {
         provider: 'anthropic',
