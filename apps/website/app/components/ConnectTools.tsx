@@ -3,10 +3,8 @@
 import { useState } from 'react';
 
 /**
- * Connect Your Tools — onboarding step where the customer links their
- * existing apps to their AI agents. One-time setup.
- *
- * Supported: WhatsApp (QR scan), Email (OAuth), Calendar (OAuth), Instagram (OAuth)
+ * Connect Your Tools — light theme version.
+ * Phone number first (required), then optional integrations.
  */
 
 interface ConnectionStatus {
@@ -22,7 +20,7 @@ interface ConnectToolsProps {
   businessType?: string;
 }
 
-export default function ConnectTools({ onComplete, onSkip, businessName, businessType }: ConnectToolsProps) {
+export default function ConnectTools({ onComplete, businessName, businessType }: ConnectToolsProps) {
   const [status, setStatus] = useState<ConnectionStatus>({
     email: 'disconnected',
     calendar: 'disconnected',
@@ -35,76 +33,51 @@ export default function ConnectTools({ onComplete, onSkip, businessName, busines
 
   const handleConnect = async (tool: keyof ConnectionStatus) => {
     setStatus((prev) => ({ ...prev, [tool]: 'connecting' }));
-
-    // OAuth flow for email, calendar, instagram
-    // In production: opens popup/redirect to OAuth provider
-    // For now: simulate the OAuth flow
-    setTimeout(() => {
-      setStatus((prev) => ({ ...prev, [tool]: 'connected' }));
-    }, 2000);
+    setTimeout(() => setStatus((prev) => ({ ...prev, [tool]: 'connected' })), 2000);
   };
 
   const tools = [
-    {
-      key: 'email' as const,
-      name: 'Email',
-      emoji: '📧',
-      description: 'Daily briefings and detailed reports delivered to your inbox.',
-      required: false,
-    },
-    {
-      key: 'calendar' as const,
-      name: 'Calendar',
-      emoji: '📅',
-      description: 'Booking agent syncs directly with your phone calendar.',
-      required: false,
-    },
-    {
-      key: 'instagram' as const,
-      name: 'Instagram',
-      emoji: '📱',
-      description: 'Marketing agent manages DMs and helps with content.',
-      required: false,
-    },
+    { key: 'email' as const, name: 'Email', emoji: '📧', description: 'Daily briefings and detailed reports.' },
+    { key: 'calendar' as const, name: 'Calendar', emoji: '📅', description: 'Booking syncs to your phone calendar.' },
+    { key: 'instagram' as const, name: 'Instagram', emoji: '📱', description: 'Marketing manages DMs and content.' },
   ];
 
   return (
-    <div style={{ width: '100%', animation: 'fadeIn 0.8s ease-out' }}>
-      <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-        <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.4)', marginBottom: '0.3rem' }}>
-          🔗 One-time setup
-        </div>
-        <h3 style={{ fontSize: '1.4rem', fontWeight: 700 }}>
-          Connect Your Tools
-        </h3>
-        <p style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.5)', marginTop: '0.3rem' }}>
-          Your agents need access to work for you. This takes 30 seconds.
-        </p>
-      </div>
-
-      {/* Phone number input — links WhatsApp to their account */}
-      <div style={{
-        padding: '1rem 1.2rem', borderRadius: '12px', marginBottom: '1rem',
-        background: phoneSaved ? 'rgba(34, 197, 94, 0.1)' : 'rgba(99, 102, 241, 0.08)',
-        border: `1px solid ${phoneSaved ? 'rgba(34, 197, 94, 0.3)' : 'rgba(99, 102, 241, 0.2)'}`,
-      }}>
-        <div style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+    <div style={{ width: '100%' }}>
+      {/* Phone number — required */}
+      <div
+        className={phoneSaved ? 'glass' : ''}
+        style={{
+          padding: '1.25rem',
+          borderRadius: 14,
+          marginBottom: '1rem',
+          background: phoneSaved ? 'rgba(44, 176, 112, 0.08)' : 'var(--accent-soft)',
+          border: `1px solid ${phoneSaved ? 'rgba(44, 176, 112, 0.3)' : 'var(--accent-line)'}`,
+        }}
+      >
+        <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>
           Your WhatsApp Number
         </div>
-        <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)', marginBottom: '0.8rem' }}>
-          This is how your AI assistant reaches you. Include country code.
+        <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 12, letterSpacing: '0.04em' }}>
+          THIS IS HOW YOUR ASSISTANT REACHES YOU
         </div>
         {!phoneSaved ? (
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: 8 }}>
             <input
               type="tel"
               placeholder="+1 555 123 4567"
               value={phoneNumber}
               onChange={(e) => setPhoneNumber(e.target.value)}
               style={{
-                flex: 1, padding: '0.6rem 1rem', borderRadius: '8px',
-                border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.06)',
-                color: 'white', fontSize: '0.9rem', outline: 'none',
+                flex: 1,
+                padding: '10px 14px',
+                borderRadius: 10,
+                border: '1px solid var(--glass-border-strong)',
+                background: 'rgba(255,255,255,0.65)',
+                color: 'var(--text)',
+                fontSize: 13.5,
+                outline: 'none',
+                fontFamily: 'inherit',
               }}
             />
             <button
@@ -116,117 +89,87 @@ export default function ConnectTools({ onComplete, onSkip, businessName, busines
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ phoneNumber, businessName, businessType }),
                   });
-                  // Save phone for deploy-complete step
                   localStorage.setItem('wisdomworks_phone', phoneNumber);
                   setPhoneSaved(true);
                 } catch (e) {
                   console.error('Link phone error:', e);
                 }
               }}
-              style={{
-                padding: '0.6rem 1.2rem', borderRadius: '8px', border: 'none',
-                background: '#6366f1', color: 'white', fontSize: '0.85rem',
-                fontWeight: 600, cursor: 'pointer',
-              }}
+              className="btn primary"
+              style={{ padding: '10px 18px', fontSize: 13 }}
             >
               Save
             </button>
           </div>
         ) : (
-          <div style={{ color: 'rgba(34, 197, 94, 0.9)', fontSize: '0.9rem', fontWeight: 600 }}>
-            Connected — your assistant will text you here
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 18, height: 18, borderRadius: '50%', background: 'var(--ok)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 11, fontWeight: 700 }}>✓</div>
+            <span style={{ color: '#1f7a48', fontSize: 13, fontWeight: 500 }}>Connected · {phoneNumber}</span>
           </div>
         )}
       </div>
 
-      {/* Tool connections */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', marginBottom: '1.5rem' }}>
+      {/* Optional tools */}
+      <div className="eyebrow" style={{ marginBottom: 10, paddingLeft: 4 }}>Optional integrations</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.25rem' }}>
         {tools.map((tool) => (
-          <div key={tool.key} style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '1rem 1.2rem', borderRadius: '12px',
-            background: status[tool.key] === 'connected'
-              ? 'rgba(34, 197, 94, 0.1)'
-              : 'rgba(255, 255, 255, 0.04)',
-            border: `1px solid ${status[tool.key] === 'connected' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(255, 255, 255, 0.08)'}`,
-            transition: 'all 0.3s ease',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
-              <span style={{ fontSize: '1.5rem' }}>{tool.emoji}</span>
+          <div
+            key={tool.key}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0.85rem 1rem',
+              borderRadius: 12,
+              background: status[tool.key] === 'connected' ? 'rgba(44, 176, 112, 0.08)' : 'rgba(255, 255, 255, 0.5)',
+              border: `1px solid ${status[tool.key] === 'connected' ? 'rgba(44, 176, 112, 0.3)' : 'var(--glass-border)'}`,
+              transition: 'all 0.3s ease',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <span style={{ fontSize: '1.25rem' }}>{tool.emoji}</span>
               <div>
-                <div style={{ fontSize: '0.95rem', fontWeight: 600 }}>
-                  {tool.name}
-                  {tool.required && <span style={{ fontSize: '0.7rem', color: '#6366f1', marginLeft: '0.5rem' }}>recommended</span>}
-                </div>
-                <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)' }}>
-                  {tool.description}
-                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{tool.name}</div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{tool.description}</div>
               </div>
             </div>
             <button
               onClick={() => handleConnect(tool.key)}
               disabled={status[tool.key] !== 'disconnected'}
-              style={{
-                padding: '0.5rem 1.2rem',
-                borderRadius: '8px',
-                border: 'none',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-                cursor: status[tool.key] === 'disconnected' ? 'pointer' : 'default',
-                background: status[tool.key] === 'connected'
-                  ? 'rgba(34, 197, 94, 0.2)'
-                  : status[tool.key] === 'connecting'
-                    ? 'rgba(99, 102, 241, 0.3)'
-                    : '#6366f1',
-                color: 'white',
-                transition: 'all 0.2s',
-                minWidth: '100px',
-              }}
+              className={status[tool.key] === 'connected' ? 'btn ghost' : 'btn'}
+              style={{ fontSize: 12, padding: '6px 12px', minWidth: 90, justifyContent: 'center' }}
             >
-              {status[tool.key] === 'connected' ? '✓ Connected'
-                : status[tool.key] === 'connecting' ? 'Connecting...'
-                  : 'Connect'}
+              {status[tool.key] === 'connected' ? '✓ Connected' : status[tool.key] === 'connecting' ? 'Connecting…' : 'Connect'}
             </button>
           </div>
         ))}
       </div>
 
       {/* Progress */}
-      <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
-        <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.4)' }}>
-          {connectedCount}/{tools.length + 1} connected
+      <div style={{ marginBottom: '1.25rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+          <span className="eyebrow">Setup Progress</span>
+          <span className="mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>{connectedCount}/{tools.length + 1}</span>
         </div>
-        <div style={{
-          height: '4px', borderRadius: '2px', marginTop: '0.5rem',
-          background: 'rgba(255, 255, 255, 0.1)', overflow: 'hidden',
-        }}>
-          <div style={{
-            height: '100%', borderRadius: '2px',
-            background: '#6366f1',
-            width: `${(connectedCount / (tools.length + 1)) * 100}%`,
-            transition: 'width 0.5s ease',
-          }} />
+        <div style={{ height: 4, borderRadius: 2, background: 'rgba(20,20,30,0.08)', overflow: 'hidden' }}>
+          <div
+            style={{
+              height: '100%',
+              borderRadius: 2,
+              background: 'var(--accent)',
+              width: `${(connectedCount / (tools.length + 1)) * 100}%`,
+              transition: 'width 0.5s ease',
+            }}
+          />
         </div>
       </div>
 
-      {/* Actions */}
-      <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'center' }}>
-        <button onClick={onComplete} disabled={!phoneSaved} style={{
-          padding: '0.7rem 1.8rem', background: phoneSaved ? '#6366f1' : 'rgba(99,102,241,0.5)',
-          color: 'white', border: 'none', borderRadius: '10px', fontSize: '0.9rem', fontWeight: 600,
-          cursor: phoneSaved ? 'pointer' : 'not-allowed',
-        }}>
-          {phoneSaved ? 'Deploy My Agents' : 'Enter your phone number first'}
-        </button>
-        <button onClick={onSkip} style={{
-          padding: '0.7rem 1.8rem', background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.6)',
-          border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', fontSize: '0.9rem', cursor: 'pointer',
-        }}>
-          Skip for now
+      {/* Deploy */}
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+        <button onClick={onComplete} disabled={!phoneSaved} className="btn primary" style={{ padding: '12px 28px', fontSize: 14, opacity: phoneSaved ? 1 : 0.5, cursor: phoneSaved ? 'pointer' : 'not-allowed' }}>
+          {phoneSaved ? 'Deploy My Agents' : 'Save your phone number first'}
         </button>
       </div>
-
-      <style>{`@keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }`}</style>
     </div>
   );
 }

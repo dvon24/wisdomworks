@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WisdomWorks — Onboarding</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@250;300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body, #root { margin: 0; padding: 0; min-height: 100%; }
+  body { background: #0a0a14; font-family: 'Geist', system-ui, sans-serif; color: #1a1a22; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  :root {
+    --accent: #7c3aed; --accent-soft: rgba(124,58,237,0.16); --accent-line: rgba(124,58,237,0.45); --accent-deep: #5b21b6;
+    --text: #1a1a22; --text-dim: rgba(26,26,34,0.7); --text-faint: rgba(26,26,34,0.5);
+    --glass-bg: rgba(255,255,255,0.55); --glass-bg-strong: rgba(255,255,255,0.74);
+    --glass-border: rgba(20,20,30,0.08); --glass-border-strong: rgba(20,20,30,0.14);
+  }
+  .bg-root { position: fixed; inset: 0; z-index: 0; overflow: hidden; }
+  .bg-img { position: absolute; inset: 0; background-size: cover; background-position: center; opacity: 0; transition: opacity 2.2s ease; transform: scale(1.06); animation: kenburns 24s ease-in-out infinite alternate; }
+  .bg-img.active { opacity: 1; }
+  @keyframes kenburns { from { transform: scale(1.04) translate(0,0); } to { transform: scale(1.12) translate(-1.5%, -1%); } }
+  .bg-veil { position: absolute; inset: 0; background: radial-gradient(120% 80% at 30% 20%, rgba(255,255,255,0.5), rgba(255,255,255,0.32) 60%, rgba(255,255,255,0.55)); }
+  .bg-grain { position: absolute; inset: 0; pointer-events: none; opacity: 0.06; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  }
+  .glass { background: var(--glass-bg); backdrop-filter: blur(20px) saturate(140%); -webkit-backdrop-filter: blur(20px) saturate(140%); border: 1px solid var(--glass-border); border-radius: 16px; }
+  .glass-strong { background: var(--glass-bg-strong); backdrop-filter: blur(28px) saturate(140%); -webkit-backdrop-filter: blur(28px) saturate(140%); border: 1px solid var(--glass-border-strong); border-radius: 18px; }
+  .mono { font-family: 'Geist Mono', ui-monospace, monospace; }
+  .eyebrow { font-family: 'Geist Mono', monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-faint); }
+  .num-xxl { font-weight: 250; font-size: 84px; letter-spacing: -0.04em; line-height: 1; }
+  .num-lg { font-weight: 300; font-size: 44px; letter-spacing: -0.03em; line-height: 1.1; }
+  .num-md { font-weight: 400; font-size: 22px; letter-spacing: -0.02em; line-height: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11px; white-space: nowrap; }
+  .pill.info { background: var(--accent-soft); color: var(--accent-deep); border: 1px solid var(--accent-line); }
+  .pill.dim { background: rgba(20,20,30,0.04); color: var(--text-dim); border: 1px solid var(--glass-border); }
+  .pill.ok { background: rgba(34,150,90,0.12); color: #1f7a48; border: 1px solid rgba(34,150,90,0.3); }
+  .pill.bad { background: rgba(200,60,60,0.12); color: #8a2a2a; border: 1px solid rgba(200,60,60,0.3); }
+  .dot { width: 6px; height: 6px; border-radius: 999px; display: inline-block; }
+  .dot.acc { background: var(--accent); box-shadow: 0 0 8px var(--accent-soft); }
+  .btn { background: rgba(255,255,255,0.7); border: 1px solid var(--glass-border); border-radius: 12px; padding: 10px 18px; font: inherit; font-size: 13px; color: var(--text); cursor: pointer; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); transition: all .15s; white-space: nowrap; }
+  .btn:hover { background: rgba(255,255,255,0.9); }
+  .btn.primary { background: var(--accent); color: white; border-color: var(--accent); box-shadow: 0 6px 20px rgba(124,58,237,0.3); }
+  .btn.primary:hover { background: var(--accent-deep); }
+  .btn.ghost { background: transparent; border-color: transparent; }
+  @keyframes breath { 0%,100% { opacity: 0.45; transform: scale(1); } 50% { opacity: 1; transform: scale(1.08); } }
+  .breathe { animation: breath 3s ease-in-out infinite; transform-origin: center; }
+  @keyframes pop-in { from { opacity: 0; transform: scale(0.92) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  .pop-in { animation: pop-in 0.5s cubic-bezier(0.2,0.8,0.3,1.4) both; }
+  @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .msg-in { animation: msg-in 0.35s ease both; }
+</style>
+</head>
+<body>
+  <template id="__bundler_thumbnail">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#f6f5fb"/>
+          <stop offset="100%" stop-color="#e9e6f5"/>
+        </linearGradient>
+      </defs>
+      <rect width="400" height="400" fill="url(#bg)"/>
+      <g fill="none" stroke="#7c3aed" stroke-width="1.6" opacity="0.85">
+        <ellipse cx="200" cy="200" rx="90" ry="32"/>
+        <ellipse cx="200" cy="200" rx="90" ry="32" transform="rotate(60 200 200)"/>
+        <ellipse cx="200" cy="200" rx="90" ry="32" transform="rotate(-60 200 200)"/>
+      </g>
+      <circle cx="200" cy="200" r="14" fill="#7c3aed"/>
+      <text x="200" y="320" text-anchor="middle" font-family="serif" font-style="italic" font-size="22" fill="#1a1a22">because it does.</text>
+    </svg>
+  </template>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script type="text/babel">
+const BG_IMAGES = [
+  "https://images.unsplash.com/photo-1505144808419-1957a94ca61e?auto=format&fit=crop&w=2400&q=80",
+  "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=2400&q=80",
+  "https://images.unsplash.com/photo-1419242902214-272b3f66ee7a?auto=format&fit=crop&w=2400&q=80",
+  "https://images.unsplash.com/photo-1472213984618-c79aaec7fef0?auto=format&fit=crop&w=2400&q=80",
+];
+
+const STARTERS = ["I run an auto repair shop", "Solo brand designer", "20-person dental practice", "Yoga studio · 3 locations"];
+
+// Sample agent team for the auto-repair example. Iris is the personal coordinator (renamed from AutoPro).
+const USER = { first: "Marco", initials: "MR", role: "Owner" };
+const TEAM = [
+  { id: "iris",    label: "Iris",           role: "Personal assistant", desc: "Daily briefings on orders, customer inquiries and business insights. Coordinates your entire team. Reach her anytime via WhatsApp + SMS.", channels: ["WhatsApp", "Phone"],         tier: "Opus",   primary: true, status: "ok" },
+  { id: "parts",   label: "PartsGenie",     role: "Parts specialist",   desc: "Instant parts lookup, compatibility checking, pricing and availability via WhatsApp. Knows your entire inventory.",      channels: ["WhatsApp", "Web chat"], tier: "Sonnet", status: "ok",   skills: "Parts lookup · Compatibility · Full inventory knowledge", needs: "Inventory integration" },
+  { id: "service", label: "ServiceAdvisor", role: "Maintenance expert", desc: "Answers maintenance questions, provides repair guides and schedules service reminders via WhatsApp automation.",        channels: ["WhatsApp"],            tier: "Opus",   status: "ok",   skills: "Repair expertise · Repair guidance · Automated reminders", needs: "Cannot perform physical inspections" },
+  { id: "order",   label: "OrderManager",   role: "Sales & fulfillment", desc: "Processes orders, tracks shipments, handles returns and sends automated WhatsApp updates to customers.",                 channels: ["WhatsApp"],            tier: "Sonnet", status: "ok",   skills: "Order automation · Shipment tracking · Customer updates",  needs: "E-commerce integration" },
+  { id: "care",    label: "CustomerCare",   role: "Support specialist", desc: "Handles all customer service via WhatsApp Business API, escalates complex issues to you.",                                channels: ["WhatsApp"],            tier: "Sonnet", status: "warn", skills: "24/7 support · Issue resolution · Smart escalation",        needs: "Complex issues need human intervention" },
+];
+const TIER_PRICE = { Haiku: 19, Sonnet: 39, Opus: 79 };
+const TIER_DESC = { Haiku: "Fastest, lowest cost", Sonnet: "Day-to-day reasoning", Opus: "Critical reasoning, planning" };
+const TOOLS_AROUND = [
+  { id: "wa", label: "WHATSAPP" },
+  { id: "site", label: "WEBSITE" },
+  { id: "cal", label: "CALENDAR" },
+  { id: "pay", label: "STRIPE" },
+  { id: "acc", label: "QUICKBOOKS" },
+  { id: "inv", label: "INVENTORY" },
+];
+
+function Background() {
+  const [idx, setIdx] = React.useState(0);
+  React.useEffect(() => {
+    const t = setInterval(() => setIdx(i => (i + 1) % BG_IMAGES.length), 11000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div className="bg-root" aria-hidden>
+      {BG_IMAGES.map((src, i) => (
+        <div key={src} className={"bg-img" + (i === idx ? " active" : "")} style={{ backgroundImage: `url(${src})` }} />
+      ))}
+      <div className="bg-veil" />
+      <div className="bg-grain" />
+    </div>
+  );
+}
+
+// — Logo —————————————————————————————————————————————
+function WisdomMark({ size = 32, accent = "var(--accent)", satellite }) {
+  const sat = satellite || accent;
+  return (
+    <svg width={size} height={size} viewBox="0 0 80 80" style={{ display: "block", flexShrink: 0 }}>
+      <ellipse cx="40" cy="40" rx="38" ry="15" fill="none" stroke={accent} strokeWidth="1.8" transform="rotate(-20 40 40)"/>
+      <ellipse cx="40" cy="40" rx="30" ry="8"  fill="none" stroke={accent} strokeWidth="1.2" opacity="0.4" transform="rotate(40 40 40)"/>
+      <ellipse cx="40" cy="40" rx="22" ry="5"  fill="none" stroke={accent} strokeWidth="1.2" opacity="0.4" transform="rotate(75 40 40)"/>
+      <circle cx="40" cy="40" r="8"  fill={accent}/>
+      <circle cx="40" cy="40" r="12" fill="none" stroke={accent} strokeWidth="1" opacity="0.5"/>
+      <circle cx="74" cy="26" r="4"   fill={sat}/>
+      <circle cx="4"  cy="54" r="4"   fill={sat}/>
+      <circle cx="62" cy="64" r="2.6" fill={sat} opacity="0.7"/>
+    </svg>
+  );
+}
+
+function WisdomMarkInline({ cx, cy, scale = 1, accent = "currentColor", animate = false }) {
+  return (
+    <g transform={`translate(${cx - 40 * scale} ${cy - 40 * scale}) scale(${scale})`}>
+      <ellipse cx="40" cy="40" rx="38" ry="15" fill="none" stroke={accent} strokeWidth="1.8" transform="rotate(-20 40 40)">
+        {animate && <animateTransform attributeName="transform" type="rotate" from="-20 40 40" to="340 40 40" dur="22s" repeatCount="indefinite" />}
+      </ellipse>
+      <ellipse cx="40" cy="40" rx="30" ry="8"  fill="none" stroke={accent} strokeWidth="1.2" opacity="0.45" transform="rotate(40 40 40)">
+        {animate && <animateTransform attributeName="transform" type="rotate" from="40 40 40" to="-320 40 40" dur="28s" repeatCount="indefinite" />}
+      </ellipse>
+      <ellipse cx="40" cy="40" rx="22" ry="5"  fill="none" stroke={accent} strokeWidth="1.2" opacity="0.45" transform="rotate(75 40 40)">
+        {animate && <animateTransform attributeName="transform" type="rotate" from="75 40 40" to="435 40 40" dur="18s" repeatCount="indefinite" />}
+      </ellipse>
+      <circle cx="40" cy="40" r="8"  fill={accent}/>
+      <circle cx="40" cy="40" r="12" fill="none" stroke={accent} strokeWidth="1" opacity="0.5"/>
+      <circle cx="74" cy="26" r="4"   fill={accent}/>
+      <circle cx="4"  cy="54" r="4"   fill={accent}/>
+      <circle cx="62" cy="64" r="2.6" fill={accent} opacity="0.7"/>
+    </g>
+  );
+}
+
+function WisdomLockup({ size = 28, tagline = "because it does." }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <WisdomMark size={size + 8} />
+      <div style={{ lineHeight: 1.1 }}>
+        <div style={{ fontSize: size * 0.5, fontWeight: 600, color: "#1a1a22", letterSpacing: "-0.01em" }}>WisdomWorks</div>
+        {tagline && <div style={{ fontFamily: "Georgia, serif", fontSize: size * 0.34, fontStyle: "italic", color: "var(--accent)", marginTop: 2 }}>{tagline}</div>}
+      </div>
+    </div>
+  );
+}
+
+function TopNav() {
+  return (
+    <header style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 20, display: "flex", alignItems: "center", padding: "16px 28px", gap: 14 }}>
+      <WisdomLockup size={26} />
+      <span style={{ flex: 1 }} />
+      <a href="#" className="btn ghost" style={{ fontSize: 13 }}>How it works</a>
+      <a href="#" className="btn ghost" style={{ fontSize: 13 }}>Pricing</a>
+      <a href="#" className="btn ghost" style={{ fontSize: 13 }}>Sign in</a>
+    </header>
+  );
+}
+
+// — Step 1: Hero + chat ————————————————————————————————
+function HeroChat({ onComplete }) {
+  const [messages, setMessages] = React.useState([
+    { from: "iris", text: "Welcome to WisdomWorks. I'm Iris — I'll build your AI team. Tell me about your business — what do you do?" },
+  ]);
+  const [draft, setDraft] = React.useState("");
+  const [thinking, setThinking] = React.useState(false);
+  const scrollRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, thinking]);
+
+  const reply = (text) => {
+    if (!text.trim()) return;
+    setMessages((m) => [...m, { from: "user", text }]);
+    setDraft("");
+    setThinking(true);
+    setTimeout(() => {
+      setMessages((m) => [...m, { from: "iris", text: "Got it. Few quick questions: how many people are on your team, and which tools do you already use day-to-day?" }]);
+      setThinking(false);
+      setTimeout(() => onComplete && onComplete(), 1400);
+    }, 1200);
+  };
+
+  return (
+    <section style={{ position: "relative", zIndex: 1, minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "120px 24px 60px" }}>
+      <div style={{ textAlign: "center", maxWidth: 760, marginBottom: 32 }}>
+        <div className="eyebrow" style={{ marginBottom: 14 }}>Self-deploying AI · runs your business 24/7</div>
+        <div className="num-xxl">Tell us what you need.</div>
+        <div style={{ marginTop: 14, fontSize: 16, color: "var(--text-dim)" }}>
+          AI builds it. AI runs it. AI improves it.
+        </div>
+      </div>
+
+      <div className="glass-strong pop-in" style={{ width: "100%", maxWidth: 720, padding: 22, display: "flex", flexDirection: "column", gap: 14, boxShadow: "0 24px 80px rgba(20,20,40,0.18)" }}>
+        <header style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div className="breathe" style={{ width: 30, height: 30, borderRadius: 9, background: "var(--accent)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>✦</div>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Iris · onboarding</div>
+            <div className="mono" style={{ fontSize: 10, color: "var(--text-faint)" }}>~3 min · no account needed yet</div>
+          </div>
+          <span style={{ flex: 1 }} />
+          <span className="pill info">Free to start</span>
+        </header>
+
+        <div ref={scrollRef} style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 180, maxHeight: 280, overflowY: "auto" }}>
+          {messages.map((m, i) => {
+            const isUser = m.from === "user";
+            return (
+              <div key={i} className="msg-in" style={{
+                alignSelf: isUser ? "flex-end" : "flex-start",
+                maxWidth: "82%",
+                background: isUser ? "var(--accent)" : "rgba(255,255,255,0.85)",
+                color: isUser ? "white" : "var(--text)",
+                padding: "10px 14px",
+                borderRadius: 14,
+                borderTopRightRadius: isUser ? 4 : 14,
+                borderTopLeftRadius: isUser ? 14 : 4,
+                fontSize: 13.5, lineHeight: 1.55,
+                border: isUser ? "none" : "1px solid var(--glass-border)",
+              }}>{m.text}</div>
+            );
+          })}
+          {thinking && (
+            <div className="msg-in" style={{ alignSelf: "flex-start", padding: "10px 14px", background: "rgba(255,255,255,0.85)", borderRadius: 14, borderTopLeftRadius: 4, border: "1px solid var(--glass-border)" }}>
+              <span className="dot acc breathe" style={{ marginRight: 4 }} />
+              <span className="dot acc breathe" style={{ marginRight: 4, animationDelay: "0.2s" }} />
+              <span className="dot acc breathe" style={{ animationDelay: "0.4s" }} />
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {STARTERS.map((s) => (
+            <button key={s} className="btn" style={{ fontSize: 11.5, padding: "6px 12px", background: "rgba(255,255,255,0.5)" }} onClick={() => reply(s)}>{s}</button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", borderTop: "1px solid var(--glass-border)", paddingTop: 14 }}>
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && reply(draft)}
+                 placeholder="Describe your business…"
+                 style={{ flex: 1, background: "rgba(255,255,255,0.55)", border: "1px solid var(--glass-border)", borderRadius: 12, padding: "12px 14px", outline: 0, font: "inherit", fontSize: 14, color: "var(--text)" }} />
+          <button className="btn primary" onClick={() => reply(draft)}>Send</button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 20, fontSize: 12, color: "var(--text-faint)" }}>
+        No account needed to start · Your AI team deploys in minutes
+      </div>
+    </section>
+  );
+}
+
+// — Step 2: Team hierarchy reveal ————————————————————————
+// Mirrors the Command Deck hierarchy: You at top, Iris in the middle, specialists below,
+// tools/channels around the perimeter. Click an agent to see the detail panel.
+function TeamSection() {
+  const [selected, setSelected] = React.useState("iris");
+  const detail = TEAM.find((a) => a.id === selected);
+
+  // Layout
+  const W = 940, H = 520;
+  const cx = W / 2;
+  const principal = { x: cx, y: 56 };
+  const personal  = { x: cx, y: 156 };
+  const specialists = TEAM.filter((a) => a.id !== "iris");
+  const specY = 286;
+  const span = W - 100;
+  const positions = specialists.map((s, i) => ({
+    ...s, x: 50 + (span * (i + 0.5)) / specialists.length, y: specY,
+  }));
+  // tools row
+  const tools = TOOLS_AROUND.map((t, i) => ({
+    ...t, x: 60 + ((W - 120) * (i + 0.5)) / TOOLS_AROUND.length,
+    y: specY + 130 + (i % 2 === 0 ? 0 : 22),
+  }));
+
+  const arc = (x1, y1, x2, y2, lift = 30) => {
+    const mx = (x1 + x2) / 2;
+    const my = (y1 + y2) / 2 - lift;
+    return `M ${x1} ${y1} Q ${mx} ${my} ${x2} ${y2}`;
+  };
+
+  // Cycle the active comm arc
+  const [activeIdx, setActiveIdx] = React.useState(0);
+  React.useEffect(() => {
+    const t = setInterval(() => setActiveIdx((i) => (i + 1) % positions.length), 2000);
+    return () => clearInterval(t);
+  }, [positions.length]);
+
+  const accent = "var(--accent)";
+
+  return (
+    <section style={{ position: "relative", zIndex: 1, padding: "60px 24px 40px", maxWidth: 1240, margin: "0 auto" }}>
+      <div style={{ textAlign: "center", marginBottom: 28 }}>
+        <div className="eyebrow" style={{ marginBottom: 12 }}>Based on your business</div>
+        <div className="num-lg" style={{ fontWeight: 300 }}>Your AI team — auto-repair shop</div>
+        <div style={{ marginTop: 10, fontSize: 14, color: "var(--text-dim)", maxWidth: 580, margin: "10px auto 0" }}>
+          Iris coordinates four specialists. You'll only ever hear from one channel: WhatsApp. Click any agent to see what they do.
+        </div>
+      </div>
+
+      <div className="glass-strong pop-in" style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 0, overflow: "hidden", boxShadow: "0 24px 60px rgba(20,20,40,0.16)" }}>
+
+        {/* — Hierarchy SVG — */}
+        <div style={{ padding: "24px 12px", borderRight: "1px solid var(--glass-border)", minHeight: 540 }}>
+          <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="auto" style={{ display: "block", overflow: "visible" }}>
+            <defs>
+              <radialGradient id="ob-halo" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#7c3aed" stopOpacity="0.4" />
+                <stop offset="100%" stopColor="#7c3aed" stopOpacity="0" />
+              </radialGradient>
+            </defs>
+
+            {/* principal -> iris */}
+            <line x1={principal.x} y1={principal.y + 22} x2={personal.x} y2={personal.y - 30}
+                  stroke="rgba(20,20,30,0.28)" strokeWidth="1.2" />
+            {/* iris -> specialists */}
+            {positions.map((s) => (
+              <path key={"l-" + s.id}
+                    d={arc(personal.x, personal.y + 30, s.x, s.y - 18, 30)}
+                    fill="none" stroke="rgba(20,20,30,0.18)" strokeWidth="1" />
+            ))}
+            {/* iris -> tools (light) */}
+            {tools.map((t) => (
+              <path key={"t-" + t.id}
+                    d={arc(personal.x, personal.y + 30, t.x, t.y, 60)}
+                    fill="none" stroke="rgba(20,20,30,0.08)" strokeWidth="0.8" strokeDasharray="3 4" />
+            ))}
+
+            {/* live arc */}
+            {positions[activeIdx] && (
+              <g>
+                <path d={arc(personal.x, personal.y + 30, positions[activeIdx].x, positions[activeIdx].y - 18, 38)}
+                      fill="none" stroke="#7c3aed" strokeWidth="2" opacity="0.85" />
+                <circle r="3.5" fill="#7c3aed">
+                  <animateMotion dur="1.4s" repeatCount="indefinite"
+                    path={arc(personal.x, personal.y + 30, positions[activeIdx].x, positions[activeIdx].y - 18, 38)} />
+                </circle>
+              </g>
+            )}
+
+            {/* Principal (you) */}
+            <g style={{ cursor: "pointer" }}>
+              <circle cx={principal.x} cy={principal.y} r="22" fill="rgba(255,255,255,0.92)" stroke="rgba(20,20,30,0.2)" />
+              <text x={principal.x} y={principal.y + 4} textAnchor="middle" fontSize="11" fontWeight="600" fill="#1a1a22">{USER.initials}</text>
+              <text x={principal.x} y={principal.y + 38} textAnchor="middle" fontSize="9" fill="rgba(26,26,34,0.55)" fontFamily="Geist Mono">{USER.first.toUpperCase()} · {USER.role.toUpperCase()}</text>
+            </g>
+
+            {/* Iris */}
+            <g style={{ cursor: "pointer" }} onClick={() => setSelected("iris")}>
+              <circle cx={personal.x} cy={personal.y} r="38" fill="url(#ob-halo)" className="breathe" />
+              <circle cx={personal.x} cy={personal.y} r="28" fill="rgba(255,255,255,0.96)"
+                      stroke={selected === "iris" ? "#7c3aed" : "rgba(124,58,237,0.4)"}
+                      strokeWidth={selected === "iris" ? 2 : 1} />
+              <WisdomMarkInline cx={personal.x} cy={personal.y} scale={0.46} accent="#7c3aed" animate />
+              <text x={personal.x} y={personal.y + 46} textAnchor="middle" fontSize="10" fontWeight="600" fill="#1a1a22">Iris</text>
+              <text x={personal.x} y={personal.y + 60} textAnchor="middle" fontSize="9" fill="#7c3aed" fontFamily="Geist Mono" fontWeight="500" letterSpacing="0.06em">OPUS</text>
+            </g>
+
+            {/* Specialists */}
+            {positions.map((s, i) => {
+              const isSelected = selected === s.id;
+              const isActive = i === activeIdx;
+              const dotColor = s.status === "ok" ? "#2cb070" : s.status === "warn" ? "#d99b3b" : "#c84545";
+              return (
+                <g key={s.id} style={{ cursor: "pointer" }} onClick={() => setSelected(s.id)}>
+                  {(isActive || isSelected) && <circle cx={s.x} cy={s.y} r="22" fill="#7c3aed" opacity={isSelected ? 0.22 : 0.14} />}
+                  <circle cx={s.x} cy={s.y} r="14" fill="rgba(255,255,255,0.96)"
+                          stroke={isSelected ? "#7c3aed" : isActive ? "#7c3aed" : "rgba(20,20,30,0.18)"}
+                          strokeWidth={isSelected ? 2 : isActive ? 1.4 : 1} />
+                  <circle cx={s.x + 9} cy={s.y - 9} r="3" fill={dotColor} />
+                  <text x={s.x} y={s.y + 4} textAnchor="middle" fontSize="10" fontWeight="600" fill="#1a1a22" style={{ pointerEvents: "none" }}>{s.label[0]}</text>
+                  <text x={s.x} y={s.y + 30} textAnchor="middle" fontSize="10" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: "none" }}>{s.label}</text>
+                  <text x={s.x} y={s.y + 43} textAnchor="middle" fontSize="9" fill="rgba(26,26,34,0.5)" fontFamily="Geist Mono" style={{ pointerEvents: "none" }}>{s.role.toUpperCase()}</text>
+                  <g style={{ pointerEvents: "none" }}>
+                    <rect x={s.x - 26} y={s.y + 49} width="52" height="14" rx="7"
+                          fill="#7c3aed" fillOpacity="0.12"
+                          stroke="#7c3aed" strokeOpacity="0.4" strokeWidth="0.8" />
+                    <text x={s.x} y={s.y + 59} textAnchor="middle" fontSize="8.5"
+                          fontFamily="Geist Mono" fontWeight="500"
+                          fill="#7c3aed" letterSpacing="0.06em">
+                      {s.tier.toUpperCase()}
+                    </text>
+                  </g>
+                </g>
+              );
+            })}
+
+            {/* Tools */}
+            {tools.map((t) => (
+              <g key={t.id} opacity="0.85">
+                <rect x={t.x - 36} y={t.y - 9} width="72" height="18" rx="9"
+                      fill="rgba(255,255,255,0.62)" stroke="rgba(20,20,30,0.12)" />
+                <text x={t.x} y={t.y + 4} textAnchor="middle" fontSize="9" fill="rgba(26,26,34,0.7)" fontFamily="Geist Mono">{t.label}</text>
+              </g>
+            ))}
+          </svg>
+        </div>
+
+        {/* — Detail panel — */}
+        <div style={{ padding: 28, display: "flex", flexDirection: "column", gap: 16, minHeight: 540 }}>
+          <div className="eyebrow">Selected agent</div>
+          {detail && (
+            <div key={detail.id} className="msg-in" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: detail.id === "iris" ? "var(--accent)" : "rgba(255,255,255,0.7)", color: detail.id === "iris" ? "white" : "var(--text)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 18, border: "1px solid var(--glass-border)" }}>
+                  {detail.id === "iris" ? "✦" : detail.label[0]}
+                </div>
+                <div>
+                  <div style={{ fontSize: 17, fontWeight: 600 }}>{detail.label}</div>
+                  <div className="mono" style={{ fontSize: 10, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.15em", marginTop: 2 }}>{detail.role}</div>
+                </div>
+              </div>
+
+              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.6 }}>{detail.desc}</div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {detail.channels?.map((c) => <span key={c} className="pill info">{c}</span>)}
+              </div>
+
+              {detail.skills && (
+                <div style={{ fontSize: 12, color: "var(--text-dim)", display: "flex", alignItems: "flex-start", gap: 6, lineHeight: 1.5 }}>
+                  <span style={{ color: "#1f7a48" }}>✓</span><span>{detail.skills}</span>
+                </div>
+              )}
+              {detail.needs && (
+                <div style={{ fontSize: 12, color: "var(--text-dim)", display: "flex", alignItems: "flex-start", gap: 6, lineHeight: 1.5 }}>
+                  <span style={{ color: "#8a4f10" }}>⚠</span><span>{detail.needs}</span>
+                </div>
+              )}
+
+              {/* Model row */}
+              <div style={{ marginTop: "auto", padding: 12, background: "rgba(255,255,255,0.5)", border: "1px solid var(--glass-border)", borderRadius: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span className="eyebrow">Model</span>
+                  <span className="mono" style={{ fontSize: 10, color: "var(--text-faint)" }}>{TIER_DESC[detail.tier]}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                  <span style={{ fontSize: 18, fontWeight: 600, color: "var(--accent-deep)" }}>{detail.tier}</span>
+                  <span className="mono" style={{ fontSize: 11, color: "var(--text-faint)" }}>€{TIER_PRICE[detail.tier]}/mo</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Quick stats below */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginTop: 18 }}>
+        <div className="glass" style={{ padding: 16 }}>
+          <div className="eyebrow" style={{ marginBottom: 6 }}>Team total</div>
+          <div className="num-md">€{TEAM.reduce((s, a) => s + TIER_PRICE[a.tier], 0)}/mo</div>
+        </div>
+        <div className="glass" style={{ padding: 16 }}>
+          <div className="eyebrow" style={{ marginBottom: 6 }}>Coverage</div>
+          <div className="num-md" style={{ fontSize: 18 }}>24/7 · WhatsApp</div>
+        </div>
+        <div className="glass" style={{ padding: 16 }}>
+          <div className="eyebrow" style={{ marginBottom: 6 }}>Setup time</div>
+          <div className="num-md" style={{ fontSize: 18 }}>~2 minutes</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// — Step 3: Connections + comparison + CTA —————————————————
+function ConnectionsAndCompare() {
+  return (
+    <section style={{ position: "relative", zIndex: 1, padding: "20px 24px 80px", maxWidth: 1200, margin: "0 auto" }}>
+      <div className="glass-strong" style={{ padding: 22, marginBottom: 28 }}>
+        <div className="eyebrow" style={{ marginBottom: 12 }}>Connects to your existing tools</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {["WhatsApp Business API", "Website", "Google Calendar", "Stripe", "QuickBooks", "Inventory CSV"].map((t) => (
+            <span key={t} className="pill" style={{ background: "rgba(255,255,255,0.7)", color: "var(--text)", border: "1px solid var(--glass-border)", padding: "8px 14px", fontSize: 12 }}>{t}</span>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 32 }}>
+        <div className="glass" style={{ padding: 22 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <span className="pill bad">✕ Without WisdomWorks</span>
+          </div>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 8, fontSize: 13.5, color: "var(--text-dim)" }}>
+            <li>• Need WhatsApp communication<sup>1</sup></li>
+            <li>• Parts and maintenance inquiries<sup>2</sup></li>
+          </ul>
+          <div className="num-md" style={{ marginTop: 18, color: "#8a2a2a", fontWeight: 500 }}>~$5,000/mo</div>
+          <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 4 }}>in productivity loss and missed revenue</div>
+        </div>
+        <div className="glass" style={{ padding: 22, border: "1px solid var(--accent-line)", background: "rgba(99,102,241,0.06)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <span className="pill ok">✓ With WisdomWorks</span>
+          </div>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 8, fontSize: 13.5, color: "var(--text-dim)" }}>
+            <li>• AI handles coordination instantly, 24/7</li>
+            <li>• Every inquiry answered in seconds</li>
+            <li>• Knowledge preserved permanently in AI</li>
+            <li>• Standardised processes enforced by agents</li>
+          </ul>
+          <div className="num-md" style={{ marginTop: 18, color: "#1f7a48", fontWeight: 500 }}>$75–150/month</div>
+          <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 4 }}>97% less than what you're losing</div>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 10, color: "var(--text-faint)", marginBottom: 28, textAlign: "center", fontFamily: "Geist Mono" }}>
+        ¹ McKinsey Global Institute · ² Harvard Business Review · ³ SHRM
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "center", gap: 12 }}>
+        <button className="btn primary" style={{ padding: "14px 28px", fontSize: 14 }}>Start trial</button>
+        <button className="btn" style={{ padding: "14px 28px", fontSize: 14 }}>Ask questions</button>
+      </div>
+      <div style={{ textAlign: "center", marginTop: 14, fontSize: 12, color: "var(--text-faint)" }}>
+        Free for 14 days · Connect WhatsApp in 2 minutes · Cancel anytime
+      </div>
+    </section>
+  );
+}
+
+function App() {
+  const [revealedTeam, setRevealedTeam] = React.useState(false);
+  return (
+    <>
+      <Background />
+      <TopNav />
+      <HeroChat onComplete={() => setRevealedTeam(true)} />
+      {revealedTeam && (
+        <>
+          <TeamSection />
+          <ConnectionsAndCompare />
+        </>
+      )}
+      {!revealedTeam && (
+        <div style={{ position: "relative", zIndex: 1, textAlign: "center", padding: "0 24px 60px" }}>
+          <button className="btn ghost" onClick={() => setRevealedTeam(true)} style={{ fontSize: 12, color: "var(--text-faint)" }}>
+            ↓ Preview AI team for an auto-repair shop
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

@@ -1,18 +1,8 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import Link from 'next/link';
-import AgentPreview, { generateTeamForBusiness } from './components/AgentPreview';
+import { Background, WisdomLockup, WisdomMark, Hierarchy, type HierarchyAgent } from '@wisdomworks/ui';
 import ConnectTools from './components/ConnectTools';
-
-/** Your local timelapse videos in public/ */
-const BG_VIDEOS = [
-  '/13624534_3840_2160_24fps.mp4',
-  '/6003440-uhd_3840_2160_25fps.mp4',
-  '/6403564-uhd_3840_2160_24fps.mp4',
-  '/6667407-uhd_4096_2160_30fps.mp4',
-  '/8025541-uhd_3840_2160_24fps.mp4',
-];
 
 /** Render AI markdown as clean readable JSX — bold, bullets, numbered lists */
 function formatMessage(text: string): React.ReactNode {
@@ -23,57 +13,73 @@ function formatMessage(text: string): React.ReactNode {
     if (!trimmed) return <br key={i} />;
     const renderBold = (str: string) => {
       const parts = str.split(/\*\*(.*?)\*\*/g);
-      return parts.map((part, j) => j % 2 === 1 ? <strong key={j}>{part}</strong> : part);
+      return parts.map((part, j) => (j % 2 === 1 ? <strong key={j}>{part}</strong> : part));
     };
     if (trimmed.startsWith('•') || (trimmed.startsWith('- ') && !trimmed.startsWith('---'))) {
       const content = trimmed.replace(/^[•\-]\s*/, '');
-      return <div key={i} style={{ paddingLeft: '1.2rem', marginBottom: '0.25rem', display: 'flex', gap: '0.4rem' }}><span style={{ color: '#6366f1' }}>•</span><span>{renderBold(content)}</span></div>;
+      return (
+        <div key={i} style={{ paddingLeft: '1.2rem', marginBottom: '0.25rem', display: 'flex', gap: '0.4rem' }}>
+          <span style={{ color: 'var(--accent)' }}>•</span>
+          <span>{renderBold(content)}</span>
+        </div>
+      );
     }
     if (/^\d+\.\s/.test(trimmed)) {
       const num = trimmed.match(/^(\d+)\.\s/)?.[1];
       const content = trimmed.replace(/^\d+\.\s*/, '');
-      return <div key={i} style={{ paddingLeft: '0.8rem', marginBottom: '0.25rem', display: 'flex', gap: '0.4rem' }}><span style={{ color: '#6366f1', fontWeight: 600 }}>{num}.</span><span>{renderBold(content)}</span></div>;
-    }
-    if (/^[🤖📋🔗💰✨🎯]/.test(trimmed)) {
-      return <div key={i} style={{ marginTop: '0.6rem', marginBottom: '0.25rem', fontWeight: 600 }}>{renderBold(trimmed)}</div>;
+      return (
+        <div key={i} style={{ paddingLeft: '0.8rem', marginBottom: '0.25rem', display: 'flex', gap: '0.4rem' }}>
+          <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{num}.</span>
+          <span>{renderBold(content)}</span>
+        </div>
+      );
     }
     return <div key={i} style={{ marginBottom: '0.15rem' }}>{renderBold(trimmed)}</div>;
   });
 }
 
+/** Map AI-suggested agents to the Hierarchy component shape */
+function mapToHierarchyAgents(structuredAgents: any[]): HierarchyAgent[] {
+  if (!structuredAgents?.length) {
+    return [{ id: 'iris', label: 'Iris', role: 'Personal assistant', tier: 'Opus', status: 'ok', required: true }];
+  }
+  return structuredAgents.map((a: any, i: number) => {
+    const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
+    // First agent is always the personal assistant — show as Iris-style
+    if (i === 0) {
+      return { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus', status: 'ok', required: true };
+    }
+    // Tier from AI model name (Opus/Sonnet/Haiku)
+    const model = (a.aiModel || '').toLowerCase();
+    const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
+    return { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
+  });
+}
+
+const TIER_PRICE = { Haiku: 19, Sonnet: 39, Opus: 79 };
+
 export default function HomePage() {
   const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([
     {
       role: 'assistant',
-      content: "Welcome to WisdomWorks. I'm here to build your AI team. Tell me about your business — what do you do?",
+      content: "Welcome. I'm here to build your AI team. Tell me about your business — what do you do?",
     },
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
-  const [showChatBelowPreview, setShowChatBelowPreview] = useState(false);
   const [showConnectTools, setShowConnectTools] = useState(false);
   const [hasPaid, setHasPaid] = useState(false);
   const [agentsDeployed, setAgentsDeployed] = useState(false);
   const [businessName, setBusinessName] = useState('');
   const [structuredData, setStructuredData] = useState<any>(null);
   const [inputPlaceholder, setInputPlaceholder] = useState('Describe your business...');
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const videoARef = useRef<HTMLVideoElement>(null);
-  const videoBRef = useRef<HTMLVideoElement>(null);
-  const indexRef = useRef(0);
-  const [opacityA, setOpacityA] = useState(1);
-  const [opacityB, setOpacityB] = useState(0);
-  const activeRef = useRef<'A' | 'B'>('A');
-
-  const dissolvingRef = useRef(false);
-  const DISSOLVE_DURATION = 4; // seconds — how long both videos overlap
-
-  // Check if returning from Stripe payment — restore saved state
+  // Restore state if returning from Stripe
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('paid') === 'true') {
-      // Restore onboarding data from localStorage
       try {
         const saved = localStorage.getItem('wisdomworks_onboarding');
         if (saved) {
@@ -93,709 +99,325 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    if (videoARef.current) {
-      videoARef.current.src = BG_VIDEOS[0]!;
-      videoARef.current.play().catch(() => {});
-    }
-    if (videoBRef.current) {
-      videoBRef.current.src = BG_VIDEOS[1]!;
-      videoBRef.current.load();
-    }
-  }, []);
-
-  // Dissolve: start fading BEFORE the video ends so both play simultaneously
-  const handleTimeUpdate = (slot: 'A' | 'B') => {
-    const video = slot === 'A' ? videoARef.current : videoBRef.current;
-    if (!video || !video.duration || dissolvingRef.current) return;
-    if (slot !== activeRef.current) return;
-
-    const timeLeft = video.duration - video.currentTime;
-
-    if (timeLeft <= DISSOLVE_DURATION && timeLeft > 0) {
-      dissolvingRef.current = true;
-
-      // Start the next video playing underneath
-      const nextVideo = slot === 'A' ? videoBRef.current : videoARef.current;
-      nextVideo?.play().catch(() => {});
-
-      // Dissolve: both visible, outgoing fades out, incoming fades in
-      if (slot === 'A') {
-        setOpacityB(1);
-        // After dissolve completes, fully swap
-        setTimeout(() => {
-          setOpacityA(0);
-          activeRef.current = 'B';
-        }, DISSOLVE_DURATION * 500); // halfway through dissolve
-      } else {
-        setOpacityA(1);
-        setTimeout(() => {
-          setOpacityB(0);
-          activeRef.current = 'A';
-        }, DISSOLVE_DURATION * 500);
-      }
-    }
-  };
-
-  const handleEnded = (slot: 'A' | 'B') => {
-    dissolvingRef.current = false;
-    indexRef.current = (indexRef.current + 1) % BG_VIDEOS.length;
-    const nextIndex = (indexRef.current + 1) % BG_VIDEOS.length;
-
-    // Preload next video into the slot that just finished
-    const finishedVideo = slot === 'A' ? videoARef.current : videoBRef.current;
-    if (finishedVideo) {
-      finishedVideo.src = BG_VIDEOS[nextIndex]!;
-      finishedVideo.load();
-    }
-  };
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
-
-    const userMessage = { role: 'user' as const, content: input.trim() };
-    const newMessages = [...messages, userMessage];
+    const userMsg = { role: 'user' as const, content: input.trim() };
+    const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInput('');
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/onboarding', {
+      const res = await fetch('/api/onboarding', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: newMessages.map((m) => ({
-            role: m.role,
-            content: m.content,
-            timestamp: new Date().toISOString(),
-          })),
-          collectedData: {},
-        }),
+        body: JSON.stringify({ messages: newMessages, collectedData: structuredData ?? {} }),
       });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.details || data.error || 'Failed to get response');
+      const data = await res.json();
+      if (data.text) {
+        setMessages([...newMessages, { role: 'assistant', content: data.text }]);
       }
-
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.text }]);
-
-      // Use structured data from AI — no more regex parsing
       if (data.structured) {
-        const s = data.structured;
-        setStructuredData(s);
-
-        // Update business name
-        if (s.businessName && !businessName) {
-          setBusinessName(s.businessName);
-        }
-
-        // Update input placeholder based on phase
-        if (s.inputPlaceholder) {
-          setInputPlaceholder(s.inputPlaceholder);
-        }
-
-        // Trigger preview when AI says to show it
-        if (s.showAgentPreview && !showPreview && s.agents?.length > 0) {
-          setTimeout(() => setShowPreview(true), 1500);
+        setStructuredData(data.structured);
+        if (data.structured.businessName) setBusinessName(data.structured.businessName);
+        if (data.structured.inputPlaceholder) setInputPlaceholder(data.structured.inputPlaceholder);
+        if (data.structured.showAgentPreview && !showPreview && data.structured.agents?.length > 0) {
+          setTimeout(() => setShowPreview(true), 800);
         }
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: `Connection issue: ${errorMsg}. The AI onboarding will be fully active once deployed.` },
-      ]);
+      console.error('Onboarding error:', err);
+      setMessages([...newMessages, { role: 'assistant', content: 'Hmm, I had a moment. Could you try again?' }]);
     } finally {
       setIsLoading(false);
     }
   };
 
+  const handleStartTrial = async () => {
+    const s = structuredData ?? {};
+    const agents = mapToHierarchyAgents(s.agents ?? []);
+    // Tier-based pricing
+    const monthlyPrice = agents.reduce((sum, a) => sum + (TIER_PRICE[a.tier as keyof typeof TIER_PRICE] || 39), 0);
+    const currency = s.location?.currency?.toLowerCase() || 'eur';
+
+    // Save state before redirect
+    localStorage.setItem(
+      'wisdomworks_onboarding',
+      JSON.stringify({
+        structuredData,
+        businessName: businessName || s.businessName || 'Your Business',
+        messages,
+      }),
+    );
+
+    try {
+      const res = await fetch('/api/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          monthlyPrice,
+          businessName: businessName || s.businessName || 'Your Business',
+          agentCount: agents.length,
+          currency,
+        }),
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (err) {
+      console.error('Checkout error:', err);
+      setShowConnectTools(true);
+    }
+  };
+
+  const s = structuredData ?? {};
+  const hierarchyAgents = mapToHierarchyAgents(s.agents ?? []);
+  const totalPrice = hierarchyAgents.reduce((sum, a) => sum + (TIER_PRICE[a.tier as keyof typeof TIER_PRICE] || 39), 0);
+  const currencySymbol = s.location?.currencySymbol || '€';
+
   return (
-    <div style={{
-      minHeight: '100vh',
-      position: 'relative',
-      overflow: 'hidden',
-    }}>
-      {/* Cinematic Background — dual video crossfade */}
-      <video
-        ref={videoARef}
-        muted
-        playsInline
-        onTimeUpdate={() => handleTimeUpdate('A')}
-        onEnded={() => handleEnded('A')}
+    <>
+      <Background light />
+
+      {/* Top nav */}
+      <header
         style={{
           position: 'fixed',
-          inset: 0,
-          zIndex: 0,
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          opacity: opacityA,
-          transition: `opacity ${DISSOLVE_DURATION}s ease-in-out`,
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 20,
+          display: 'flex',
+          alignItems: 'center',
+          padding: '14px 24px',
+          gap: 12,
         }}
-      />
-      <video
-        ref={videoBRef}
-        muted
-        playsInline
-        onTimeUpdate={() => handleTimeUpdate('B')}
-        onEnded={() => handleEnded('B')}
+      >
+        <WisdomLockup size={28} tagline="because it does." accent="var(--accent)" />
+        <div style={{ flex: 1 }} />
+      </header>
+
+      <main
         style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 0,
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          opacity: opacityB,
-          transition: `opacity ${DISSOLVE_DURATION}s ease-in-out`,
+          position: 'relative',
+          minHeight: '100vh',
+          paddingTop: 100,
+          paddingBottom: 100,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '2rem',
+          zIndex: 1,
         }}
-      />
-      {/* Subtle dark overlay for text readability */}
-      <div style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 1,
-        background: 'linear-gradient(135deg, rgba(10, 10, 26, 0.5) 0%, rgba(20, 10, 40, 0.3) 50%, rgba(10, 10, 26, 0.5) 100%)',
-      }} />
-
-      {/* Top Bar */}
-      <nav style={{
-        position: 'relative',
-        zIndex: 10,
-        padding: '1.5rem 2rem',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-      }}>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 700, letterSpacing: '-0.02em' }}>
-          WisdomWorks
-        </h1>
-        <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
-          <Link href="/about" style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.95rem' }}>About</Link>
-        </div>
-      </nav>
-
-      {/* Center Chat Box */}
-      <div style={{
-        position: 'relative',
-        zIndex: 10,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: 'calc(100vh - 80px)',
-        padding: '2rem',
-      }}>
-        {/* Tagline */}
-        {/* Tagline — fades out once user sends first message */}
-        {messages.length <= 1 && (
-          <>
-            <h2 style={{
-              fontSize: '2.5rem', fontWeight: 800, textAlign: 'center', marginBottom: '0.5rem',
-              textShadow: '0 2px 20px rgba(0,0,0,0.5)',
-              animation: messages.length > 1 ? 'fadeOut 0.5s forwards' : undefined,
-            }}>
-              Tell us what you need.
-            </h2>
-            <p style={{
-              fontSize: '1.1rem', color: 'rgba(255,255,255,0.6)', marginBottom: '2rem',
-              textShadow: '0 1px 10px rgba(0,0,0,0.5)',
-            }}>
-              AI builds it. AI runs it. AI improves it.
-            </p>
-          </>
-        )}
-
-        {/* PHASE 1: Conversation — fades out when preview shows */}
+      >
+        {/* PHASE 1: Conversation */}
         {!showPreview && (
-          <div style={{
-            width: '100%',
-            maxWidth: messages.length <= 2 ? '680px' : messages.length <= 4 ? '800px' : '950px',
-            position: 'relative',
-            borderRadius: '20px',
-            overflow: 'hidden',
-            boxShadow: '0 25px 80px rgba(0, 0, 0, 0.3), 0 0 40px rgba(99, 102, 241, 0.08)',
-            border: '1px solid rgba(255, 255, 255, 0.08)',
-            transition: 'max-width 0.5s ease-in-out, opacity 0.8s ease',
-            animation: 'fadeIn 0.5s ease',
-          }}>
-            <div style={{
-              position: 'absolute', inset: 0,
-              background: 'linear-gradient(to right, rgba(10, 10, 30, 0.85) 0%, rgba(10, 10, 30, 0.5) 40%, rgba(10, 10, 30, 0.15) 70%, rgba(10, 10, 30, 0.0) 100%)',
-              backdropFilter: 'blur(40px)',
-              WebkitMaskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-              maskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-              zIndex: 0,
-            }} />
-            <div style={{ position: 'relative', zIndex: 1 }}>
-              <div style={{ minHeight: '200px', maxHeight: '60vh', overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div style={{ width: '100%', maxWidth: 720, padding: '0 24px' }}>
+            <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+              <div className="eyebrow" style={{ marginBottom: 12 }}>Your AI team, in two minutes</div>
+              <div className="num-lg" style={{ color: 'var(--text)', fontWeight: 300 }}>
+                Tell me about your business.
+              </div>
+              <div style={{ marginTop: 12, color: 'var(--text-dim)', fontSize: 14 }}>
+                I'll build a team that runs it for you.
+              </div>
+            </div>
+
+            <div className="glass-strong" style={{ padding: '1.25rem', boxShadow: '0 24px 60px rgba(20, 20, 40, 0.16)' }}>
+              <div className="scroll" style={{ maxHeight: '50vh', minHeight: 240, padding: '0.5rem 0.5rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 {messages.map((msg, i) => (
-                  <div key={i} style={{
-                    alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                    maxWidth: '85%', padding: '0.8rem 1.2rem',
-                    borderRadius: msg.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-                    background: msg.role === 'user' ? 'linear-gradient(135deg, #6366f1, #818cf8)' : 'rgba(255, 255, 255, 0.08)',
-                    fontSize: '0.95rem', lineHeight: 1.5,
-                  }}>
-                    {formatMessage(msg.content || (isLoading ? '...' : ''))}
+                  <div
+                    key={i}
+                    style={{
+                      alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                      maxWidth: '82%',
+                      padding: '10px 14px',
+                      borderRadius: 14,
+                      background: msg.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,0.78)',
+                      color: msg.role === 'user' ? 'white' : 'var(--text)',
+                      borderTopRightRadius: msg.role === 'user' ? 4 : 14,
+                      borderTopLeftRadius: msg.role === 'user' ? 14 : 4,
+                      fontSize: 13.5,
+                      lineHeight: 1.55,
+                      border: msg.role === 'user' ? 'none' : '1px solid var(--glass-border)',
+                    }}
+                  >
+                    {formatMessage(msg.content)}
                   </div>
                 ))}
                 {isLoading && (
-                  <div style={{ alignSelf: 'flex-start', padding: '0.8rem 1.2rem', borderRadius: '16px 16px 16px 4px', background: 'rgba(255, 255, 255, 0.08)', fontSize: '0.95rem' }}>
-                    <span style={{ opacity: 0.6, animation: 'pulse 1.5s infinite' }}>Thinking...</span>
+                  <div style={{ alignSelf: 'flex-start', padding: '10px 14px', borderRadius: 14, background: 'rgba(255,255,255,0.78)', border: '1px solid var(--glass-border)' }}>
+                    <span style={{ opacity: 0.5, animation: 'pulse 1.5s infinite', fontSize: 13 }}>thinking…</span>
                   </div>
                 )}
+                <div ref={messagesEndRef} />
               </div>
-              <div style={{ padding: '1rem 1.5rem', borderTop: '1px solid rgba(255, 255, 255, 0.06)', display: 'flex', gap: '0.75rem' }}>
-                <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder={inputPlaceholder}
-                  style={{ flex: 1, padding: '0.8rem 1rem', background: 'rgba(255, 255, 255, 0.06)', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '12px', color: 'white', fontSize: '0.95rem', outline: 'none' }} />
-                <button onClick={handleSend} disabled={isLoading || !input.trim()}
-                  style={{ padding: '0.8rem 1.5rem', background: isLoading ? 'rgba(99, 102, 241, 0.5)' : '#6366f1', color: 'white', border: 'none', borderRadius: '12px', fontSize: '0.95rem', fontWeight: 600, cursor: isLoading ? 'wait' : 'pointer' }}>
-                  {isLoading ? '...' : 'Send'}
+              <div style={{ display: 'flex', gap: 8, paddingTop: '0.75rem', borderTop: '1px solid var(--glass-border)' }}>
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                  placeholder={inputPlaceholder}
+                  style={{
+                    flex: 1,
+                    background: 'rgba(255,255,255,0.5)',
+                    border: '1px solid var(--glass-border)',
+                    borderRadius: 10,
+                    padding: '10px 14px',
+                    outline: 0,
+                    fontSize: 13.5,
+                    fontFamily: 'inherit',
+                    color: 'var(--text)',
+                  }}
+                />
+                <button onClick={handleSend} disabled={isLoading || !input.trim()} className="btn primary">
+                  Send
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* PHASE 2: Agent Preview — fades in, replaces conversation */}
-        {showPreview && !hasPaid && (() => {
-          const s = structuredData ?? {};
-          const integrations: string[] = s.detectedIntegrations ?? ['Calendar', 'WhatsApp'];
-          const employeeCount: number = s.employeeCount ?? 1;
-
-          // Build agents from structured data (fully dynamic)
-          const aiAgents = (s.agents ?? []).map((a: any) => a);
-          const team = generateTeamForBusiness(
-            businessName || s.businessName || 'Your Business',
-            integrations.some((i: string) => i.toLowerCase().includes('website')),
-            integrations,
-            employeeCount,
-            aiAgents,
-          );
-
-          return (
-            <div style={{ width: '100%', maxWidth: '1100px' }}>
-              {/* Agent cards with glassmorphic background */}
-              <div style={{
-                position: 'relative', borderRadius: '20px', overflow: 'hidden',
-                boxShadow: '0 25px 80px rgba(0, 0, 0, 0.3), 0 0 40px rgba(99, 102, 241, 0.08)',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-              }}>
-                <div style={{
-                  position: 'absolute', inset: 0,
-                  background: 'linear-gradient(to right, rgba(10, 10, 30, 0.85) 0%, rgba(10, 10, 30, 0.5) 40%, rgba(10, 10, 30, 0.15) 70%, rgba(10, 10, 30, 0.0) 100%)',
-                  backdropFilter: 'blur(40px)',
-                  WebkitMaskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-                  maskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-                  zIndex: 0,
-                }} />
-                <div style={{ position: 'relative', zIndex: 1, padding: '1.5rem' }}>
-                  <AgentPreview
-                    businessName={businessName || s.businessName || 'Your Business'}
-                    agents={team.agents}
-                    connections={team.connections}
-                    estimatedPrice={s.estimatedPrice || team.price}
-                    employeeCount={employeeCount}
-                    costData={s.costOfInaction}
-                    painPoints={s.painPoints}
-                    location={s.location}
-                    onStartTrial={async () => {
-                      try {
-                        // Parse price from estimated price string (e.g., "$99/month" → 99)
-                        const priceStr = s.estimatedPrice || team.price || '$99/month';
-                        const priceMatch = priceStr.match(/[\d,]+/);
-                        const monthlyPrice = priceMatch ? parseInt(priceMatch[0].replace(/,/g, ''), 10) : 99;
-                        const currency = s.location?.currency?.toLowerCase() || 'usd';
-
-                        // Save onboarding state before redirecting to Stripe
-                        localStorage.setItem('wisdomworks_onboarding', JSON.stringify({
-                          structuredData,
-                          businessName: businessName || s.businessName || 'Your Business',
-                          messages,
-                        }));
-
-                        const res = await fetch('/api/checkout', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            monthlyPrice,
-                            businessName: businessName || s.businessName || 'Your Business',
-                            agentCount: team.agents.length,
-                            currency,
-                          }),
-                        });
-                        const data = await res.json();
-                        if (data.url) {
-                          window.location.href = data.url;
-                        }
-                      } catch (err) {
-                        console.error('Checkout error:', err);
-                        // Fallback: show ConnectTools directly
-                        setShowConnectTools(true);
-                      }
-                    }}
-                    onAskQuestion={() => setShowChatBelowPreview(true)}
-                  />
-                </div>
+        {/* PHASE 2: Agent Hierarchy Preview (pre-payment) */}
+        {showPreview && !hasPaid && (
+          <div style={{ width: '100%', maxWidth: 980, padding: '0 24px' }}>
+            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+              <div className="eyebrow" style={{ marginBottom: 12 }}>Your AI Team</div>
+              <div className="num-lg" style={{ color: 'var(--text)', fontWeight: 300 }}>
+                {hierarchyAgents.length} agents, ready to deploy.
               </div>
-
-              {/* Connect Tools — appears when "Start Trial" clicked */}
-              {showConnectTools && !agentsDeployed && (
-                <div style={{
-                  marginTop: '1.5rem', position: 'relative', borderRadius: '16px', overflow: 'hidden',
-                  border: '1px solid rgba(255, 255, 255, 0.08)', animation: 'fadeIn 0.5s ease',
-                }}>
-                  <div style={{
-                    position: 'absolute', inset: 0,
-                    background: 'linear-gradient(to right, rgba(10, 10, 30, 0.85) 0%, rgba(10, 10, 30, 0.5) 40%, rgba(10, 10, 30, 0.15) 70%, rgba(10, 10, 30, 0.0) 100%)',
-                    backdropFilter: 'blur(40px)',
-                    WebkitMaskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-                    maskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-                    zIndex: 0,
-                  }} />
-                  <div style={{ position: 'relative', zIndex: 1, padding: '1.5rem' }}>
-                    <ConnectTools
-                      onComplete={async () => {
-                        // Send welcome WhatsApp message before transitioning
-                        try {
-                          const s = structuredData ?? {};
-                          const agents = s.agents ?? [];
-                          const savedPhone = localStorage.getItem('wisdomworks_phone');
-                          const bName = businessName || s.businessName || 'Your Business';
-                          if (savedPhone) {
-                            await fetch('/api/deploy-complete', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({
-                                phoneNumber: savedPhone,
-                                businessName: bName,
-                                businessType: s.businessType,
-                                agentCount: agents.length || 4,
-                                agents: agents.length > 0
-                                  ? agents.slice(0, 5).map((a: any) => ({ name: a.name, role: a.role, emoji: a.emoji }))
-                                  : [{ name: 'Your Assistant', role: 'Personal AI Assistant' }],
-                              }),
-                            });
-                          }
-                        } catch (err) {
-                          console.error('Deploy complete error:', err);
-                        }
-
-                        // Redirect to dashboard
-                        setShowConnectTools(false);
-                        setAgentsDeployed(true);
-                        // Scroll to the deployed section
-                        setTimeout(() => {
-                          window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-                        }, 300);
-                      }}
-                      onSkip={() => setShowConnectTools(false)}
-                      businessName={businessName || structuredData?.businessName}
-                      businessType={structuredData?.businessType}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Agents Deployed confirmation */}
-              {agentsDeployed && (() => {
-                const s = structuredData ?? {};
-                const agents = s.agents ?? [];
-                return (
-                  <div style={{
-                    marginTop: '1.5rem', borderRadius: '16px', overflow: 'hidden',
-                    background: 'rgba(34, 197, 94, 0.05)', border: '1px solid rgba(34, 197, 94, 0.2)',
-                    animation: 'fadeIn 0.8s ease',
-                  }}>
-                    {/* Header */}
-                    <div style={{ padding: '2rem', textAlign: 'center', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>🚀</div>
-                      <h3 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.5rem' }}>Your AI Team is Live!</h3>
-                      <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)' }}>
-                        Check your WhatsApp — your personal assistant just introduced themselves.
-                      </p>
-                    </div>
-
-                    {/* Agent Team Graph */}
-                    <div style={{ padding: '1.5rem' }}>
-                      <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.4)', marginBottom: '1rem', textAlign: 'center' }}>
-                        Your Agent Team
-                      </div>
-
-                      {/* Personal Assistant (center node) */}
-                      {agents.length > 0 && (
-                        <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-                          <div style={{
-                            display: 'inline-flex', flexDirection: 'column', alignItems: 'center',
-                            padding: '1rem 1.5rem', borderRadius: '16px',
-                            background: 'rgba(99, 102, 241, 0.15)', border: '2px solid rgba(99, 102, 241, 0.4)',
-                          }}>
-                            <span style={{ fontSize: '1.5rem' }}>{agents[0].emoji || '🤖'}</span>
-                            <div style={{ fontSize: '0.95rem', fontWeight: 700, marginTop: '0.3rem' }}>{agents[0].name}</div>
-                            <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>{agents[0].role}</div>
-                            <div style={{ fontSize: '0.65rem', color: '#6366f1', marginTop: '0.2rem' }}>Coordinates all agents</div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Connecting line */}
-                      {agents.length > 1 && (
-                        <div style={{ textAlign: 'center', marginBottom: '0.5rem' }}>
-                          <div style={{ width: '2px', height: '20px', background: 'rgba(99,102,241,0.3)', margin: '0 auto' }} />
-                        </div>
-                      )}
-
-                      {/* Other agents (grid) */}
-                      {agents.length > 1 && (
-                        <div style={{
-                          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-                          gap: '0.6rem',
-                        }}>
-                          {agents.slice(1).map((agent: any, i: number) => (
-                            <div key={i} style={{
-                              padding: '0.8rem', borderRadius: '10px', textAlign: 'center',
-                              background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
-                            }}>
-                              <span style={{ fontSize: '1.2rem' }}>{agent.emoji || '🤖'}</span>
-                              <div style={{ fontSize: '0.8rem', fontWeight: 600, marginTop: '0.2rem' }}>{agent.name}</div>
-                              <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)' }}>{agent.role}</div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Actions */}
-                    <div style={{
-                      padding: '1.5rem', borderTop: '1px solid rgba(255,255,255,0.06)',
-                      display: 'flex', gap: '0.6rem', justifyContent: 'center', flexWrap: 'wrap',
-                    }}>
-                      <a href="https://wisdomworks.vercel.app" target="_blank" rel="noopener" style={{
-                        padding: '0.7rem 1.5rem', background: '#6366f1', color: 'white',
-                        border: 'none', borderRadius: '10px', fontSize: '0.85rem', fontWeight: 600,
-                        textDecoration: 'none', display: 'inline-block',
-                      }}>
-                        Open Dashboard
-                      </a>
-                      <button onClick={() => {
-                        setAgentsDeployed(false);
-                        setShowConnectTools(true);
-                      }} style={{
-                        padding: '0.7rem 1.5rem', background: 'rgba(255,255,255,0.08)',
-                        color: 'rgba(255,255,255,0.6)', border: '1px solid rgba(255,255,255,0.1)',
-                        borderRadius: '10px', fontSize: '0.85rem', cursor: 'pointer',
-                      }}>
-                        Manage Connections
-                      </button>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* Chat below preview — appears when "Ask Questions" clicked */}
-              {showChatBelowPreview && !showConnectTools && (
-                <div style={{
-                  marginTop: '1.5rem', position: 'relative', borderRadius: '16px', overflow: 'hidden',
-                  border: '1px solid rgba(255, 255, 255, 0.08)',
-                  animation: 'fadeIn 0.5s ease',
-                }}>
-                  <div style={{
-                    position: 'absolute', inset: 0,
-                    background: 'linear-gradient(to right, rgba(10, 10, 30, 0.8) 0%, rgba(10, 10, 30, 0.4) 50%, rgba(10, 10, 30, 0.1) 100%)',
-                    backdropFilter: 'blur(30px)',
-                    WebkitMaskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-                    maskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-                    zIndex: 0,
-                  }} />
-                  <div style={{ position: 'relative', zIndex: 1 }}>
-                    <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.4)', padding: '0.8rem 1.5rem 0', marginBottom: '0.3rem' }}>
-                      💬 Ask about your agents, change names, adjust roles...
-                    </div>
-                    <div style={{ minHeight: '120px', maxHeight: '350px', overflowY: 'auto', padding: '0.5rem 1.5rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      {messages.slice(-6).map((msg, i) => (
-                        <div key={i} style={{
-                          alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                          maxWidth: '85%', padding: '0.7rem 1rem',
-                          borderRadius: msg.role === 'user' ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
-                          background: msg.role === 'user' ? 'linear-gradient(135deg, #6366f1, #818cf8)' : 'rgba(255, 255, 255, 0.08)',
-                          fontSize: '0.9rem', lineHeight: 1.5,
-                        }}>
-                          {formatMessage(msg.content)}
-                        </div>
-                      ))}
-                      {isLoading && (
-                        <div style={{ alignSelf: 'flex-start', padding: '0.7rem 1rem', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.08)', fontSize: '0.9rem' }}>
-                          <span style={{ opacity: 0.6, animation: 'pulse 1.5s infinite' }}>Thinking...</span>
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ padding: '0.8rem 1.2rem', borderTop: '1px solid rgba(255, 255, 255, 0.06)', display: 'flex', gap: '0.6rem' }}>
-                      <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                        placeholder="Ask about your agents, change a name, adjust roles..."
-                        style={{ flex: 1, padding: '0.7rem 1rem', background: 'rgba(255, 255, 255, 0.06)', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '10px', color: 'white', fontSize: '0.9rem', outline: 'none' }} />
-                      <button onClick={handleSend} disabled={isLoading || !input.trim()}
-                        style={{ padding: '0.7rem 1.2rem', background: isLoading ? 'rgba(99, 102, 241, 0.5)' : '#6366f1', color: 'white', border: 'none', borderRadius: '10px', fontSize: '0.9rem', fontWeight: 600, cursor: isLoading ? 'wait' : 'pointer' }}>
-                        {isLoading ? '...' : 'Send'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
+              <div style={{ marginTop: 8, color: 'var(--text-dim)', fontSize: 14 }}>
+                {businessName || s.businessName || 'Your business'} · {currencySymbol}{totalPrice}/month total
+              </div>
             </div>
-          );
-        })()}
 
-        {/* PHASE 3: Post-payment — ConnectTools and Deploy (when returning from Stripe) */}
-        {hasPaid && !agentsDeployed && showConnectTools && (
-          <div style={{ width: '100%', maxWidth: '1100px' }}>
-            <div style={{
-              position: 'relative', borderRadius: '16px', overflow: 'hidden',
-              border: '1px solid rgba(255, 255, 255, 0.08)', animation: 'fadeIn 0.5s ease',
-            }}>
-              <div style={{
-                position: 'absolute', inset: 0,
-                background: 'linear-gradient(to right, rgba(10, 10, 30, 0.85) 0%, rgba(10, 10, 30, 0.5) 40%, rgba(10, 10, 30, 0.15) 70%, rgba(10, 10, 30, 0.0) 100%)',
-                backdropFilter: 'blur(40px)',
-                WebkitMaskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-                maskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
-                zIndex: 0,
-              }} />
-              <div style={{ position: 'relative', zIndex: 1, padding: '1.5rem' }}>
-                <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
-                  <div style={{ fontSize: '1.5rem', marginBottom: '0.3rem' }}>Payment successful</div>
-                  <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.5)' }}>
-                    Now let's connect your tools and deploy your AI team.
-                  </div>
+            <div className="glass-strong" style={{ padding: '1.5rem', boxShadow: '0 24px 60px rgba(20, 20, 40, 0.16)' }}>
+              <Hierarchy
+                width={940}
+                height={460}
+                team={hierarchyAgents}
+                principal={{
+                  initials: (businessName || 'You').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase(),
+                  first: businessName?.split(' ')[0] || 'You',
+                  role: 'Owner',
+                }}
+                showExternals={false}
+                showArcs
+                accent="var(--accent)"
+              />
+            </div>
+
+            {/* Cost comparison */}
+            {s.costOfInaction?.totalPerMonth && (
+              <div className="glass" style={{ padding: '1.25rem', marginTop: '1rem', display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '1rem', alignItems: 'center' }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Without WisdomWorks</div>
+                  <div className="num-md mono" style={{ color: 'var(--bad)' }}>{s.costOfInaction.totalPerMonth}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>lost per month</div>
                 </div>
-                <ConnectTools
-                  onComplete={async () => {
-                    try {
-                      const s = structuredData ?? {};
-                      const agents = s.agents ?? [];
-                      const savedPhone = localStorage.getItem('wisdomworks_phone');
-                      const bName = businessName || s.businessName || 'Your Business';
-                      if (savedPhone) {
-                        await fetch('/api/deploy-complete', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            phoneNumber: savedPhone,
-                            businessName: bName,
-                            businessType: s.businessType,
-                            agentCount: agents.length || 4,
-                            agents: agents.length > 0
-                              ? agents.slice(0, 5).map((a: any) => ({ name: a.name, role: a.role, emoji: a.emoji }))
-                              : [{ name: 'Your Assistant', role: 'Personal AI Assistant' }],
-                          }),
-                        });
-                      }
-                    } catch (err) {
-                      console.error('Deploy complete error:', err);
-                    }
-                    setShowConnectTools(false);
-                    setAgentsDeployed(true);
-                  }}
-                  onSkip={() => setShowConnectTools(false)}
-                  businessName={businessName || structuredData?.businessName}
-                  businessType={structuredData?.businessType}
-                />
+                <div style={{ fontSize: 24, color: 'var(--text-faint)' }}>→</div>
+                <div style={{ textAlign: 'center' }}>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>With WisdomWorks</div>
+                  <div className="num-md mono" style={{ color: 'var(--accent-deep)' }}>{currencySymbol}{totalPrice}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>per month</div>
+                </div>
               </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: '1.5rem' }}>
+              <button onClick={handleStartTrial} className="btn primary" style={{ padding: '12px 28px', fontSize: 14 }}>
+                Start Trial · {currencySymbol}{totalPrice}/mo
+              </button>
+              <button className="btn ghost" style={{ padding: '12px 24px', fontSize: 14 }}>
+                Ask questions
+              </button>
             </div>
           </div>
         )}
 
-        {/* Post-deployment agent team view */}
-        {hasPaid && agentsDeployed && (() => {
-          const s = structuredData ?? {};
-          const agents = s.agents ?? [];
-          return (
-            <div style={{ width: '100%', maxWidth: '1100px' }}>
-              <div style={{
-                borderRadius: '16px', overflow: 'hidden',
-                background: 'rgba(34, 197, 94, 0.05)', border: '1px solid rgba(34, 197, 94, 0.2)',
-                animation: 'fadeIn 0.8s ease',
-              }}>
-                <div style={{ padding: '2rem', textAlign: 'center', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>🚀</div>
-                  <h3 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.5rem' }}>Your AI Team is Live!</h3>
-                  <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)' }}>
-                    Check your WhatsApp — your personal assistant just introduced themselves.
-                  </p>
-                </div>
-                <div style={{ padding: '1.5rem' }}>
-                  <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.4)', marginBottom: '1rem', textAlign: 'center' }}>
-                    Your Agent Team
-                  </div>
-                  {agents.length > 0 && (
-                    <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-                      <div style={{
-                        display: 'inline-flex', flexDirection: 'column', alignItems: 'center',
-                        padding: '1rem 1.5rem', borderRadius: '16px',
-                        background: 'rgba(99, 102, 241, 0.15)', border: '2px solid rgba(99, 102, 241, 0.4)',
-                      }}>
-                        <span style={{ fontSize: '1.5rem' }}>{agents[0].emoji || '🤖'}</span>
-                        <div style={{ fontSize: '0.95rem', fontWeight: 700, marginTop: '0.3rem' }}>{agents[0].name}</div>
-                        <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>{agents[0].role}</div>
-                        <div style={{ fontSize: '0.65rem', color: '#6366f1', marginTop: '0.2rem' }}>Coordinates all agents</div>
-                      </div>
-                    </div>
-                  )}
-                  {agents.length > 1 && (
-                    <>
-                      <div style={{ textAlign: 'center', marginBottom: '0.5rem' }}>
-                        <div style={{ width: '2px', height: '20px', background: 'rgba(99,102,241,0.3)', margin: '0 auto' }} />
-                      </div>
-                      <div style={{
-                        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-                        gap: '0.6rem',
-                      }}>
-                        {agents.slice(1).map((agent: any, i: number) => (
-                          <div key={i} style={{
-                            padding: '0.8rem', borderRadius: '10px', textAlign: 'center',
-                            background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
-                          }}>
-                            <span style={{ fontSize: '1.2rem' }}>{agent.emoji || '🤖'}</span>
-                            <div style={{ fontSize: '0.8rem', fontWeight: 600, marginTop: '0.2rem' }}>{agent.name}</div>
-                            <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)' }}>{agent.role}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-                <div style={{
-                  padding: '1.5rem', borderTop: '1px solid rgba(255,255,255,0.06)',
-                  display: 'flex', gap: '0.6rem', justifyContent: 'center',
-                }}>
-                  <button onClick={() => {
-                    setAgentsDeployed(false);
-                    setShowConnectTools(true);
-                  }} style={{
-                    padding: '0.7rem 1.5rem', background: 'rgba(255,255,255,0.08)',
-                    color: 'rgba(255,255,255,0.6)', border: '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: '10px', fontSize: '0.85rem', cursor: 'pointer',
-                  }}>
-                    Manage Connections
-                  </button>
-                </div>
+        {/* PHASE 3: Connect Tools (post-payment) */}
+        {hasPaid && !agentsDeployed && showConnectTools && (
+          <div style={{ width: '100%', maxWidth: 720, padding: '0 24px' }}>
+            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+              <div className="eyebrow" style={{ marginBottom: 12, color: 'var(--ok)' }}>Payment successful</div>
+              <div className="num-lg" style={{ color: 'var(--text)', fontWeight: 300 }}>One last step.</div>
+              <div style={{ marginTop: 8, color: 'var(--text-dim)', fontSize: 14 }}>Connect your tools and meet your assistant.</div>
+            </div>
+            <div className="glass-strong" style={{ padding: '1.5rem' }}>
+              <ConnectTools
+                onComplete={async () => {
+                  try {
+                    const agents = mapToHierarchyAgents(s.agents ?? []);
+                    const savedPhone = localStorage.getItem('wisdomworks_phone');
+                    const bName = businessName || s.businessName || 'Your Business';
+                    if (savedPhone) {
+                      await fetch('/api/deploy-complete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          phoneNumber: savedPhone,
+                          businessName: bName,
+                          businessType: s.businessType,
+                          agentCount: agents.length,
+                          agents: agents.slice(0, 5).map((a) => ({ name: a.label, role: a.role })),
+                        }),
+                      });
+                    }
+                  } catch (err) {
+                    console.error('Deploy complete error:', err);
+                  }
+                  setShowConnectTools(false);
+                  setAgentsDeployed(true);
+                }}
+                onSkip={() => setShowConnectTools(false)}
+                businessName={businessName || s.businessName}
+                businessType={s.businessType}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* PHASE 4: Deployed — show team + dashboard CTA */}
+        {hasPaid && agentsDeployed && (
+          <div style={{ width: '100%', maxWidth: 980, padding: '0 24px' }}>
+            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+              <WisdomMark size={56} accent="var(--accent)" />
+              <div className="num-lg" style={{ color: 'var(--text)', fontWeight: 300, marginTop: 16 }}>
+                Your team is live.
+              </div>
+              <div style={{ marginTop: 8, color: 'var(--text-dim)', fontSize: 14 }}>
+                Check WhatsApp — {hierarchyAgents[0]?.label || 'your assistant'} just introduced themselves.
               </div>
             </div>
-          );
-        })()}
 
-        {/* Below chat */}
-        <p style={{
-          marginTop: '1.5rem',
-          fontSize: '0.85rem',
-          color: 'rgba(255, 255, 255, 0.4)',
-          textShadow: '0 1px 5px rgba(0,0,0,0.5)',
-        }}>
-          No account needed to start. Your AI team deploys in minutes.
-        </p>
-      </div>
-    </div>
+            <div className="glass-strong" style={{ padding: '1.5rem', boxShadow: '0 24px 60px rgba(20, 20, 40, 0.16)' }}>
+              <Hierarchy
+                width={940}
+                height={460}
+                team={hierarchyAgents}
+                principal={{
+                  initials: (businessName || 'You').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase(),
+                  first: businessName?.split(' ')[0] || 'You',
+                  role: 'Owner',
+                }}
+                showArcs
+                accent="var(--accent)"
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: '1.5rem' }}>
+              <a href="https://wisdomworks.vercel.app" target="_blank" rel="noopener" className="btn primary" style={{ padding: '12px 28px', fontSize: 14, textDecoration: 'none' }}>
+                Open Command Deck
+              </a>
+            </div>
+          </div>
+        )}
+      </main>
+    </>
   );
 }
