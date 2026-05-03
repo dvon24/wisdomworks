@@ -12,9 +12,11 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2026-04-22.dahlia',
-});
+function getStripe() {
+  return new Stripe(process.env.STRIPE_SECRET_KEY!, {
+    apiVersion: '2026-04-22.dahlia',
+  });
+}
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -28,6 +30,7 @@ export async function POST(request: Request) {
 
     // Verify webhook signature if secret is configured
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    const stripe = getStripe();
     if (webhookSecret && sig) {
       try {
         event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
