@@ -53,6 +53,7 @@ export default function HomePage() {
   const [showPreview, setShowPreview] = useState(false);
   const [showChatBelowPreview, setShowChatBelowPreview] = useState(false);
   const [showConnectTools, setShowConnectTools] = useState(false);
+  const [hasPaid, setHasPaid] = useState(false);
   const [agentsDeployed, setAgentsDeployed] = useState(false);
   const [businessName, setBusinessName] = useState('');
   const [structuredData, setStructuredData] = useState<any>(null);
@@ -84,6 +85,7 @@ export default function HomePage() {
       } catch (e) {
         console.error('Failed to restore onboarding data:', e);
       }
+      setHasPaid(true);
       setShowConnectTools(true);
       setShowPreview(true);
       window.history.replaceState({}, '', '/');
@@ -359,7 +361,7 @@ export default function HomePage() {
         )}
 
         {/* PHASE 2: Agent Preview — fades in, replaces conversation */}
-        {showPreview && (() => {
+        {showPreview && !hasPaid && (() => {
           const s = structuredData ?? {};
           const integrations: string[] = s.detectedIntegrations ?? ['Calendar', 'WhatsApp'];
           const employeeCount: number = s.employeeCount ?? 1;
@@ -642,6 +644,144 @@ export default function HomePage() {
                   </div>
                 </div>
               )}
+            </div>
+          );
+        })()}
+
+        {/* PHASE 3: Post-payment — ConnectTools and Deploy (when returning from Stripe) */}
+        {hasPaid && !agentsDeployed && showConnectTools && (
+          <div style={{ width: '100%', maxWidth: '1100px' }}>
+            <div style={{
+              position: 'relative', borderRadius: '16px', overflow: 'hidden',
+              border: '1px solid rgba(255, 255, 255, 0.08)', animation: 'fadeIn 0.5s ease',
+            }}>
+              <div style={{
+                position: 'absolute', inset: 0,
+                background: 'linear-gradient(to right, rgba(10, 10, 30, 0.85) 0%, rgba(10, 10, 30, 0.5) 40%, rgba(10, 10, 30, 0.15) 70%, rgba(10, 10, 30, 0.0) 100%)',
+                backdropFilter: 'blur(40px)',
+                WebkitMaskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
+                maskImage: 'linear-gradient(to right, black 0%, black 50%, rgba(0,0,0,0.5) 75%, rgba(0,0,0,0.2) 100%)',
+                zIndex: 0,
+              }} />
+              <div style={{ position: 'relative', zIndex: 1, padding: '1.5rem' }}>
+                <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
+                  <div style={{ fontSize: '1.5rem', marginBottom: '0.3rem' }}>Payment successful</div>
+                  <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.5)' }}>
+                    Now let's connect your tools and deploy your AI team.
+                  </div>
+                </div>
+                <ConnectTools
+                  onComplete={async () => {
+                    try {
+                      const s = structuredData ?? {};
+                      const agents = s.agents ?? [];
+                      const savedPhone = localStorage.getItem('wisdomworks_phone');
+                      const bName = businessName || s.businessName || 'Your Business';
+                      if (savedPhone) {
+                        await fetch('/api/deploy-complete', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            phoneNumber: savedPhone,
+                            businessName: bName,
+                            businessType: s.businessType,
+                            agentCount: agents.length || 4,
+                            agents: agents.length > 0
+                              ? agents.slice(0, 5).map((a: any) => ({ name: a.name, role: a.role, emoji: a.emoji }))
+                              : [{ name: 'Your Assistant', role: 'Personal AI Assistant' }],
+                          }),
+                        });
+                      }
+                    } catch (err) {
+                      console.error('Deploy complete error:', err);
+                    }
+                    setShowConnectTools(false);
+                    setAgentsDeployed(true);
+                  }}
+                  onSkip={() => setShowConnectTools(false)}
+                  businessName={businessName || structuredData?.businessName}
+                  businessType={structuredData?.businessType}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Post-deployment agent team view */}
+        {hasPaid && agentsDeployed && (() => {
+          const s = structuredData ?? {};
+          const agents = s.agents ?? [];
+          return (
+            <div style={{ width: '100%', maxWidth: '1100px' }}>
+              <div style={{
+                borderRadius: '16px', overflow: 'hidden',
+                background: 'rgba(34, 197, 94, 0.05)', border: '1px solid rgba(34, 197, 94, 0.2)',
+                animation: 'fadeIn 0.8s ease',
+              }}>
+                <div style={{ padding: '2rem', textAlign: 'center', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>🚀</div>
+                  <h3 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.5rem' }}>Your AI Team is Live!</h3>
+                  <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)' }}>
+                    Check your WhatsApp — your personal assistant just introduced themselves.
+                  </p>
+                </div>
+                <div style={{ padding: '1.5rem' }}>
+                  <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.4)', marginBottom: '1rem', textAlign: 'center' }}>
+                    Your Agent Team
+                  </div>
+                  {agents.length > 0 && (
+                    <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+                      <div style={{
+                        display: 'inline-flex', flexDirection: 'column', alignItems: 'center',
+                        padding: '1rem 1.5rem', borderRadius: '16px',
+                        background: 'rgba(99, 102, 241, 0.15)', border: '2px solid rgba(99, 102, 241, 0.4)',
+                      }}>
+                        <span style={{ fontSize: '1.5rem' }}>{agents[0].emoji || '🤖'}</span>
+                        <div style={{ fontSize: '0.95rem', fontWeight: 700, marginTop: '0.3rem' }}>{agents[0].name}</div>
+                        <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>{agents[0].role}</div>
+                        <div style={{ fontSize: '0.65rem', color: '#6366f1', marginTop: '0.2rem' }}>Coordinates all agents</div>
+                      </div>
+                    </div>
+                  )}
+                  {agents.length > 1 && (
+                    <>
+                      <div style={{ textAlign: 'center', marginBottom: '0.5rem' }}>
+                        <div style={{ width: '2px', height: '20px', background: 'rgba(99,102,241,0.3)', margin: '0 auto' }} />
+                      </div>
+                      <div style={{
+                        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                        gap: '0.6rem',
+                      }}>
+                        {agents.slice(1).map((agent: any, i: number) => (
+                          <div key={i} style={{
+                            padding: '0.8rem', borderRadius: '10px', textAlign: 'center',
+                            background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
+                          }}>
+                            <span style={{ fontSize: '1.2rem' }}>{agent.emoji || '🤖'}</span>
+                            <div style={{ fontSize: '0.8rem', fontWeight: 600, marginTop: '0.2rem' }}>{agent.name}</div>
+                            <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)' }}>{agent.role}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div style={{
+                  padding: '1.5rem', borderTop: '1px solid rgba(255,255,255,0.06)',
+                  display: 'flex', gap: '0.6rem', justifyContent: 'center',
+                }}>
+                  <button onClick={() => {
+                    setAgentsDeployed(false);
+                    setShowConnectTools(true);
+                  }} style={{
+                    padding: '0.7rem 1.5rem', background: 'rgba(255,255,255,0.08)',
+                    color: 'rgba(255,255,255,0.6)', border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '10px', fontSize: '0.85rem', cursor: 'pointer',
+                  }}>
+                    Manage Connections
+                  </button>
+                </div>
+              </div>
             </div>
           );
         })()}
