@@ -10,7 +10,6 @@ import { useState } from 'react';
  */
 
 interface ConnectionStatus {
-  whatsapp: 'disconnected' | 'connecting' | 'connected';
   email: 'disconnected' | 'connecting' | 'connected';
   calendar: 'disconnected' | 'connecting' | 'connected';
   instagram: 'disconnected' | 'connecting' | 'connected';
@@ -25,13 +24,10 @@ interface ConnectToolsProps {
 
 export default function ConnectTools({ onComplete, onSkip, businessName, businessType }: ConnectToolsProps) {
   const [status, setStatus] = useState<ConnectionStatus>({
-    whatsapp: 'disconnected',
     email: 'disconnected',
     calendar: 'disconnected',
     instagram: 'disconnected',
   });
-  const [showQR, setShowQR] = useState(false);
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [phoneNumber, setPhoneNumber] = useState('');
   const [phoneSaved, setPhoneSaved] = useState(false);
 
@@ -39,57 +35,6 @@ export default function ConnectTools({ onComplete, onSkip, businessName, busines
 
   const handleConnect = async (tool: keyof ConnectionStatus) => {
     setStatus((prev) => ({ ...prev, [tool]: 'connecting' }));
-
-    if (tool === 'whatsapp') {
-      setShowQR(true);
-
-      try {
-        // Connect to WhatsApp API — streams QR codes via SSE
-        // Connects to standalone WhatsApp server on port 3002
-        const eventSource = new EventSource('http://localhost:3002/connect?tenantId=default');
-
-        eventSource.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-
-          if (data.type === 'qr') {
-            setQrDataUrl(data.qrDataUrl);
-          }
-
-          if (data.type === 'connected') {
-            setStatus((prev) => ({ ...prev, whatsapp: 'connected' }));
-            setShowQR(false);
-            setQrDataUrl(null);
-            eventSource.close();
-          }
-
-          if (data.type === 'error') {
-            console.error('WhatsApp connection error:', data.message);
-            // Fallback to simulated connection for testing
-            setTimeout(() => {
-              setStatus((prev) => ({ ...prev, whatsapp: 'connected' }));
-              setShowQR(false);
-            }, 3000);
-            eventSource.close();
-          }
-        };
-
-        eventSource.onerror = () => {
-          // API not available — simulate for testing
-          setTimeout(() => {
-            setStatus((prev) => ({ ...prev, whatsapp: 'connected' }));
-            setShowQR(false);
-          }, 3000);
-          eventSource.close();
-        };
-      } catch {
-        // Fallback simulation
-        setTimeout(() => {
-          setStatus((prev) => ({ ...prev, whatsapp: 'connected' }));
-          setShowQR(false);
-        }, 3000);
-      }
-      return;
-    }
 
     // OAuth flow for email, calendar, instagram
     // In production: opens popup/redirect to OAuth provider
@@ -100,13 +45,6 @@ export default function ConnectTools({ onComplete, onSkip, businessName, busines
   };
 
   const tools = [
-    {
-      key: 'whatsapp' as const,
-      name: 'WhatsApp',
-      emoji: '💬',
-      description: 'Your agents text you here. Scan QR code to connect.',
-      required: true,
-    },
     {
       key: 'email' as const,
       name: 'Email',
@@ -253,40 +191,10 @@ export default function ConnectTools({ onComplete, onSkip, businessName, busines
         ))}
       </div>
 
-      {/* WhatsApp QR Code Modal */}
-      {showQR && (
-        <div style={{
-          padding: '1.5rem', borderRadius: '12px', textAlign: 'center',
-          background: 'rgba(255, 255, 255, 0.06)', border: '1px solid rgba(255, 255, 255, 0.1)',
-          marginBottom: '1rem',
-        }}>
-          <div style={{ fontSize: '0.9rem', fontWeight: 600, marginBottom: '0.5rem' }}>
-            Scan this QR code with WhatsApp
-          </div>
-          <div style={{
-            width: '220px', height: '220px', margin: '1rem auto',
-            background: 'white', borderRadius: '12px',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            overflow: 'hidden',
-          }}>
-            {qrDataUrl ? (
-              <img src={qrDataUrl} alt="WhatsApp QR Code" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-            ) : (
-              <div style={{ fontSize: '0.8rem', color: '#333', textAlign: 'center', padding: '1rem' }}>
-                Generating QR code...
-              </div>
-            )}
-          </div>
-          <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)' }}>
-            Open WhatsApp → Settings → Linked Devices → Link a Device
-          </div>
-        </div>
-      )}
-
       {/* Progress */}
       <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
         <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.4)' }}>
-          {connectedCount}/4 tools connected
+          {connectedCount}/{tools.length + 1} connected
         </div>
         <div style={{
           height: '4px', borderRadius: '2px', marginTop: '0.5rem',
@@ -295,7 +203,7 @@ export default function ConnectTools({ onComplete, onSkip, businessName, busines
           <div style={{
             height: '100%', borderRadius: '2px',
             background: '#6366f1',
-            width: `${(connectedCount / 4) * 100}%`,
+            width: `${(connectedCount / (tools.length + 1)) * 100}%`,
             transition: 'width 0.5s ease',
           }} />
         </div>
@@ -303,12 +211,12 @@ export default function ConnectTools({ onComplete, onSkip, businessName, busines
 
       {/* Actions */}
       <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'center' }}>
-        <button onClick={onComplete} style={{
-          padding: '0.7rem 1.8rem', background: connectedCount > 0 ? '#6366f1' : 'rgba(99,102,241,0.5)',
+        <button onClick={onComplete} disabled={!phoneSaved} style={{
+          padding: '0.7rem 1.8rem', background: phoneSaved ? '#6366f1' : 'rgba(99,102,241,0.5)',
           color: 'white', border: 'none', borderRadius: '10px', fontSize: '0.9rem', fontWeight: 600,
-          cursor: connectedCount > 0 ? 'pointer' : 'not-allowed',
+          cursor: phoneSaved ? 'pointer' : 'not-allowed',
         }}>
-          {connectedCount > 0 ? 'Deploy My Agents' : 'Connect at least 1 tool'}
+          {phoneSaved ? 'Deploy My Agents' : 'Enter your phone number first'}
         </button>
         <button onClick={onSkip} style={{
           padding: '0.7rem 1.8rem', background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.6)',
