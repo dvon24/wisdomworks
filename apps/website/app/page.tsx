@@ -75,6 +75,7 @@ export default function HomePage() {
   const [businessName, setBusinessName] = useState('');
   const [structuredData, setStructuredData] = useState<any>(null);
   const [inputPlaceholder, setInputPlaceholder] = useState('Describe your business...');
+  const [showExample, setShowExample] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Restore state if returning from Stripe
@@ -320,15 +321,24 @@ export default function HomePage() {
               </div>
             </div>
 
-            {/* Trust footer */}
-            <div style={{ marginTop: 20, fontSize: 12, color: 'var(--text-faint)', textAlign: 'center' }}>
-              No account needed to start · Your AI team deploys in minutes
+            {/* Trust footer + example toggle */}
+            <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>
+                No account needed to start · Your AI team deploys in minutes
+              </div>
+              <button
+                onClick={() => setShowExample(!showExample)}
+                className="btn ghost"
+                style={{ fontSize: 12, padding: '6px 14px' }}
+              >
+                {showExample ? '✕ Hide example' : 'See an example team →'}
+              </button>
             </div>
           </div>
         )}
 
-        {/* Example preview — shows below chat to give visitors a concrete sense of what they'll get */}
-        {!showPreview && <ExamplePreview />}
+        {/* Example preview — only shown when user clicks "See an example" */}
+        {!showPreview && showExample && <ExamplePreview />}
 
         {/* PHASE 2: Agent Hierarchy Preview (pre-payment) */}
         {showPreview && !hasPaid && (
