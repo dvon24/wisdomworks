@@ -35,7 +35,7 @@ export default function ConnectTools({ onComplete, onSkip, businessName, busines
   const [phoneNumber, setPhoneNumber] = useState('');
   const [phoneSaved, setPhoneSaved] = useState(false);
 
-  const connectedCount = Object.values(status).filter((s) => s === 'connected').length;
+  const connectedCount = Object.values(status).filter((s) => s === 'connected').length + (phoneSaved ? 1 : 0);
 
   const handleConnect = async (tool: keyof ConnectionStatus) => {
     setStatus((prev) => ({ ...prev, [tool]: 'connecting' }));
@@ -178,6 +178,8 @@ export default function ConnectTools({ onComplete, onSkip, businessName, busines
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ phoneNumber, businessName, businessType }),
                   });
+                  // Save phone for deploy-complete step
+                  localStorage.setItem('wisdomworks_phone', phoneNumber);
                   setPhoneSaved(true);
                 } catch (e) {
                   console.error('Link phone error:', e);
