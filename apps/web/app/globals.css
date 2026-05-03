@@ -3,13 +3,14 @@
 
 * { box-sizing: border-box; padding: 0; margin: 0; }
 
+html { background: var(--canvas); }
 html, body {
   max-width: 100vw;
   overflow-x: hidden;
   font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
-  background: var(--canvas);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
+body { background: transparent; }
 
 a { color: inherit; text-decoration: none; }

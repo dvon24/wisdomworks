@@ -18,6 +18,9 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Photo background sits behind the body, body has no fill so photos show */
+body { background: transparent; }
+
 a {
   color: var(--accent);
   text-decoration: none;

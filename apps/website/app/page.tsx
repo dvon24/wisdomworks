@@ -218,17 +218,29 @@ export default function HomePage() {
         {!showPreview && (
           <div style={{ width: '100%', maxWidth: 720, padding: '0 24px' }}>
             <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-              <div className="eyebrow" style={{ marginBottom: 12 }}>Your AI team, in two minutes</div>
-              <div className="num-lg" style={{ color: 'var(--text)', fontWeight: 300 }}>
-                Tell me about your business.
+              <div className="eyebrow" style={{ marginBottom: 14 }}>Self-deploying AI · runs your business 24/7</div>
+              <div className="num-xxl" style={{ color: 'var(--text)' }}>
+                Tell us what you need.
               </div>
-              <div style={{ marginTop: 12, color: 'var(--text-dim)', fontSize: 14 }}>
-                I'll build a team that runs it for you.
+              <div style={{ marginTop: 14, fontSize: 16, color: 'var(--text-dim)' }}>
+                AI builds it. AI runs it. AI improves it.
               </div>
             </div>
 
-            <div className="glass-strong" style={{ padding: '1.25rem', boxShadow: '0 24px 60px rgba(20, 20, 40, 0.16)' }}>
-              <div className="scroll" style={{ maxHeight: '50vh', minHeight: 240, padding: '0.5rem 0.5rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <div className="glass-strong pop-in" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 14, boxShadow: '0 24px 80px rgba(20,20,40,0.18)' }}>
+              {/* Chat header */}
+              <header style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div className="breathe" style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--accent)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600 }}>✦</div>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>Iris · onboarding</div>
+                  <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>~3 min · no account needed yet</div>
+                </div>
+                <span style={{ flex: 1 }} />
+                <span className="pill info">Free to start</span>
+              </header>
+
+              {/* Messages */}
+              <div className="scroll" style={{ minHeight: 180, maxHeight: '40vh', display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {messages.map((msg, i) => (
                   <div
                     key={i}
@@ -237,7 +249,7 @@ export default function HomePage() {
                       maxWidth: '82%',
                       padding: '10px 14px',
                       borderRadius: 14,
-                      background: msg.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,0.78)',
+                      background: msg.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,0.85)',
                       color: msg.role === 'user' ? 'white' : 'var(--text)',
                       borderTopRightRadius: msg.role === 'user' ? 4 : 14,
                       borderTopLeftRadius: msg.role === 'user' ? 14 : 4,
@@ -250,27 +262,53 @@ export default function HomePage() {
                   </div>
                 ))}
                 {isLoading && (
-                  <div style={{ alignSelf: 'flex-start', padding: '10px 14px', borderRadius: 14, background: 'rgba(255,255,255,0.78)', border: '1px solid var(--glass-border)' }}>
+                  <div style={{ alignSelf: 'flex-start', padding: '10px 14px', borderRadius: 14, background: 'rgba(255,255,255,0.85)', border: '1px solid var(--glass-border)' }}>
                     <span style={{ opacity: 0.5, animation: 'pulse 1.5s infinite', fontSize: 13 }}>thinking…</span>
                   </div>
                 )}
                 <div ref={messagesEndRef} />
               </div>
-              <div style={{ display: 'flex', gap: 8, paddingTop: '0.75rem', borderTop: '1px solid var(--glass-border)' }}>
+
+              {/* Starter suggestions — only show before user has sent any messages */}
+              {messages.length <= 1 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {[
+                    'I run an auto repair shop',
+                    'Solo brand designer',
+                    '20-person dental practice',
+                    'Yoga studio · 3 locations',
+                  ].map((s) => (
+                    <button
+                      key={s}
+                      className="btn"
+                      style={{ fontSize: 11.5, padding: '6px 12px', background: 'rgba(255,255,255,0.5)' }}
+                      onClick={() => {
+                        setInput(s);
+                        setTimeout(() => handleSend(), 50);
+                      }}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Input */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', borderTop: '1px solid var(--glass-border)', paddingTop: 14 }}>
                 <input
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder={inputPlaceholder}
+                  placeholder={inputPlaceholder || 'Describe your business…'}
                   style={{
                     flex: 1,
-                    background: 'rgba(255,255,255,0.5)',
+                    background: 'rgba(255,255,255,0.55)',
                     border: '1px solid var(--glass-border)',
-                    borderRadius: 10,
-                    padding: '10px 14px',
+                    borderRadius: 12,
+                    padding: '12px 14px',
                     outline: 0,
-                    fontSize: 13.5,
+                    fontSize: 14,
                     fontFamily: 'inherit',
                     color: 'var(--text)',
                   }}
@@ -279,6 +317,11 @@ export default function HomePage() {
                   Send
                 </button>
               </div>
+            </div>
+
+            {/* Trust footer */}
+            <div style={{ marginTop: 20, fontSize: 12, color: 'var(--text-faint)', textAlign: 'center' }}>
+              No account needed to start · Your AI team deploys in minutes
             </div>
           </div>
         )}
