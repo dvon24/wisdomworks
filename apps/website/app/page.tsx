@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Background, WisdomLockup, WisdomMark, Hierarchy, type HierarchyAgent } from '@wisdomworks/ui';
 import ConnectTools from './components/ConnectTools';
+import ExamplePreview from './components/ExamplePreview';
 
 /** Render AI markdown as clean readable JSX — bold, bullets, numbered lists */
 function formatMessage(text: string): React.ReactNode {
@@ -325,6 +326,9 @@ export default function HomePage() {
             </div>
           </div>
         )}
+
+        {/* Example preview — shows below chat to give visitors a concrete sense of what they'll get */}
+        {!showPreview && <ExamplePreview />}
 
         {/* PHASE 2: Agent Hierarchy Preview (pre-payment) */}
         {showPreview && !hasPaid && (
