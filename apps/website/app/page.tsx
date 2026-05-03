@@ -68,6 +68,18 @@ export default function HomePage() {
   const dissolvingRef = useRef(false);
   const DISSOLVE_DURATION = 4; // seconds — how long both videos overlap
 
+  // Check if returning from Stripe payment
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('paid') === 'true') {
+      // Payment successful — skip straight to ConnectTools
+      setShowConnectTools(true);
+      setShowPreview(true);
+      // Clean the URL
+      window.history.replaceState({}, '', '/');
+    }
+  }, []);
+
   useEffect(() => {
     if (videoARef.current) {
       videoARef.current.src = BG_VIDEOS[0]!;
@@ -378,7 +390,34 @@ export default function HomePage() {
                     costData={s.costOfInaction}
                     painPoints={s.painPoints}
                     location={s.location}
-                    onStartTrial={() => setShowConnectTools(true)}
+                    onStartTrial={async () => {
+                      try {
+                        // Parse price from estimated price string (e.g., "$99/month" → 99)
+                        const priceStr = s.estimatedPrice || team.price || '$99/month';
+                        const priceMatch = priceStr.match(/[\d,]+/);
+                        const monthlyPrice = priceMatch ? parseInt(priceMatch[0].replace(/,/g, ''), 10) : 99;
+                        const currency = s.location?.currency?.toLowerCase() || 'usd';
+
+                        const res = await fetch('/api/checkout', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            monthlyPrice,
+                            businessName: businessName || s.businessName || 'Your Business',
+                            agentCount: team.agents.length,
+                            currency,
+                          }),
+                        });
+                        const data = await res.json();
+                        if (data.url) {
+                          window.location.href = data.url;
+                        }
+                      } catch (err) {
+                        console.error('Checkout error:', err);
+                        // Fallback: show ConnectTools directly
+                        setShowConnectTools(true);
+                      }
+                    }}
                     onAskQuestion={() => setShowChatBelowPreview(true)}
                   />
                 </div>
@@ -405,6 +444,8 @@ export default function HomePage() {
                         setAgentsDeployed(true);
                       }}
                       onSkip={() => setShowConnectTools(false)}
+                      businessName={businessName || structuredData?.businessName}
+                      businessType={structuredData?.businessType}
                     />
                   </div>
                 </div>

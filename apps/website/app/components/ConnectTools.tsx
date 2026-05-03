@@ -19,9 +19,11 @@ interface ConnectionStatus {
 interface ConnectToolsProps {
   onComplete: () => void;
   onSkip: () => void;
+  businessName?: string;
+  businessType?: string;
 }
 
-export default function ConnectTools({ onComplete, onSkip }: ConnectToolsProps) {
+export default function ConnectTools({ onComplete, onSkip, businessName, businessType }: ConnectToolsProps) {
   const [status, setStatus] = useState<ConnectionStatus>({
     whatsapp: 'disconnected',
     email: 'disconnected',
@@ -30,6 +32,8 @@ export default function ConnectTools({ onComplete, onSkip }: ConnectToolsProps) 
   });
   const [showQR, setShowQR] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [phoneSaved, setPhoneSaved] = useState(false);
 
   const connectedCount = Object.values(status).filter((s) => s === 'connected').length;
 
@@ -138,6 +142,61 @@ export default function ConnectTools({ onComplete, onSkip }: ConnectToolsProps) 
         <p style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.5)', marginTop: '0.3rem' }}>
           Your agents need access to work for you. This takes 30 seconds.
         </p>
+      </div>
+
+      {/* Phone number input — links WhatsApp to their account */}
+      <div style={{
+        padding: '1rem 1.2rem', borderRadius: '12px', marginBottom: '1rem',
+        background: phoneSaved ? 'rgba(34, 197, 94, 0.1)' : 'rgba(99, 102, 241, 0.08)',
+        border: `1px solid ${phoneSaved ? 'rgba(34, 197, 94, 0.3)' : 'rgba(99, 102, 241, 0.2)'}`,
+      }}>
+        <div style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+          Your WhatsApp Number
+        </div>
+        <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)', marginBottom: '0.8rem' }}>
+          This is how your AI assistant reaches you. Include country code.
+        </div>
+        {!phoneSaved ? (
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <input
+              type="tel"
+              placeholder="+1 555 123 4567"
+              value={phoneNumber}
+              onChange={(e) => setPhoneNumber(e.target.value)}
+              style={{
+                flex: 1, padding: '0.6rem 1rem', borderRadius: '8px',
+                border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.06)',
+                color: 'white', fontSize: '0.9rem', outline: 'none',
+              }}
+            />
+            <button
+              onClick={async () => {
+                if (phoneNumber.length < 8) return;
+                try {
+                  await fetch('/api/link-phone', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phoneNumber, businessName, businessType }),
+                  });
+                  setPhoneSaved(true);
+                } catch (e) {
+                  console.error('Link phone error:', e);
+                }
+              }}
+              style={{
+                padding: '0.6rem 1.2rem', borderRadius: '8px', border: 'none',
+                background: '#6366f1', color: 'white', fontSize: '0.85rem',
+                fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              Save
+            </button>
+          </div>
+        ) : (
+          <div style={{ color: 'rgba(34, 197, 94, 0.9)', fontSize: '0.9rem', fontWeight: 600 }}>
+            Connected — your assistant will text you here
+          </div>
+        )}
       </div>
 
       {/* Tool connections */}

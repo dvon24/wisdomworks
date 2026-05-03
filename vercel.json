@@ -1,5 +1,10 @@
 {
   "installCommand": "cd ../.. && pnpm install",
   "buildCommand": "cd ../.. && pnpm turbo build --filter=@wisdomworks/web",
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "crons": [
+    { "path": "/api/cron/daily-briefing", "schedule": "0 7 * * *" },
+    { "path": "/api/cron/proactive-loop", "schedule": "0 */4 * * *" },
+    { "path": "/api/cron/email-sift", "schedule": "*/30 * * * *" }
+  ]
 }
