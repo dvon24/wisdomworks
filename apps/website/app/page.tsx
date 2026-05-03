@@ -68,14 +68,24 @@ export default function HomePage() {
   const dissolvingRef = useRef(false);
   const DISSOLVE_DURATION = 4; // seconds — how long both videos overlap
 
-  // Check if returning from Stripe payment
+  // Check if returning from Stripe payment — restore saved state
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('paid') === 'true') {
-      // Payment successful — skip straight to ConnectTools
+      // Restore onboarding data from localStorage
+      try {
+        const saved = localStorage.getItem('wisdomworks_onboarding');
+        if (saved) {
+          const data = JSON.parse(saved);
+          if (data.structuredData) setStructuredData(data.structuredData);
+          if (data.businessName) setBusinessName(data.businessName);
+          if (data.messages) setMessages(data.messages);
+        }
+      } catch (e) {
+        console.error('Failed to restore onboarding data:', e);
+      }
       setShowConnectTools(true);
       setShowPreview(true);
-      // Clean the URL
       window.history.replaceState({}, '', '/');
     }
   }, []);
@@ -398,6 +408,13 @@ export default function HomePage() {
                         const monthlyPrice = priceMatch ? parseInt(priceMatch[0].replace(/,/g, ''), 10) : 99;
                         const currency = s.location?.currency?.toLowerCase() || 'usd';
 
+                        // Save onboarding state before redirecting to Stripe
+                        localStorage.setItem('wisdomworks_onboarding', JSON.stringify({
+                          structuredData,
+                          businessName: businessName || s.businessName || 'Your Business',
+                          messages,
+                        }));
+
                         const res = await fetch('/api/checkout', {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
@@ -440,31 +457,38 @@ export default function HomePage() {
                   <div style={{ position: 'relative', zIndex: 1, padding: '1.5rem' }}>
                     <ConnectTools
                       onComplete={async () => {
-                        setShowConnectTools(false);
-                        setAgentsDeployed(true);
-
-                        // Send welcome WhatsApp message
+                        // Send welcome WhatsApp message before transitioning
                         try {
                           const s = structuredData ?? {};
                           const agents = s.agents ?? [];
-                          // Get phone from ConnectTools (stored in localStorage during save)
                           const savedPhone = localStorage.getItem('wisdomworks_phone');
+                          const bName = businessName || s.businessName || 'Your Business';
                           if (savedPhone) {
                             await fetch('/api/deploy-complete', {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({
                                 phoneNumber: savedPhone,
-                                businessName: businessName || s.businessName,
+                                businessName: bName,
                                 businessType: s.businessType,
-                                agentCount: agents.length,
-                                agents: agents.slice(0, 5).map((a: any) => ({ name: a.name, role: a.role })),
+                                agentCount: agents.length || 4,
+                                agents: agents.length > 0
+                                  ? agents.slice(0, 5).map((a: any) => ({ name: a.name, role: a.role, emoji: a.emoji }))
+                                  : [{ name: 'Your Assistant', role: 'Personal AI Assistant' }],
                               }),
                             });
                           }
                         } catch (err) {
                           console.error('Deploy complete error:', err);
                         }
+
+                        // Redirect to dashboard
+                        setShowConnectTools(false);
+                        setAgentsDeployed(true);
+                        // Scroll to the deployed section
+                        setTimeout(() => {
+                          window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                        }, 300);
                       }}
                       onSkip={() => setShowConnectTools(false)}
                       businessName={businessName || structuredData?.businessName}
