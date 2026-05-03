@@ -13,7 +13,7 @@ import Stripe from 'stripe';
 export const dynamic = 'force-dynamic';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2025-04-30.basil',
+  apiVersion: '2026-04-22.dahlia',
 });
 
 export async function POST(request: Request) {
