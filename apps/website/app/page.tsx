@@ -77,6 +77,7 @@ export default function HomePage() {
   const [inputPlaceholder, setInputPlaceholder] = useState('Describe your business...');
   const [showExample, setShowExample] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string>('iris');
+  const [showRefineChat, setShowRefineChat] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Restore state if returning from Stripe
@@ -529,10 +530,79 @@ export default function HomePage() {
               <button onClick={handleStartTrial} className="btn primary" style={{ padding: '12px 28px', fontSize: 14 }}>
                 Start Trial · {currencySymbol}{totalPrice}/mo
               </button>
-              <button className="btn ghost" style={{ padding: '12px 24px', fontSize: 14 }}>
-                Ask questions
+              <button
+                onClick={() => setShowRefineChat(!showRefineChat)}
+                className="btn ghost"
+                style={{ padding: '12px 24px', fontSize: 14 }}
+              >
+                {showRefineChat ? '✕ Close chat' : 'Ask Iris to customize →'}
               </button>
             </div>
+
+            {/* Refine chat — talk to Iris to customize the team */}
+            {showRefineChat && (
+              <div className="glass-strong" style={{ padding: 18, marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <header style={{ display: 'flex', alignItems: 'center', gap: 10, paddingBottom: 8, borderBottom: '1px solid var(--glass-border)' }}>
+                  <div className="breathe" style={{ width: 26, height: 26, borderRadius: 8, background: 'var(--accent)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 12 }}>✦</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>Talk to Iris</div>
+                    <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>
+                      Try: "rename Atlas to Maya" · "add a recruiter" · "what does Vega actually do?"
+                    </div>
+                  </div>
+                </header>
+
+                <div className="scroll" style={{ maxHeight: '30vh', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {messages.slice(-6).map((msg, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                        maxWidth: '85%',
+                        padding: '8px 12px',
+                        borderRadius: 12,
+                        background: msg.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,0.85)',
+                        color: msg.role === 'user' ? 'white' : 'var(--text)',
+                        fontSize: 13,
+                        lineHeight: 1.5,
+                        border: msg.role === 'user' ? 'none' : '1px solid var(--glass-border)',
+                      }}
+                    >
+                      {formatMessage(msg.content)}
+                    </div>
+                  ))}
+                  {isLoading && (
+                    <div style={{ alignSelf: 'flex-start', padding: '8px 12px', borderRadius: 12, background: 'rgba(255,255,255,0.85)', border: '1px solid var(--glass-border)' }}>
+                      <span style={{ opacity: 0.5, animation: 'pulse 1.5s infinite', fontSize: 12 }}>thinking…</span>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                    placeholder="Ask a question or refine the team…"
+                    style={{
+                      flex: 1,
+                      background: 'rgba(255,255,255,0.55)',
+                      border: '1px solid var(--glass-border)',
+                      borderRadius: 10,
+                      padding: '9px 12px',
+                      fontSize: 13,
+                      outline: 'none',
+                      fontFamily: 'inherit',
+                      color: 'var(--text)',
+                    }}
+                  />
+                  <button onClick={handleSend} disabled={isLoading || !input.trim()} className="btn primary" style={{ fontSize: 12 }}>
+                    Send
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           );
         })()}

@@ -7,6 +7,8 @@
  * Production should add envelope encryption with a dedicated key vault.
  */
 
+import { decryptToken, encryptToken } from './crypto';
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -38,6 +40,15 @@ export async function saveConnection(conn: OAuthConnection): Promise<boolean> {
     return false;
   }
 
+  // Encrypt sensitive fields before storage
+  const encrypted = {
+    ...conn,
+    access_token: await encryptToken(conn.access_token),
+    refresh_token: conn.refresh_token ? await encryptToken(conn.refresh_token) : undefined,
+    status: conn.status ?? 'active',
+    updated_at: new Date().toISOString(),
+  };
+
   const res = await fetch(`${SUPABASE_URL}/rest/v1/oauth_connections`, {
     method: 'POST',
     headers: {
@@ -46,11 +57,7 @@ export async function saveConnection(conn: OAuthConnection): Promise<boolean> {
       'Content-Type': 'application/json',
       Prefer: 'resolution=merge-duplicates,return=minimal',
     },
-    body: JSON.stringify({
-      ...conn,
-      status: conn.status ?? 'active',
-      updated_at: new Date().toISOString(),
-    }),
+    body: JSON.stringify(encrypted),
   });
 
   if (!res.ok) {
@@ -81,7 +88,9 @@ export async function loadConnections(phoneNumber: string): Promise<OAuthConnect
   );
 
   if (!res.ok) return [];
-  return res.json();
+  const rows = (await res.json()) as OAuthConnection[];
+  // Decrypt tokens on read
+  return Promise.all(rows.map(decryptConnection));
 }
 
 /**
@@ -107,7 +116,15 @@ export async function getConnection(
 
   if (!res.ok) return null;
   const rows = await res.json();
-  return rows[0] ?? null;
+  return rows[0] ? decryptConnection(rows[0]) : null;
+}
+
+async function decryptConnection(conn: OAuthConnection): Promise<OAuthConnection> {
+  return {
+    ...conn,
+    access_token: await decryptToken(conn.access_token),
+    refresh_token: conn.refresh_token ? await decryptToken(conn.refresh_token) : undefined,
+  };
 }
 
 /**
