@@ -1,13 +1,21 @@
 /**
- * Meta OAuth callback — exchanges code for Instagram access token, saves connection.
+ * Meta OAuth callback — Facebook Login for Business with Instagram permissions.
+ *
+ * Flow:
+ * 1. Exchange code for short-lived user access token
+ * 2. Exchange short-lived for long-lived (60 days)
+ * 3. Get user's Facebook Pages
+ * 4. Find the Instagram Business Account linked to a Page
+ * 5. Save the Page access token (used to make API calls on behalf of the IG account)
  */
 
 import { decodeState, getCallbackBaseUrl, saveConnection } from '../../_lib/store';
 
 export const dynamic = 'force-dynamic';
 
-const META_TOKEN_URL = 'https://api.instagram.com/oauth/access_token';
-const META_USERINFO_URL = 'https://graph.instagram.com/me?fields=id,username';
+const FB_TOKEN_URL = 'https://graph.facebook.com/v25.0/oauth/access_token';
+const FB_USER_URL = 'https://graph.facebook.com/v25.0/me';
+const FB_PAGES_URL = 'https://graph.facebook.com/v25.0/me/accounts';
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -28,8 +36,8 @@ export async function GET(request: Request) {
     return new Response('Invalid or expired state', { status: 400 });
   }
 
-  const clientId = process.env.META_CLIENT_ID ?? process.env.INSTAGRAM_APP_ID;
-  const clientSecret = process.env.META_CLIENT_SECRET ?? process.env.INSTAGRAM_APP_SECRET;
+  const clientId = process.env.META_CLIENT_ID;
+  const clientSecret = process.env.META_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
     return new Response('Meta OAuth not configured', { status: 500 });
   }
@@ -37,38 +45,58 @@ export async function GET(request: Request) {
   const redirectUri = `${getCallbackBaseUrl(request)}/api/oauth/meta/callback`;
 
   try {
-    // Instagram returns short-lived token here
-    const tokenRes = await fetch(META_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: 'authorization_code',
-        redirect_uri: redirectUri,
-        code,
-      }),
-    });
+    // 1. Exchange code for short-lived user access token
+    const tokenUrl = new URL(FB_TOKEN_URL);
+    tokenUrl.searchParams.set('client_id', clientId);
+    tokenUrl.searchParams.set('client_secret', clientSecret);
+    tokenUrl.searchParams.set('redirect_uri', redirectUri);
+    tokenUrl.searchParams.set('code', code);
 
+    const tokenRes = await fetch(tokenUrl.toString());
     if (!tokenRes.ok) {
       console.error('[meta-oauth] Token exchange failed:', await tokenRes.text());
       return Response.redirect(`${getCallbackBaseUrl(request)}/?oauth=error&provider=meta`, 302);
     }
-
     const shortToken = await tokenRes.json();
 
-    // Exchange short-lived for long-lived (60 days)
-    const longTokenRes = await fetch(
-      `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${clientSecret}&access_token=${shortToken.access_token}`,
-    );
-    const longToken = await longTokenRes.json();
+    // 2. Exchange for long-lived (60 days)
+    const longUrl = new URL(FB_TOKEN_URL);
+    longUrl.searchParams.set('grant_type', 'fb_exchange_token');
+    longUrl.searchParams.set('client_id', clientId);
+    longUrl.searchParams.set('client_secret', clientSecret);
+    longUrl.searchParams.set('fb_exchange_token', shortToken.access_token);
 
-    const accessToken = longToken.access_token ?? shortToken.access_token;
-    const expiresIn = longToken.expires_in ?? 3600;
+    const longRes = await fetch(longUrl.toString());
+    const longToken = await longRes.json();
+    const userToken = longToken.access_token ?? shortToken.access_token;
+    const expiresIn = longToken.expires_in ?? 5184000; // ~60 days
 
-    // Fetch user info
-    const userRes = await fetch(`${META_USERINFO_URL}&access_token=${accessToken}`);
+    // 3. Get user info
+    const userRes = await fetch(`${FB_USER_URL}?fields=id,name&access_token=${userToken}`);
     const user = await userRes.json();
+
+    // 4. Get pages and find Instagram Business Account
+    const pagesRes = await fetch(`${FB_PAGES_URL}?fields=id,name,access_token,instagram_business_account&access_token=${userToken}`);
+    const pagesData = await pagesRes.json();
+    const pageWithIg = pagesData.data?.find((p: any) => p.instagram_business_account);
+
+    let igUsername: string | undefined;
+    let igAccountId: string | undefined;
+    let pageAccessToken: string | undefined;
+    let pageId: string | undefined;
+
+    if (pageWithIg) {
+      pageAccessToken = pageWithIg.access_token;
+      pageId = pageWithIg.id;
+      igAccountId = pageWithIg.instagram_business_account.id;
+
+      // Get IG username
+      const igRes = await fetch(
+        `https://graph.facebook.com/v25.0/${igAccountId}?fields=username,name&access_token=${pageAccessToken}`,
+      );
+      const ig = await igRes.json();
+      igUsername = ig.username ?? ig.name;
+    }
 
     const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
 
@@ -76,17 +104,23 @@ export async function GET(request: Request) {
       phone_number: decoded.phone,
       provider: 'meta',
       service: 'instagram',
-      account_email: user.username,
-      account_name: user.username,
-      access_token: accessToken,
+      account_email: igUsername ?? user.name,
+      account_name: igUsername ?? user.name,
+      // Store page access token if available (needed for IG API calls), fall back to user token
+      access_token: pageAccessToken ?? userToken,
       expires_at: expiresAt,
-      metadata: { instagram_user_id: shortToken.user_id ?? user.id },
+      metadata: {
+        instagram_account_id: igAccountId,
+        page_id: pageId,
+        facebook_user_id: user.id,
+        user_access_token: userToken,
+      },
     });
 
-    console.log(`[meta-oauth] Connected Instagram @${user.username} for ${decoded.phone}`);
+    console.log(`[meta-oauth] Connected ${igUsername ? `@${igUsername}` : user.name} for ${decoded.phone}`);
 
     return Response.redirect(
-      `${getCallbackBaseUrl(request)}/?oauth=success&provider=meta&services=instagram&email=${encodeURIComponent(user.username)}`,
+      `${getCallbackBaseUrl(request)}/?oauth=success&provider=meta&services=instagram&email=${encodeURIComponent(igUsername ?? user.name)}`,
       302,
     );
   } catch (err) {
