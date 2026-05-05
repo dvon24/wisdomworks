@@ -47,6 +47,8 @@ interface HierarchyProps {
   pendingRemove?: string | null;
   recentlyAdded?: string | null;
   onSelect?: (agent: HierarchyAgent) => void;
+  /** Max specialists to render individually before clustering (default 8) */
+  maxIndividualNodes?: number;
 }
 
 export function Hierarchy({
@@ -62,6 +64,7 @@ export function Hierarchy({
   pendingRemove = null,
   recentlyAdded = null,
   onSelect,
+  maxIndividualNodes = 8,
 }: HierarchyProps) {
   const cx = width / 2;
   const principalPos = { x: cx, y: 50 };
@@ -69,9 +72,36 @@ export function Hierarchy({
 
   const iris = team.find((a) => a.id === 'iris') ?? team[0];
   const specs = team.filter((a) => a.id !== iris?.id);
+
+  // Cluster employee assistants when there are too many to render individually.
+  // Identify them by Tier 3 (Haiku) + role contains "employee" or "assistant"
+  const isEmployeeAssistant = (a: HierarchyAgent) =>
+    a.tier === 'Haiku' &&
+    (a.role.toLowerCase().includes('employee') || a.role.toLowerCase().includes('personal'));
+
+  let displaySpecs = specs;
+  let clusteredCount = 0;
+  if (specs.length > maxIndividualNodes) {
+    const employeeAssistants = specs.filter(isEmployeeAssistant);
+    const others = specs.filter((a) => !isEmployeeAssistant(a));
+
+    // If clustering employees brings us under the threshold, do it
+    if (employeeAssistants.length >= 4 && others.length + 1 <= maxIndividualNodes) {
+      clusteredCount = employeeAssistants.length;
+      const clusterNode: HierarchyAgent = {
+        id: '__cluster_employees',
+        label: `${clusteredCount} Employees`,
+        role: 'Personal Assistants',
+        tier: 'Haiku',
+        status: 'ok',
+      };
+      displaySpecs = [...others, clusterNode];
+    }
+  }
+
   const renderList: HierarchyAgent[] = pendingAdd
-    ? [...specs, { ...pendingAdd, id: '__ghost', ghost: true }]
-    : specs;
+    ? [...displaySpecs, { ...pendingAdd, id: '__ghost', ghost: true }]
+    : displaySpecs;
 
   const specY = 270;
   const span = width - 100;
@@ -238,11 +268,14 @@ export function Hierarchy({
       {/* Specialists */}
       {positions.map((s, i) => {
         const isActive = i === activeIdx && showArcs && !s.ghost;
+        const isCluster = s.id === '__cluster_employees';
         const dotColor =
           s.status === 'ok' ? '#2cb070' : s.status === 'warn' ? '#d99b3b' : s.status === 'bad' ? '#c84545' : '#888';
         const isRemoving = s.id === pendingRemove;
         const isAdded = s.id === recentlyAdded;
         const className = s.ghost || isAdded ? 'pop-in' : isRemoving ? 'fade-out' : '';
+        const radius = isCluster ? 20 : 14;
+
         return (
           <g
             key={s.id}
@@ -251,27 +284,38 @@ export function Hierarchy({
             style={{ cursor: onSelect && !s.ghost ? 'pointer' : 'default' }}
             onClick={() => !s.ghost && onSelect?.(s)}
           >
-            {isActive && <circle cx={s.x} cy={s.y} r="22" fill={accent} opacity="0.18" />}
+            {/* Cluster: stacked rings showing many employees */}
+            {isCluster && (
+              <>
+                <circle cx={s.x - 6} cy={s.y - 4} r={radius} fill="rgba(124,58,237,0.08)" stroke={accent} strokeOpacity="0.25" strokeWidth="1" />
+                <circle cx={s.x + 6} cy={s.y - 2} r={radius} fill="rgba(124,58,237,0.10)" stroke={accent} strokeOpacity="0.3" strokeWidth="1" />
+              </>
+            )}
+            {isActive && <circle cx={s.x} cy={s.y} r={radius + 8} fill={accent} opacity="0.18" />}
             <circle
               cx={s.x}
               cy={s.y}
-              r="14"
-              fill={s.ghost ? 'rgba(124,58,237,0.18)' : 'rgba(255,255,255,0.94)'}
-              stroke={isActive ? accent : s.ghost ? accent : 'rgba(20,20,30,0.18)'}
-              strokeWidth={isActive || s.ghost ? 1.6 : 1}
+              r={radius}
+              fill={
+                s.ghost ? 'rgba(124,58,237,0.18)' :
+                isCluster ? 'rgba(124,58,237,0.18)' :
+                'rgba(255,255,255,0.94)'
+              }
+              stroke={isActive ? accent : s.ghost ? accent : isCluster ? accent : 'rgba(20,20,30,0.18)'}
+              strokeWidth={isActive || s.ghost || isCluster ? 1.6 : 1}
               strokeDasharray={s.ghost ? '3 3' : 'none'}
             />
-            {!s.ghost && s.status && <circle cx={s.x + 9} cy={s.y - 9} r="3" fill={dotColor} />}
+            {!s.ghost && s.status && !isCluster && <circle cx={s.x + 9} cy={s.y - 9} r="3" fill={dotColor} />}
             <text
               x={s.x}
               y={s.y + 4}
               textAnchor="middle"
-              fontSize="10"
-              fontWeight="600"
-              fill={s.ghost ? accent : '#1a1a22'}
+              fontSize={isCluster ? '11' : '10'}
+              fontWeight="700"
+              fill={s.ghost ? accent : isCluster ? accent : '#1a1a22'}
               style={{ pointerEvents: 'none' }}
             >
-              {s.ghost ? '+' : s.label[0]}
+              {s.ghost ? '+' : isCluster ? `${s.label.split(' ')[0]}` : s.label[0]}
             </text>
             <text x={s.x} y={s.y + 30} textAnchor="middle" fontSize="10" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
               {s.label}
