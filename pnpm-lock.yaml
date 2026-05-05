@@ -54,6 +54,9 @@ importers:
       '@wisdomworks/auth':
         specifier: workspace:*
         version: link:../../packages/auth
+      '@wisdomworks/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@wisdomworks/ui':
         specifier: workspace:*
         version: link:../../packages/ui

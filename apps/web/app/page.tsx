@@ -6,8 +6,17 @@ import {
   WisdomLockup,
   WisdomMark,
   Hierarchy,
+  ActionCard,
+  PriceDiff,
   type HierarchyAgent,
+  type ActionCardData,
 } from '@wisdomworks/ui';
+import {
+  parseIntent,
+  generateIntentReply,
+  intentPriceDelta,
+  type ActiveAgent,
+} from '@wisdomworks/shared';
 
 /**
  * Command Deck — main operations dashboard.
@@ -60,23 +69,120 @@ type SidebarMode = 'briefing' | 'approvals' | 'activity' | 'agent';
 type ViewMode = 'overview' | 'team' | 'activity';
 
 export default function CommandDeck() {
-  const [team] = useState<HierarchyAgent[]>(DEMO_TEAM);
+  const [team, setTeam] = useState<HierarchyAgent[]>(DEMO_TEAM);
   const [view, setView] = useState<ViewMode>('team');
   const [sidebar, setSidebar] = useState<SidebarMode>('briefing');
   const [selectedAgent, setSelectedAgent] = useState<HierarchyAgent | null>(null);
   const [focusedSubTeam, setFocusedSubTeam] = useState<string | null>(null);
-  const [messages, setMessages] = useState(INITIAL_MESSAGES);
+  const [messages, setMessages] = useState<any[]>(INITIAL_MESSAGES);
   const [chatInput, setChatInput] = useState('');
+  const [actions, setActions] = useState<ActionCardData[]>([]);
+  const [priceDiff, setPriceDiff] = useState<{ delta: number; total: number } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
-  const totalPrice = team.reduce((sum, a) => sum + (TIER_PRICE[a.tier as keyof typeof TIER_PRICE] || 0), 0);
+  const calculateTotalPrice = (currentTeam: HierarchyAgent[]) => {
+    let total = 0;
+    for (const a of currentTeam) {
+      if (a.tier) total += TIER_PRICE[a.tier as keyof typeof TIER_PRICE] || 0;
+      if (a.subTeam) {
+        for (const sub of a.subTeam.agents) {
+          if (sub.tier) total += TIER_PRICE[sub.tier as keyof typeof TIER_PRICE] || 0;
+        }
+        const listed = a.subTeam.agents.length;
+        if (a.subTeam.count > listed) {
+          total += (a.subTeam.count - listed) * TIER_PRICE.Haiku;
+        }
+      }
+    }
+    return total;
+  };
+
+  const totalPrice = calculateTotalPrice(team);
 
   const sendMessage = () => {
     if (!chatInput.trim()) return;
-    setMessages([...messages, { from: 'user' as const, text: chatInput.trim() } as any]);
+    const userText = chatInput.trim();
+    setMessages([...messages, { from: 'user' as const, text: userText }]);
     setChatInput('');
+
+    // Try local intent parsing first
+    const activeTeam: ActiveAgent[] = team.map((a) => ({
+      id: a.id,
+      label: a.label,
+      role: a.role,
+      tier: a.tier,
+      required: a.required,
+    }));
+    const intent = parseIntent(userText, activeTeam);
+
+    if (intent && intent.kind !== 'question') {
+      const reply = generateIntentReply(intent) ?? 'Got it.';
+      setTimeout(() => setMessages((m) => [...m, { from: 'iris' as const, text: reply }]), 400);
+
+      const delta = intentPriceDelta(intent);
+      const action: ActionCardData = {
+        id: `act-${Date.now()}`,
+        kind: intent.kind,
+        agentId: intent.kind === 'add' ? intent.agent.id : (intent as any).agent.id,
+        agentLabel: intent.kind === 'add' ? intent.agent.label : (intent as any).agent.label,
+        agentRole: intent.kind === 'add' ? intent.agent.role : (intent as any).agent.role,
+        delta,
+        note:
+          intent.kind === 'add'
+            ? intent.agent.desc
+            : intent.kind === 'remove'
+              ? `Pause ${(intent as any).agent.label} — work archived`
+              : '',
+        fromTier: intent.kind === 'tier' ? intent.fromTier : undefined,
+        toTier: intent.kind === 'tier' ? intent.toTier : undefined,
+        newName: intent.kind === 'rename' ? intent.newName : undefined,
+        status: 'pending',
+      };
+      setActions((prev) => [...prev, action]);
+      return;
+    }
+
+    // Free-form response (placeholder for now)
     setTimeout(() => {
       setMessages((m) => [...m, { from: 'iris' as const, text: 'Got it. Working on that now.' }]);
     }, 600);
+  };
+
+  const acceptAction = (actionId: string) => {
+    const action = actions.find((a) => a.id === actionId);
+    if (!action) return;
+
+    const before = totalPrice;
+    setTeam((prev) => {
+      let next = [...prev];
+      if (action.kind === 'add') {
+        next.push({
+          id: action.agentId ?? `agent-${Date.now()}`,
+          label: action.agentLabel,
+          role: action.agentRole,
+          tier: (action.toTier ?? 'Sonnet') as any,
+          status: 'ok',
+        });
+      } else if (action.kind === 'remove' && action.agentId) {
+        next = next.filter((a) => a.id !== action.agentId);
+      } else if (action.kind === 'tier' && action.agentId) {
+        next = next.map((a) => (a.id === action.agentId ? { ...a, tier: action.toTier as any } : a));
+      } else if (action.kind === 'rename' && action.agentId && action.newName) {
+        next = next.map((a) => (a.id === action.agentId ? { ...a, label: action.newName! } : a));
+      }
+      const after = calculateTotalPrice(next);
+      const delta = after - before;
+      if (delta !== 0) setPriceDiff({ delta, total: after });
+      return next;
+    });
+
+    setActions((prev) => prev.map((a) => (a.id === actionId ? { ...a, status: 'accepted' as const } : a)));
+    setTimeout(() => setMessages((m) => [...m, { from: 'iris' as const, text: 'Done. I\'ll keep watching.' }]), 700);
+  };
+
+  const rejectAction = (actionId: string) => {
+    setActions((prev) => prev.map((a) => (a.id === actionId ? { ...a, status: 'rejected' as const } : a)));
   };
 
   return (
@@ -287,24 +393,35 @@ export default function CommandDeck() {
               <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0 }}>
                 {messages.map((m, i) => {
                   const isUser = (m as any).from === 'user';
+                  const isLast = i === messages.length - 1;
                   return (
-                    <div
-                      key={i}
-                      style={{
-                        maxWidth: '82%',
-                        padding: '10px 14px',
-                        borderRadius: 14,
-                        fontSize: 13,
-                        lineHeight: 1.5,
-                        background: isUser ? 'var(--accent)' : 'rgba(255,255,255,0.78)',
-                        color: isUser ? 'white' : 'var(--text)',
-                        borderTopRightRadius: isUser ? 4 : 14,
-                        borderTopLeftRadius: isUser ? 14 : 4,
-                        alignSelf: isUser ? 'flex-end' : 'flex-start',
-                        border: isUser ? 'none' : '1px solid var(--glass-border)',
-                      }}
-                    >
-                      {(m as any).text}
+                    <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start', gap: 6 }}>
+                      <div
+                        style={{
+                          maxWidth: '82%',
+                          padding: '10px 14px',
+                          borderRadius: 14,
+                          fontSize: 13,
+                          lineHeight: 1.5,
+                          background: isUser ? 'var(--accent)' : 'rgba(255,255,255,0.78)',
+                          color: isUser ? 'white' : 'var(--text)',
+                          borderTopRightRadius: isUser ? 4 : 14,
+                          borderTopLeftRadius: isUser ? 14 : 4,
+                          border: isUser ? 'none' : '1px solid var(--glass-border)',
+                        }}
+                      >
+                        {(m as any).text}
+                      </div>
+                      {/* Render action cards after the most recent assistant message */}
+                      {!isUser && isLast && actions.map((action) => (
+                        <ActionCard
+                          key={action.id}
+                          action={action}
+                          currencySymbol="€"
+                          onAccept={() => acceptAction(action.id)}
+                          onReject={() => rejectAction(action.id)}
+                        />
+                      ))}
                     </div>
                   );
                 })}
@@ -314,7 +431,7 @@ export default function CommandDeck() {
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                  placeholder="Try: 'add a recruiter' or 'show me the metrics'"
+                  placeholder="Try: 'add a recruiter', 'rename Atlas to Maya', 'remove Cedar'"
                   style={{
                     flex: 1,
                     background: 'rgba(255,255,255,0.5)',
@@ -473,6 +590,16 @@ export default function CommandDeck() {
           )}
         </aside>
       </main>
+
+      {/* Floating price diff toast — slides up when team changes */}
+      {priceDiff && (
+        <PriceDiff
+          delta={priceDiff.delta}
+          total={priceDiff.total}
+          currencySymbol="€"
+          onDismiss={() => setPriceDiff(null)}
+        />
+      )}
     </>
   );
 }
