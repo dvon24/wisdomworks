@@ -172,15 +172,49 @@ export function Hierarchy({
   const renderFocusedSubTeam = () => {
     const parent = team.find((a) => a.id === focusedSubTeam);
     if (!parent || !parent.subTeam) return null;
-    const subs = parent.subTeam.agents;
-    const fcx = width / 2;
-    const parentY = 110;
-    const ringY = 290;
-    const innerSpan = width - 220;
-    const subX = (j: number) => 110 + (innerSpan * (j + 0.5)) / Math.max(1, subs.length);
 
+    // If subTeam.count > agents listed, generate placeholder agents to fill the count.
+    // This happens when the AI says "20 employee assistants" but doesn't list each by name.
+    const listed = parent.subTeam.agents;
+    const count = parent.subTeam.count;
+    const subs: HierarchySubAgent[] = [...listed];
+    if (count > listed.length) {
+      for (let i = listed.length; i < count; i++) {
+        subs.push({
+          id: `${parent.id}-placeholder-${i}`,
+          label: `Agent ${i + 1}`,
+          role: parent.subTeam.label.replace(/s$/, ''),
+          tier: parent.tier ?? 'Haiku',
+        });
+      }
+    }
+
+    const fcx = width / 2;
+    const parentY = 100;
+
+    // Multi-row layout when there are many sub-agents.
+    // 6 per row max — keeps labels readable
+    const PER_ROW = 6;
+    const rows = Math.ceil(subs.length / PER_ROW);
+    const ROW_HEIGHT = 110;
+    const firstRowY = 240;
+    const innerSpan = width - 200;
+
+    const subPos = subs.map((sub, j) => {
+      const row = Math.floor(j / PER_ROW);
+      const colInRow = j % PER_ROW;
+      const itemsInRow = row === rows - 1 ? subs.length - row * PER_ROW : PER_ROW;
+      return {
+        sub,
+        x: 100 + (innerSpan * (colInRow + 0.5)) / itemsInRow,
+        y: firstRowY + row * ROW_HEIGHT,
+      };
+    });
+
+    // Peer pulse — within first row only (visual clarity)
+    const firstRowSubs = subPos.slice(0, Math.min(PER_ROW, subs.length));
     const peerActive = (() => {
-      const n = subs.length;
+      const n = firstRowSubs.length;
       if (n < 2) return null;
       const a = peerIdx % n;
       const b = (a + 1 + (peerIdx % 2)) % n;
@@ -189,15 +223,17 @@ export function Hierarchy({
     })();
     const peerActivePath = peerActive
       ? (() => {
-          const sx = subX(peerActive.a);
-          const sx2 = subX(peerActive.b);
+          const sx = firstRowSubs[peerActive.a]!.x;
+          const sx2 = firstRowSubs[peerActive.b]!.x;
+          const sy = firstRowSubs[peerActive.a]!.y;
           const dist = Math.abs(peerActive.b - peerActive.a);
           const lift = 30 + Math.min(dist, 3) * 12;
-          return `M ${sx} ${ringY - 18} Q ${(sx + sx2) / 2} ${ringY - lift} ${sx2} ${ringY - 18}`;
+          return `M ${sx} ${sy - 18} Q ${(sx + sx2) / 2} ${sy - lift} ${sx2} ${sy - 18}`;
         })()
       : null;
-    const mgrActiveIdx = subs.length > 0 ? peerIdx % subs.length : 0;
-    const mgrPath = subs.length > 0 ? arc(fcx, parentY + 28, subX(mgrActiveIdx), ringY - 22, 38) : '';
+    const mgrActiveIdx = subPos.length > 0 ? peerIdx % subPos.length : 0;
+    const mgrTarget = subPos[mgrActiveIdx];
+    const mgrPath = mgrTarget ? arc(fcx, parentY + 28, mgrTarget.x, mgrTarget.y - 22, 38) : '';
 
     return (
       <g key={'focus-' + focusedSubTeam} style={{ animation: 'fadeIn 0.4s ease' }}>
@@ -236,11 +272,11 @@ export function Hierarchy({
           {parent.role.toUpperCase()}
         </text>
 
-        {/* Parent → sub connectors */}
-        {subs.map((sub, j) => (
+        {/* Parent → sub connectors (only first row to avoid clutter) */}
+        {subPos.slice(0, PER_ROW).map(({ sub, x, y }) => (
           <path
             key={'l-sub-' + sub.id}
-            d={arc(fcx, parentY + 28, subX(j), ringY - 22, 30)}
+            d={arc(fcx, parentY + 28, x, y - 22, 30)}
             fill="none"
             stroke={accent}
             strokeOpacity="0.3"
@@ -249,19 +285,20 @@ export function Hierarchy({
           />
         ))}
 
-        {/* Static peer-to-peer arcs */}
-        {subs.map((_, j) =>
-          subs.slice(j + 1).map((__, k) => {
+        {/* Static peer-to-peer arcs (within first row) */}
+        {firstRowSubs.map((_, j) =>
+          firstRowSubs.slice(j + 1).map((__, k) => {
             const j2 = j + 1 + k;
             const dist = j2 - j;
             if (dist > 2) return null;
-            const sx = subX(j);
-            const sx2 = subX(j2);
+            const sx = firstRowSubs[j]!.x;
+            const sx2 = firstRowSubs[j2]!.x;
+            const sy = firstRowSubs[j]!.y;
             const lift = 30 + dist * 12;
             return (
               <path
                 key={`peer-${j}-${j2}`}
-                d={`M ${sx} ${ringY - 18} Q ${(sx + sx2) / 2} ${ringY - lift} ${sx2} ${ringY - 18}`}
+                d={`M ${sx} ${sy - 18} Q ${(sx + sx2) / 2} ${sy - lift} ${sx2} ${sy - 18}`}
                 fill="none"
                 stroke={accent}
                 strokeOpacity="0.15"
@@ -292,40 +329,50 @@ export function Hierarchy({
           </g>
         )}
 
+        {/* Row count indicator if multiple rows */}
+        {rows > 1 && (
+          <text x={width - 24} y={36} textAnchor="end" fontSize="10" fill="rgba(26,26,34,0.55)" fontFamily="Geist Mono" letterSpacing="0.05em">
+            {subs.length} AGENTS · {rows} ROWS
+          </text>
+        )}
+
         {/* Sub-agents */}
-        {subs.map((sub, j) => {
-          const sx = subX(j);
-          const sy = ringY;
+        {subPos.map(({ sub, x, y }, j) => {
+          const sx = x;
+          const sy = y;
+          const isPlaceholder = sub.id.includes('-placeholder-');
           return (
             <g
               key={sub.id}
               className="pop-in"
-              style={{ animationDelay: 180 + j * 70 + 'ms', cursor: onSelect ? 'pointer' : 'default' }}
-              onClick={() => onSelect?.(sub as HierarchyAgent)}
+              style={{ animationDelay: 180 + j * 30 + 'ms', cursor: onSelect && !isPlaceholder ? 'pointer' : 'default' }}
+              onClick={() => !isPlaceholder && onSelect?.(sub as HierarchyAgent)}
             >
-              <circle cx={sx} cy={sy} r="22" fill="rgba(255,255,255,0.96)" stroke={accent} strokeOpacity="0.4" strokeWidth="1.2" />
-              <text x={sx} y={sy + 5} textAnchor="middle" fontSize="13" fontWeight="600" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
+              <circle cx={sx} cy={sy} r="20" fill="rgba(255,255,255,0.96)" stroke={accent} strokeOpacity={isPlaceholder ? 0.2 : 0.4} strokeWidth="1.2" strokeDasharray={isPlaceholder ? '3 3' : 'none'} />
+              <text x={sx} y={sy + 5} textAnchor="middle" fontSize="12" fontWeight="600" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
                 {sub.label[0]}
               </text>
-              <text x={sx} y={sy + 44} textAnchor="middle" fontSize="11" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
-                {sub.label}
+              <text x={sx} y={sy + 38} textAnchor="middle" fontSize="10" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
+                {sub.label.length > 14 ? sub.label.slice(0, 13) + '…' : sub.label}
               </text>
-              <text
-                x={sx}
-                y={sy + 60}
-                textAnchor="middle"
-                fontSize="9"
-                fill="rgba(26,26,34,0.5)"
-                fontFamily="Geist Mono"
-                letterSpacing="0.05em"
-                style={{ pointerEvents: 'none' }}
-              >
-                {sub.role.toUpperCase()}
-              </text>
-              {sub.tier && (
+              {sub.role && !isPlaceholder && (
+                <text
+                  x={sx}
+                  y={sy + 52}
+                  textAnchor="middle"
+                  fontSize="8.5"
+                  fill="rgba(26,26,34,0.5)"
+                  fontFamily="Geist Mono"
+                  letterSpacing="0.05em"
+                  style={{ pointerEvents: 'none' }}
+                >
+                  {sub.role.length > 16 ? sub.role.slice(0, 15).toUpperCase() + '…' : sub.role.toUpperCase()}
+                </text>
+              )}
+              {sub.tier && !isPlaceholder && (
                 <g style={{ pointerEvents: 'none' }}>
-                  <rect x={sx - 24} y={sy + 70} width="48" height="14" rx="7" fill={accent} fillOpacity="0.12" stroke={accent} strokeOpacity="0.4" strokeWidth="0.8" />
-                  <text x={sx} y={sy + 80} textAnchor="middle" fontSize="8.5" fontFamily="Geist Mono" fontWeight="500" fill={accent} letterSpacing="0.06em">
+                  <rect x={sx - 22} y={sy + 60} width="44" height="13" rx="6.5" fill={accent} fillOpacity="0.12" stroke={accent} strokeOpacity="0.4" strokeWidth="0.8" />
+                  <text x={sx} y={sy + 69} textAnchor="middle" fontSize="8" fontFamily="Geist Mono" fontWeight="500" fill={accent} letterSpacing="0.06em">
                     {sub.tier.toUpperCase()}
                   </text>
                 </g>
@@ -337,8 +384,16 @@ export function Hierarchy({
     );
   };
 
+  // Expand SVG height when focused view needs multiple rows
+  const focusedRows = focusedSubTeam
+    ? Math.ceil((team.find((a) => a.id === focusedSubTeam)?.subTeam?.count ?? 1) / 6)
+    : 1;
+  const effectiveHeight = focusedSubTeam && focusedRows > 1
+    ? Math.max(height, 240 + focusedRows * 110 + 80)
+    : height;
+
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
+    <svg viewBox={`0 0 ${width} ${effectiveHeight}`} width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
       <defs>
         <radialGradient id="hierarchy-halo" cx="50%" cy="50%" r="50%">
           <stop offset="0%" stopColor={accent} stopOpacity="0.4" />
@@ -525,20 +580,34 @@ export function Hierarchy({
             >
               {s.ghost ? '+' : isCluster ? `${s.label.split(' ')[0]}` : s.label[0]}
             </text>
-            <text x={s.x} y={s.y + 30} textAnchor="middle" fontSize="10" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
-              {s.label}
-            </text>
-            <text
-              x={s.x}
-              y={s.y + 43}
-              textAnchor="middle"
-              fontSize="9"
-              fill="rgba(26,26,34,0.5)"
-              fontFamily="Geist Mono"
-              style={{ pointerEvents: 'none' }}
-            >
-              {s.role.toUpperCase()}
-            </text>
+            {/* Calculate per-agent width to truncate labels that would overflow */}
+            {(() => {
+              const perAgentWidth = (width - 100) / Math.max(1, positions.length);
+              const labelMaxChars = Math.max(8, Math.floor(perAgentWidth / 7));
+              const roleMaxChars = Math.max(8, Math.floor(perAgentWidth / 6));
+              const truncatedLabel = s.label.length > labelMaxChars ? s.label.slice(0, labelMaxChars - 1) + '…' : s.label;
+              const truncatedRole = s.role.length > roleMaxChars ? s.role.slice(0, roleMaxChars - 1).toUpperCase() + '…' : s.role.toUpperCase();
+              return (
+                <>
+                  <text x={s.x} y={s.y + 30} textAnchor="middle" fontSize="10" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
+                    <title>{s.label}</title>
+                    {truncatedLabel}
+                  </text>
+                  <text
+                    x={s.x}
+                    y={s.y + 43}
+                    textAnchor="middle"
+                    fontSize="9"
+                    fill="rgba(26,26,34,0.5)"
+                    fontFamily="Geist Mono"
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    <title>{s.role}</title>
+                    {truncatedRole}
+                  </text>
+                </>
+              );
+            })()}
             {!s.ghost && s.tier && (
               <g style={{ pointerEvents: 'none' }}>
                 <rect

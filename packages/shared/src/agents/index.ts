@@ -34,3 +34,14 @@ export {
   DEFAULT_PROACTIVE_CONFIG,
   buildOperatingProtocol,
 } from './agent-operating-protocol';
+
+export type { CatalogAgent, ActiveAgent, Intent } from './intent-parser';
+export {
+  DEFAULT_AGENT_CATALOG,
+  TIER_PRICE,
+  TIER_DESC,
+  parseIntent,
+  generateIntentReply,
+  intentPriceDelta,
+  formatPriceDelta,
+} from './intent-parser';

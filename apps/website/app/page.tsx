@@ -1,7 +1,23 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Background, WisdomLockup, WisdomMark, Hierarchy, type HierarchyAgent } from '@wisdomworks/ui';
+import {
+  Background,
+  WisdomLockup,
+  WisdomMark,
+  Hierarchy,
+  ActionCard,
+  PriceDiff,
+  type HierarchyAgent,
+  type ActionCardData,
+} from '@wisdomworks/ui';
+import {
+  parseIntent,
+  generateIntentReply,
+  intentPriceDelta,
+  type ActiveAgent,
+  type CatalogAgent,
+} from '@wisdomworks/shared';
 import ConnectTools from './components/ConnectTools';
 import ExamplePreview from './components/ExamplePreview';
 
@@ -124,6 +140,8 @@ export default function HomePage() {
   const [selectedAgentId, setSelectedAgentId] = useState<string>('iris');
   const [showRefineChat, setShowRefineChat] = useState(false);
   const [focusedSubTeam, setFocusedSubTeam] = useState<string | null>(null);
+  const [refineActions, setRefineActions] = useState<ActionCardData[]>([]);
+  const [priceDiff, setPriceDiff] = useState<{ delta: number; total: number } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Restore state if returning from Stripe
@@ -154,12 +172,55 @@ export default function HomePage() {
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
-    const userMsg = { role: 'user' as const, content: input.trim() };
+    const userText = input.trim();
+    const userMsg = { role: 'user' as const, content: userText };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInput('');
-    setIsLoading(true);
 
+    // If we're in the refine chat (post-preview), try local intent parsing first
+    if (showPreview && structuredData?.agents?.length > 0) {
+      const activeTeam: ActiveAgent[] = mapToHierarchyAgents(structuredData.agents).map((a) => ({
+        id: a.id,
+        label: a.label,
+        role: a.role,
+        tier: a.tier,
+        required: a.required,
+      }));
+      const intent = parseIntent(userText, activeTeam);
+      if (intent && intent.kind !== 'question') {
+        // Local intent — generate Iris reply + action card without API call
+        const reply = generateIntentReply(intent) ?? 'Got it.';
+        setMessages([...newMessages, { role: 'assistant', content: reply }]);
+        const delta = intentPriceDelta(intent);
+        const action: ActionCardData = {
+          id: `act-${Date.now()}`,
+          kind: intent.kind as 'add' | 'remove' | 'tier',
+          agentLabel:
+            intent.kind === 'add'
+              ? intent.agent.label
+              : (intent as any).agent.label,
+          agentRole:
+            intent.kind === 'add'
+              ? intent.agent.role
+              : (intent as any).agent.role,
+          delta,
+          note:
+            intent.kind === 'add'
+              ? intent.agent.desc
+              : intent.kind === 'remove'
+                ? `Pause ${(intent as any).agent.label} — work archived, can re-add anytime`
+                : '',
+          fromTier: intent.kind === 'tier' ? intent.fromTier : undefined,
+          toTier: intent.kind === 'tier' ? intent.toTier : undefined,
+          status: 'pending',
+        };
+        setRefineActions((prev) => [...prev, action]);
+        return;
+      }
+    }
+
+    setIsLoading(true);
     try {
       const res = await fetch('/api/onboarding', {
         method: 'POST',
@@ -409,7 +470,7 @@ export default function HomePage() {
             : null;
 
           return (
-          <div style={{ width: '100%', maxWidth: 1240, padding: '0 24px' }}>
+          <div style={{ width: '100%', maxWidth: 1400, padding: '0 24px' }}>
             <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
               <div className="eyebrow" style={{ marginBottom: 12 }}>Your AI Team</div>
               <div className="num-lg" style={{ color: 'var(--text)', fontWeight: 300 }}>
@@ -436,8 +497,8 @@ export default function HomePage() {
               {/* Hierarchy */}
               <div style={{ padding: '24px 12px', borderRight: '1px solid var(--glass-border)', minHeight: 540 }}>
                 <Hierarchy
-                  width={940}
-                  height={520}
+                  width={1080}
+                  height={540}
                   team={hierarchyAgents}
                   principal={{
                     initials: (businessName || 'You').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase(),

@@ -122,6 +122,18 @@ export type {
   LessonLearned,
 } from './agents';
 
+// Intent parser (chat command parsing)
+export type { CatalogAgent, ActiveAgent, Intent } from './agents/intent-parser';
+export {
+  DEFAULT_AGENT_CATALOG,
+  TIER_PRICE,
+  TIER_DESC,
+  parseIntent,
+  generateIntentReply,
+  intentPriceDelta,
+  formatPriceDelta,
+} from './agents/intent-parser';
+
 // Client Profiles & Business Intelligence (Epic 2b)
 export type {
   ClientProfile,
