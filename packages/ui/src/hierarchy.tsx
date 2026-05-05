@@ -129,10 +129,13 @@ export function Hierarchy({
 
   const specY = 270;
   const span = width - 100;
+  // Stagger y-positions when there are many specialists so labels don't collide.
+  // Even-indexed agents sit on the top row, odd-indexed sit lower.
+  const stagger = renderList.length >= 7;
   const positions = renderList.map((s, i) => ({
     ...s,
     x: 50 + (span * (i + 0.5)) / Math.max(1, renderList.length),
-    y: specY,
+    y: stagger && i % 2 === 1 ? specY + 80 : specY,
   }));
   const specById: Record<string, (typeof positions)[number]> = Object.fromEntries(positions.map((s) => [s.id, s]));
 

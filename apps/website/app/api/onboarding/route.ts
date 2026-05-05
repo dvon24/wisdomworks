@@ -69,9 +69,36 @@ Extract this JSON structure (include ALL fields, use null if unknown):
       "tools": ["Calendar", "Instagram", etc based on conversation],
       "strengths": ["specific strength for this role"],
       "limitations": ["specific limitation"],
-      "aiModel": "Claude Opus 4.7 for critical tasks, Sonnet 4.6 for others"
+      "aiModel": "Opus" | "Sonnet" | "Haiku" — single word matching the tier the AI mentioned,
+      "subTeam": {
+        "count": number of specialists under this agent,
+        "label": "name of the sub-team (e.g. 'Specialists', 'Account managers')",
+        "agents": [
+          { "name": "specialist name", "role": "specialist role", "tier": "Opus" | "Sonnet" | "Haiku" }
+        ]
+      }
     }
   ],
+  // CRITICAL EXTRACTION RULES FOR AGENTS:
+  // 1. The AI's response groups agents by department/category. Each top-level entry is ONE agent in this list.
+  // 2. When the AI says "Patient Experience Department (6 agents)" with a list of specialists under it:
+  //    - The DEPARTMENT NAME ("Patient Experience Coordinator") becomes the parent agent
+  //    - The other 5 specialists go into subTeam.agents
+  //    - subTeam.count = 5 (not 6 — the coordinator is the parent, the 5 are the sub-team)
+  // 3. When the AI says "Personal Assistants for Every Employee (20 agents)":
+  //    - Create ONE parent agent named "Employee Team" with role "Personal Assistants"
+  //    - subTeam.count = 20, subTeam.label = "Employee Personal Assistants"
+  //    - subTeam.agents = [] (or list a few examples by employee role if given)
+  // 4. NEVER return a flat list of 30 agents. ALWAYS roll specialists/employees into subTeam under their parent.
+  // 5. The top-level agents array should typically have 5-10 entries for any business size.
+  // 6. Set aiModel to ONE WORD: "Opus", "Sonnet", or "Haiku" — used for pricing.
+
+  // Per-tier counts for accurate pricing — count EVERY agent including sub-agents
+  "tierCounts": {
+    "opus": number of total Opus agents (parents + sub-agents),
+    "sonnet": number of total Sonnet agents,
+    "haiku": number of total Haiku agents
+  },
   "detectedIntegrations": ["tools/platforms the user mentioned"],
   "painPoints": ["specific pain points the user described"],
   "location": {

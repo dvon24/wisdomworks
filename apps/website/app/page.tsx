@@ -39,55 +39,70 @@ function formatMessage(text: string): React.ReactNode {
   });
 }
 
-/** Map AI-suggested agents to the Hierarchy component shape */
+const TIER_PRICE = { Haiku: 19, Sonnet: 39, Opus: 79 };
+
+function pickTier(raw: any): 'Opus' | 'Sonnet' | 'Haiku' {
+  const m = (raw || '').toString().toLowerCase();
+  if (m.includes('opus')) return 'Opus';
+  if (m.includes('haiku')) return 'Haiku';
+  return 'Sonnet';
+}
+
+/** Map AI-suggested agents to the Hierarchy component shape — preserves sub-team structure */
 function mapToHierarchyAgents(structuredAgents: any[]): HierarchyAgent[] {
   if (!structuredAgents?.length) {
     return [{ id: 'iris', label: 'Iris', role: 'Personal assistant', tier: 'Opus', status: 'ok', required: true }];
   }
 
-  // Map raw agents
-  const mapped: HierarchyAgent[] = structuredAgents.map((a: any, i: number) => {
+  return structuredAgents.map((a: any, i: number) => {
     const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
-    if (i === 0) {
-      return { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus', status: 'ok', required: true };
+    const tier = pickTier(a.aiModel ?? a.tier);
+    const base: HierarchyAgent = i === 0
+      ? { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus', status: 'ok', required: true }
+      : { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
+
+    // Pass through sub-team if AI returned one
+    if (a.subTeam && typeof a.subTeam === 'object' && a.subTeam.count > 0) {
+      base.subTeam = {
+        count: a.subTeam.count,
+        label: a.subTeam.label || 'Specialists',
+        agents: (a.subTeam.agents ?? []).map((sub: any, j: number) => ({
+          id: `${id}-sub-${j}`,
+          label: sub.name || `Specialist ${j + 1}`,
+          role: sub.role || 'Specialist',
+          tier: pickTier(sub.tier ?? sub.aiModel),
+        })),
+      };
     }
-    const model = (a.aiModel || '').toLowerCase();
-    const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
-    return { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
+    return base;
   });
-
-  // Group: detect agents whose role indicates they're part of a sub-team (employees, sub-managers, etc.)
-  // Strategy: look for repeated role keywords. If 4+ agents share a role pattern, fold them under a parent.
-  const irisAgent = mapped[0];
-  const others = mapped.slice(1);
-
-  // Find Tier 3 (Haiku) employee-style agents
-  const employeeLike = others.filter(
-    (a) => a.tier === 'Haiku' && (a.role.toLowerCase().includes('employee') || a.role.toLowerCase().includes('personal') || a.role.toLowerCase().includes('assistant')),
-  );
-  const nonEmployees = others.filter((a) => !employeeLike.includes(a));
-
-  if (employeeLike.length >= 4) {
-    // Create a parent agent that holds all employee assistants as a sub-team
-    const parent: HierarchyAgent = {
-      id: 'employee-team',
-      label: 'Team',
-      role: 'Personal Assistants',
-      tier: 'Sonnet',
-      status: 'ok',
-      subTeam: {
-        count: employeeLike.length,
-        label: 'Employee Personal Assistants',
-        agents: employeeLike.map((a) => ({ id: a.id, label: a.label, role: a.role, tier: a.tier })),
-      },
-    };
-    return [irisAgent, ...nonEmployees, parent].filter(Boolean) as HierarchyAgent[];
-  }
-
-  return mapped;
 }
 
-const TIER_PRICE = { Haiku: 19, Sonnet: 39, Opus: 79 };
+/** Calculate total monthly price from structured agent data + tierCounts */
+function calculateTotalPrice(structured: any): number {
+  // Prefer AI's tierCounts (includes all sub-agents) for accuracy
+  if (structured?.tierCounts) {
+    const { opus = 0, sonnet = 0, haiku = 0 } = structured.tierCounts;
+    return opus * TIER_PRICE.Opus + sonnet * TIER_PRICE.Sonnet + haiku * TIER_PRICE.Haiku;
+  }
+  // Fallback: count visible agents + their sub-team agents
+  const agents = mapToHierarchyAgents(structured?.agents ?? []);
+  let total = 0;
+  for (const a of agents) {
+    if (a.tier) total += TIER_PRICE[a.tier as keyof typeof TIER_PRICE] || 0;
+    if (a.subTeam) {
+      for (const sub of a.subTeam.agents) {
+        if (sub.tier) total += TIER_PRICE[sub.tier as keyof typeof TIER_PRICE] || 0;
+      }
+      // If subTeam.count > listed agents, fill the rest at Haiku rate (default for employees)
+      const listed = a.subTeam.agents.length;
+      if (a.subTeam.count > listed) {
+        total += (a.subTeam.count - listed) * TIER_PRICE.Haiku;
+      }
+    }
+  }
+  return total;
+}
 
 export default function HomePage() {
   const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([
@@ -175,7 +190,7 @@ export default function HomePage() {
     const s = structuredData ?? {};
     const agents = mapToHierarchyAgents(s.agents ?? []);
     // Tier-based pricing
-    const monthlyPrice = agents.reduce((sum, a) => sum + (TIER_PRICE[a.tier as keyof typeof TIER_PRICE] || 39), 0);
+    const monthlyPrice = calculateTotalPrice(s);
     const currency = s.location?.currency?.toLowerCase() || 'eur';
 
     // Save state before redirect
@@ -211,7 +226,12 @@ export default function HomePage() {
 
   const s = structuredData ?? {};
   const hierarchyAgents = mapToHierarchyAgents(s.agents ?? []);
-  const totalPrice = hierarchyAgents.reduce((sum, a) => sum + (TIER_PRICE[a.tier as keyof typeof TIER_PRICE] || 39), 0);
+  const totalPrice = calculateTotalPrice(s);
+  // Total agents = parent agents + all sub-agents
+  const totalAgentCount = hierarchyAgents.reduce(
+    (sum, a) => sum + 1 + (a.subTeam?.count ?? 0),
+    0,
+  );
   const currencySymbol = s.location?.currencySymbol || '€';
 
   return (
@@ -393,7 +413,7 @@ export default function HomePage() {
             <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
               <div className="eyebrow" style={{ marginBottom: 12 }}>Your AI Team</div>
               <div className="num-lg" style={{ color: 'var(--text)', fontWeight: 300 }}>
-                {hierarchyAgents.length} agents, ready to deploy.
+                {totalAgentCount} agents, ready to deploy.
               </div>
               <div style={{ marginTop: 8, color: 'var(--text-dim)', fontSize: 14 }}>
                 {businessName || s.businessName || 'Your business'} · {currencySymbol}{totalPrice}/month total
