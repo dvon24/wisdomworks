@@ -76,6 +76,7 @@ export default function HomePage() {
   const [structuredData, setStructuredData] = useState<any>(null);
   const [inputPlaceholder, setInputPlaceholder] = useState('Describe your business...');
   const [showExample, setShowExample] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>('iris');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Restore state if returning from Stripe
@@ -341,8 +342,22 @@ export default function HomePage() {
         {!showPreview && showExample && <ExamplePreview />}
 
         {/* PHASE 2: Agent Hierarchy Preview (pre-payment) */}
-        {showPreview && !hasPaid && (
-          <div style={{ width: '100%', maxWidth: 980, padding: '0 24px' }}>
+        {showPreview && !hasPaid && (() => {
+          const TIER_PRICE_LOCAL = { Haiku: 19, Sonnet: 39, Opus: 79 };
+          const TIER_DESC_LOCAL = {
+            Haiku: 'Fastest, lowest cost',
+            Sonnet: 'Day-to-day reasoning',
+            Opus: 'Critical reasoning, planning',
+          };
+          // Find the selected agent in the hierarchy + matching AI agent data for description
+          const selected = hierarchyAgents.find((a) => a.id === selectedAgentId) ?? hierarchyAgents[0];
+          const aiAgents = s.agents ?? [];
+          const selectedDetail = selected
+            ? aiAgents.find((a: any) => (a.name || '').toLowerCase().replace(/\s+/g, '-') === selected.id || a.name === selected.label) ?? aiAgents[hierarchyAgents.indexOf(selected)]
+            : null;
+
+          return (
+          <div style={{ width: '100%', maxWidth: 1240, padding: '0 24px' }}>
             <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
               <div className="eyebrow" style={{ marginBottom: 12 }}>Your AI Team</div>
               <div className="num-lg" style={{ color: 'var(--text)', fontWeight: 300 }}>
@@ -351,22 +366,146 @@ export default function HomePage() {
               <div style={{ marginTop: 8, color: 'var(--text-dim)', fontSize: 14 }}>
                 {businessName || s.businessName || 'Your business'} · {currencySymbol}{totalPrice}/month total
               </div>
+              <div style={{ marginTop: 6, color: 'var(--text-faint)', fontSize: 12 }}>
+                Click any agent to see what they do
+              </div>
             </div>
 
-            <div className="glass-strong" style={{ padding: '1.5rem', boxShadow: '0 24px 60px rgba(20, 20, 40, 0.16)' }}>
-              <Hierarchy
-                width={940}
-                height={460}
-                team={hierarchyAgents}
-                principal={{
-                  initials: (businessName || 'You').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase(),
-                  first: businessName?.split(' ')[0] || 'You',
-                  role: 'Owner',
-                }}
-                showExternals={false}
-                showArcs
-                accent="var(--accent)"
-              />
+            <div
+              className="glass-strong"
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1.6fr 1fr',
+                gap: 0,
+                overflow: 'hidden',
+                boxShadow: '0 24px 60px rgba(20, 20, 40, 0.16)',
+              }}
+            >
+              {/* Hierarchy */}
+              <div style={{ padding: '24px 12px', borderRight: '1px solid var(--glass-border)', minHeight: 540 }}>
+                <Hierarchy
+                  width={940}
+                  height={520}
+                  team={hierarchyAgents}
+                  principal={{
+                    initials: (businessName || 'You').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase(),
+                    first: businessName?.split(' ')[0] || 'You',
+                    role: 'Owner',
+                  }}
+                  showExternals={false}
+                  showArcs
+                  accent="var(--accent)"
+                  onSelect={(agent) => setSelectedAgentId(agent.id)}
+                />
+              </div>
+
+              {/* Agent detail panel */}
+              <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 16, minHeight: 540 }}>
+                <div className="eyebrow">Selected agent</div>
+                {selected && (
+                  <div key={selected.id} style={{ display: 'flex', flexDirection: 'column', gap: 14, animation: 'fadeIn 0.3s ease' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <div
+                        style={{
+                          width: 44,
+                          height: 44,
+                          borderRadius: 12,
+                          background: selected.id === 'iris' ? 'var(--accent)' : 'rgba(255,255,255,0.7)',
+                          color: selected.id === 'iris' ? 'white' : 'var(--text)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontWeight: 600,
+                          fontSize: 18,
+                          border: '1px solid var(--glass-border)',
+                        }}
+                      >
+                        {selected.id === 'iris' ? '✦' : selected.label[0]}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 17, fontWeight: 600 }}>{selected.label}</div>
+                        <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.15em', marginTop: 2 }}>
+                          {selected.role}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Description from AI's structured data */}
+                    {selectedDetail?.description && (
+                      <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>{selectedDetail.description}</div>
+                    )}
+
+                    {/* Channels */}
+                    {(selectedDetail?.channels ?? []).length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {(selectedDetail.channels as string[]).map((c) => (
+                          <span key={c} className="pill info">{c}</span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Tools */}
+                    {(selectedDetail?.tools ?? []).length > 0 && (
+                      <div>
+                        <div className="eyebrow" style={{ marginBottom: 6 }}>Connects to</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {(selectedDetail.tools as string[]).map((t) => (
+                            <span key={t} className="mono" style={{ fontSize: 11, padding: '4px 10px', borderRadius: 999, background: 'rgba(255,255,255,0.6)', border: '1px solid var(--glass-border)', color: 'var(--text-dim)' }}>{t}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Strengths */}
+                    {(selectedDetail?.strengths ?? []).length > 0 && (
+                      <div style={{ fontSize: 12, color: 'var(--text-dim)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {(selectedDetail.strengths as string[]).map((sk: string, i: number) => (
+                          <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, lineHeight: 1.5 }}>
+                            <span style={{ color: '#1f7a48' }}>✓</span><span>{sk}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Limitations */}
+                    {(selectedDetail?.limitations ?? []).length > 0 && (
+                      <div style={{ fontSize: 12, color: 'var(--text-dim)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {(selectedDetail.limitations as string[]).map((l: string, i: number) => (
+                          <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, lineHeight: 1.5 }}>
+                            <span style={{ color: '#8a4f10' }}>⚠</span><span>{l}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Model + price */}
+                    {selected.tier && (
+                      <div
+                        style={{
+                          marginTop: 'auto',
+                          padding: 12,
+                          background: 'rgba(255,255,255,0.5)',
+                          border: '1px solid var(--glass-border)',
+                          borderRadius: 12,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                          <span className="eyebrow">Model</span>
+                          <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>
+                            {TIER_DESC_LOCAL[selected.tier as keyof typeof TIER_DESC_LOCAL]}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                          <span style={{ fontSize: 18, fontWeight: 600, color: 'var(--accent-deep)' }}>{selected.tier}</span>
+                          <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+                            {currencySymbol}{TIER_PRICE_LOCAL[selected.tier as keyof typeof TIER_PRICE_LOCAL]}/mo
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Cost comparison */}
@@ -395,7 +534,8 @@ export default function HomePage() {
               </button>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* PHASE 3: Connect Tools (post-payment) */}
         {hasPaid && !agentsDeployed && showConnectTools && (
