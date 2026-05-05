@@ -134,6 +134,26 @@ export {
   formatPriceDelta,
 } from './agents/intent-parser';
 
+// External integrations (Gmail, Google Calendar, Outlook, Apple CalDAV)
+export type {
+  EmailMessage,
+  SendEmailRequest,
+  CalendarEvent,
+  CreateCalendarEvent,
+  IntegrationContext,
+  IntegrationResult,
+  OAuthConnection,
+} from './integrations';
+export {
+  listEmails,
+  sendEmail,
+  markEmailRead,
+  listCalendarEvents,
+  createCalendarEvent,
+  updateCalendarEvent,
+  deleteCalendarEvent,
+} from './integrations';
+
 // Client Profiles & Business Intelligence (Epic 2b)
 export type {
   ClientProfile,

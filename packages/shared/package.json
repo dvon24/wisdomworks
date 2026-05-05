@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
     "@wisdomworks/eslint-config": "workspace:*",
     "@wisdomworks/typescript-config": "workspace:*",
     "eslint": "^9.39.4",
@@ -20,6 +21,7 @@
     "@ai-sdk/anthropic": "^3.0.71",
     "@ai-sdk/openai": "^3.0.53",
     "ai": "^6.0.168",
+    "tsdav": "^2.2.0",
     "zod": "^4.3.6"
   }
 }
