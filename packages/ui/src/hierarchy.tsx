@@ -367,20 +367,20 @@ export function Hierarchy({
               style={{ animationDelay: 180 + j * 30 + 'ms', cursor: onSelect ? 'pointer' : 'default' }}
               onClick={() => onSelect?.(sub as HierarchyAgent)}
             >
-              <circle cx={sx} cy={sy} r="20" fill="rgba(255,255,255,0.96)" stroke={accent} strokeOpacity="0.4" strokeWidth="1.2" />
-              <text x={sx} y={sy + 5} textAnchor="middle" fontSize="12" fontWeight="600" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
+              <circle cx={sx} cy={sy} r="22" fill="rgba(255,255,255,0.96)" stroke={accent} strokeOpacity="0.4" strokeWidth="1.2" />
+              <text x={sx} y={sy + 6} textAnchor="middle" fontSize="14" fontWeight="600" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
                 {sub.label[0]}
               </text>
-              <text x={sx} y={sy + 38} textAnchor="middle" fontSize="10" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
+              <text x={sx} y={sy + 42} textAnchor="middle" fontSize="12" fontWeight="600" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
                 {sub.label.length > 14 ? sub.label.slice(0, 13) + '…' : sub.label}
               </text>
               {sub.role && (
                 <text
                   x={sx}
-                  y={sy + 52}
+                  y={sy + 56}
                   textAnchor="middle"
-                  fontSize="8.5"
-                  fill="rgba(26,26,34,0.5)"
+                  fontSize="10"
+                  fill="rgba(26,26,34,0.55)"
                   fontFamily="Geist Mono"
                   letterSpacing="0.05em"
                   style={{ pointerEvents: 'none' }}
@@ -390,8 +390,8 @@ export function Hierarchy({
               )}
               {sub.tier && (
                 <g style={{ pointerEvents: 'none' }}>
-                  <rect x={sx - 22} y={sy + 60} width="44" height="13" rx="6.5" fill={accent} fillOpacity="0.12" stroke={accent} strokeOpacity="0.4" strokeWidth="0.8" />
-                  <text x={sx} y={sy + 69} textAnchor="middle" fontSize="8" fontFamily="Geist Mono" fontWeight="500" fill={accent} letterSpacing="0.06em">
+                  <rect x={sx - 24} y={sy + 64} width="48" height="15" rx="7.5" fill={accent} fillOpacity="0.12" stroke={accent} strokeOpacity="0.4" strokeWidth="0.8" />
+                  <text x={sx} y={sy + 74} textAnchor="middle" fontSize="9" fontFamily="Geist Mono" fontWeight="500" fill={accent} letterSpacing="0.06em">
                     {sub.tier.toUpperCase()}
                   </text>
                 </g>
@@ -411,8 +411,100 @@ export function Hierarchy({
     ? Math.max(height, 240 + focusedRows * 110 + 80)
     : height;
 
+  // ─── Zoom + pan ───
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragStart, setDragStart] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null);
+
+  // viewBox: zoomed-in = smaller viewBox, viewport shows less, content appears larger
+  const viewW = width / zoom;
+  const viewH = effectiveHeight / zoom;
+  const viewX = -pan.x / zoom + (width - viewW) / 2;
+  const viewY = -pan.y / zoom + (effectiveHeight - viewH) / 2;
+
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    setZoom((z) => Math.min(3, Math.max(0.5, z * delta)));
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    setDragStart({ x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y });
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!dragStart) return;
+    setPan({
+      x: dragStart.panX + (e.clientX - dragStart.x),
+      y: dragStart.panY + (e.clientY - dragStart.y),
+    });
+  };
+
+  const handleMouseUp = () => setDragStart(null);
+
+  const resetView = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
   return (
-    <svg viewBox={`0 0 ${width} ${effectiveHeight}`} width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
+    <div
+      style={{ position: 'relative', width: '100%', height: '100%' }}
+      onWheel={handleWheel}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+    >
+      {/* Zoom controls */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 8,
+          right: 8,
+          zIndex: 10,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+          background: 'rgba(255,255,255,0.85)',
+          backdropFilter: 'blur(12px)',
+          borderRadius: 10,
+          padding: 4,
+          border: '1px solid var(--glass-border)',
+          boxShadow: '0 4px 12px rgba(20,20,40,0.08)',
+        }}
+      >
+        <button
+          onClick={() => setZoom((z) => Math.min(3, z * 1.2))}
+          style={{ width: 28, height: 28, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: 'var(--text-dim)' }}
+          title="Zoom in"
+        >+</button>
+        <button
+          onClick={() => setZoom((z) => Math.max(0.5, z / 1.2))}
+          style={{ width: 28, height: 28, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 16, fontWeight: 600, color: 'var(--text-dim)' }}
+          title="Zoom out"
+        >−</button>
+        {(zoom !== 1 || pan.x !== 0 || pan.y !== 0) && (
+          <button
+            onClick={resetView}
+            style={{ width: 28, height: 28, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 11, color: 'var(--accent-deep)' }}
+            title="Reset zoom"
+          >⟲</button>
+        )}
+      </div>
+
+      <svg
+        viewBox={`${viewX} ${viewY} ${viewW} ${viewH}`}
+        width="100%"
+        height="100%"
+        style={{
+          display: 'block',
+          overflow: 'visible',
+          cursor: dragStart ? 'grabbing' : zoom > 1 ? 'grab' : 'default',
+          userSelect: 'none',
+        }}
+      >
       <defs>
         <radialGradient id="hierarchy-halo" cx="50%" cy="50%" r="50%">
           <stop offset="0%" stopColor={accent} stopOpacity="0.4" />
@@ -602,22 +694,22 @@ export function Hierarchy({
             {/* Calculate per-agent width to truncate labels that would overflow */}
             {(() => {
               const perAgentWidth = (width - 100) / Math.max(1, positions.length);
-              const labelMaxChars = Math.max(8, Math.floor(perAgentWidth / 7));
-              const roleMaxChars = Math.max(8, Math.floor(perAgentWidth / 6));
+              const labelMaxChars = Math.max(10, Math.floor(perAgentWidth / 8));
+              const roleMaxChars = Math.max(10, Math.floor(perAgentWidth / 7));
               const truncatedLabel = s.label.length > labelMaxChars ? s.label.slice(0, labelMaxChars - 1) + '…' : s.label;
               const truncatedRole = s.role.length > roleMaxChars ? s.role.slice(0, roleMaxChars - 1).toUpperCase() + '…' : s.role.toUpperCase();
               return (
                 <>
-                  <text x={s.x} y={s.y + 30} textAnchor="middle" fontSize="10" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
+                  <text x={s.x} y={s.y + 33} textAnchor="middle" fontSize="13" fontWeight="600" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
                     <title>{s.label}</title>
                     {truncatedLabel}
                   </text>
                   <text
                     x={s.x}
-                    y={s.y + 43}
+                    y={s.y + 48}
                     textAnchor="middle"
-                    fontSize="9"
-                    fill="rgba(26,26,34,0.5)"
+                    fontSize="10.5"
+                    fill="rgba(26,26,34,0.55)"
                     fontFamily="Geist Mono"
                     style={{ pointerEvents: 'none' }}
                   >
@@ -630,11 +722,11 @@ export function Hierarchy({
             {!s.ghost && s.tier && (
               <g style={{ pointerEvents: 'none' }}>
                 <rect
-                  x={s.x - 26}
-                  y={s.y + 49}
-                  width="52"
-                  height="14"
-                  rx="7"
+                  x={s.x - 28}
+                  y={s.y + 56}
+                  width="56"
+                  height="16"
+                  rx="8"
                   fill={accent}
                   fillOpacity="0.12"
                   stroke={accent}
@@ -643,9 +735,9 @@ export function Hierarchy({
                 />
                 <text
                   x={s.x}
-                  y={s.y + 59}
+                  y={s.y + 67}
                   textAnchor="middle"
-                  fontSize="8.5"
+                  fontSize="9.5"
                   fontFamily="Geist Mono"
                   fontWeight="500"
                   fill={accent}
@@ -687,6 +779,7 @@ export function Hierarchy({
       ))}
         </>
       )}
-    </svg>
+      </svg>
+    </div>
   );
 }

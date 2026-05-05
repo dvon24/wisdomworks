@@ -58,6 +58,7 @@ export type Intent =
   | { kind: 'add'; agent: CatalogAgent; count?: number; targetParentId?: string }
   | { kind: 'remove'; agent: ActiveAgent }
   | { kind: 'tier'; agent: ActiveAgent; fromTier: AgentTier; toTier: AgentTier }
+  | { kind: 'rename'; agent: ActiveAgent; newName: string }
   | { kind: 'question' }
   | null;
 
@@ -105,6 +106,28 @@ export function parseIntent(
     if (count || targetParentId) {
       const first = catalog.find((c) => !team.find((x) => x.id === c.id));
       if (first) return { kind: 'add', agent: first, count, targetParentId };
+    }
+  }
+
+  // ─── RENAME ───
+  // Patterns: "rename atlas to maya", "call sage maya", "change atlas's name to maya", "name atlas maya"
+  const renameMatch =
+    text.match(/\b(?:rename|call|change\s+(?:the\s+name\s+of\s+)?|change)\s+([a-zA-Z0-9_\-\s]+?)(?:'s\s+name)?\s+(?:to|as)\s+([a-zA-Z0-9_\-]+)/i) ||
+    text.match(/\bname\s+([a-zA-Z0-9_\-\s]+?)\s+([a-zA-Z0-9_\-]+)\s*$/i);
+  if (renameMatch) {
+    const oldName = renameMatch[1]!.trim().toLowerCase();
+    const newName = renameMatch[2]!.trim();
+    // Match the agent in the team
+    const target = team.find(
+      (a) =>
+        a.label.toLowerCase() === oldName ||
+        a.label.toLowerCase().includes(oldName) ||
+        oldName.includes(a.label.toLowerCase()),
+    );
+    if (target && newName.length >= 2 && newName.length <= 30) {
+      // Capitalize first letter
+      const formatted = newName[0]!.toUpperCase() + newName.slice(1);
+      return { kind: 'rename', agent: target, newName: formatted };
     }
   }
 
@@ -165,6 +188,10 @@ export function generateIntentReply(intent: Intent): string | null {
   if (intent.kind === 'tier') {
     const tierBlurb = TIER_DESC[intent.toTier];
     return `${tierBlurb}. Switch ${intent.agent.label} from ${intent.fromTier} to ${intent.toTier}?`;
+  }
+
+  if (intent.kind === 'rename') {
+    return `Renaming ${intent.agent.label} to ${intent.newName}. They'll keep all their context and history.`;
   }
 
   return null;

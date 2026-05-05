@@ -12,13 +12,15 @@ export type ActionStatus = 'pending' | 'accepted' | 'rejected';
 
 export interface ActionCardData {
   id: string;
-  kind: 'add' | 'remove' | 'tier';
+  kind: 'add' | 'remove' | 'tier' | 'rename';
+  agentId?: string;
   agentLabel: string;
   agentRole: string;
   delta: number;
   note: string;
   fromTier?: string;
   toTier?: string;
+  newName?: string;
   status: ActionStatus;
 }
 
@@ -49,8 +51,9 @@ export function ActionCard({ action, currencySymbol = '$', onAccept, onReject, o
   const isAdd = action.kind === 'add';
   const isRemove = action.kind === 'remove';
   const isTier = action.kind === 'tier';
-  const deltaStr = (action.delta >= 0 ? '+' : '−') + currencySymbol + Math.abs(action.delta) + '/mo';
-  const deltaColor = action.delta >= 0 ? 'var(--accent-deep)' : '#1f7a48';
+  const isRename = action.kind === 'rename';
+  const deltaStr = action.delta === 0 ? 'no cost change' : (action.delta >= 0 ? '+' : '−') + currencySymbol + Math.abs(action.delta) + '/mo';
+  const deltaColor = action.delta === 0 ? 'var(--text-faint)' : action.delta >= 0 ? 'var(--accent-deep)' : '#1f7a48';
 
   return (
     <div
@@ -64,7 +67,7 @@ export function ActionCard({ action, currencySymbol = '$', onAccept, onReject, o
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <span className="pill info">
-          {isAdd ? 'Add agent' : isRemove ? 'Remove agent' : 'Tier change'}
+          {isAdd ? 'Add agent' : isRemove ? 'Remove agent' : isTier ? 'Tier change' : 'Rename'}
         </span>
         <span style={{ flex: 1 }} />
         <span className="mono" style={{ fontSize: 11, color: deltaColor, fontWeight: 500 }}>
@@ -98,6 +101,10 @@ export function ActionCard({ action, currencySymbol = '$', onAccept, onReject, o
             <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
               {action.fromTier} → {action.toTier}
             </div>
+          ) : isRename ? (
+            <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+              {action.agentLabel} → {action.newName}
+            </div>
           ) : (
             <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.4, marginTop: 2 }}>{action.note}</div>
           )}
@@ -115,7 +122,7 @@ export function ActionCard({ action, currencySymbol = '$', onAccept, onReject, o
         )}
         <span style={{ flex: 1 }} />
         <button onClick={onAccept} className="btn primary" style={{ fontSize: 11, padding: '5px 12px' }}>
-          {isAdd ? 'Add' : isRemove ? 'Remove' : 'Switch'}
+          {isAdd ? 'Add' : isRemove ? 'Remove' : isTier ? 'Switch' : 'Rename'}
         </button>
       </div>
     </div>

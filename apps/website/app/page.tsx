@@ -145,6 +145,7 @@ export default function HomePage() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [agentOverrides, setAgentOverrides] = useState<Record<string, string>>({});
+  const [showPriceBreakdown, setShowPriceBreakdown] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Restore state if returning from Stripe
@@ -198,7 +199,11 @@ export default function HomePage() {
         const delta = intentPriceDelta(intent);
         const action: ActionCardData = {
           id: `act-${Date.now()}`,
-          kind: intent.kind as 'add' | 'remove' | 'tier',
+          kind: intent.kind,
+          agentId:
+            intent.kind === 'add'
+              ? intent.agent.id
+              : (intent as any).agent.id,
           agentLabel:
             intent.kind === 'add'
               ? intent.agent.label
@@ -216,6 +221,7 @@ export default function HomePage() {
                 : '',
           fromTier: intent.kind === 'tier' ? intent.fromTier : undefined,
           toTier: intent.kind === 'tier' ? intent.toTier : undefined,
+          newName: intent.kind === 'rename' ? intent.newName : undefined,
           status: 'pending',
         };
         setRefineActions((prev) => [...prev, action]);
@@ -741,22 +747,65 @@ export default function HomePage() {
               </div>
             </div>
 
-            {/* Cost comparison */}
-            {s.costOfInaction?.totalPerMonth && (
-              <div className="glass" style={{ padding: '1.25rem', marginTop: '1rem', display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '1rem', alignItems: 'center' }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div className="eyebrow" style={{ marginBottom: 4 }}>Without WisdomWorks</div>
-                  <div className="num-md mono" style={{ color: 'var(--bad)' }}>{s.costOfInaction.totalPerMonth}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>lost per month</div>
+            {/* Cost comparison — safer language, no specific dollar amount claims */}
+            <div className="glass" style={{ padding: '1.25rem', marginTop: '1rem', display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '1rem', alignItems: 'flex-start' }}>
+              <div style={{ textAlign: 'center' }}>
+                <div className="eyebrow" style={{ marginBottom: 6 }}>Without WisdomWorks</div>
+                <div style={{ fontSize: 14, color: 'var(--text)', fontWeight: 500, marginBottom: 8, lineHeight: 1.3 }}>
+                  Potential losses
                 </div>
-                <div style={{ fontSize: 24, color: 'var(--text-faint)' }}>→</div>
-                <div style={{ textAlign: 'center' }}>
-                  <div className="eyebrow" style={{ marginBottom: 4 }}>With WisdomWorks</div>
-                  <div className="num-md mono" style={{ color: 'var(--accent-deep)' }}>{currencySymbol}{totalPrice}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>per month</div>
-                </div>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                  <li>• Hours lost to admin work</li>
+                  <li>• Slow client response times</li>
+                  <li>• Knowledge leaving with staff</li>
+                  <li>• Inconsistent client experience</li>
+                </ul>
               </div>
-            )}
+              <div style={{ fontSize: 24, color: 'var(--text-faint)', alignSelf: 'center' }}>→</div>
+              <div style={{ textAlign: 'center' }}>
+                <div className="eyebrow" style={{ marginBottom: 6 }}>With WisdomWorks</div>
+                <div className="num-md mono" style={{ color: 'var(--accent-deep)' }}>{currencySymbol}{totalPrice}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>per month</div>
+                <button
+                  onClick={() => setShowPriceBreakdown(!showPriceBreakdown)}
+                  className="btn ghost"
+                  style={{ fontSize: 11, padding: '4px 10px', marginTop: 8, color: 'var(--accent-deep)' }}
+                >
+                  {showPriceBreakdown ? '▲ Hide breakdown' : '▼ See breakdown'}
+                </button>
+                {showPriceBreakdown && (() => {
+                  // Calculate tier counts including sub-agents
+                  const counts = { Opus: 0, Sonnet: 0, Haiku: 0 };
+                  hierarchyAgents.forEach((a) => {
+                    if (a.tier) counts[a.tier as keyof typeof counts]++;
+                    a.subTeam?.agents.forEach((sub) => {
+                      if (sub.tier) counts[sub.tier as keyof typeof counts]++;
+                    });
+                    if (a.subTeam) {
+                      const listed = a.subTeam.agents.length;
+                      if (a.subTeam.count > listed) {
+                        const fillerTier = a.tier ?? 'Haiku';
+                        counts[fillerTier as keyof typeof counts] += a.subTeam.count - listed;
+                      }
+                    }
+                  });
+                  return (
+                    <div style={{ marginTop: 10, padding: 10, background: 'rgba(124,58,237,0.05)', borderRadius: 8, fontSize: 11, textAlign: 'left' }}>
+                      {(['Opus', 'Sonnet', 'Haiku'] as const).map((tier) => counts[tier] > 0 && (
+                        <div key={tier} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', color: 'var(--text-dim)' }}>
+                          <span>{counts[tier]} × {tier} <span style={{ color: 'var(--text-faint)' }}>({currencySymbol}{TIER_PRICE[tier]})</span></span>
+                          <span className="mono">{currencySymbol}{counts[tier] * TIER_PRICE[tier]}</span>
+                        </div>
+                      ))}
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
+                        <span>Total</span>
+                        <span className="mono">{currencySymbol}{totalPrice}/mo</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
 
             <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: '1.5rem' }}>
               <button onClick={handleStartTrial} className="btn primary" style={{ padding: '12px 28px', fontSize: 14 }}>
