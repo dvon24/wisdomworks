@@ -152,7 +152,9 @@ export {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
+  analyzeWebsite,
 } from './integrations';
+export type { WebsiteSnapshot, WebsitePlatform } from './integrations';
 
 // Client Profiles & Business Intelligence (Epic 2b)
 export type {

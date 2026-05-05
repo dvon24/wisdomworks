@@ -28,3 +28,7 @@ export * as gmail from './gmail';
 export * as googleCalendar from './google-calendar';
 export * as microsoft from './microsoft';
 export * as apple from './apple-caldav';
+
+// Website analyzer (read-only crawler + platform detection)
+export { analyzeWebsite } from './website';
+export type { WebsiteSnapshot, WebsitePlatform } from './website';

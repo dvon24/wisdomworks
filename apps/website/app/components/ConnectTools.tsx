@@ -33,6 +33,10 @@ export default function ConnectTools({ onComplete, businessName, businessType }:
   });
   const [showAppleForm, setShowAppleForm] = useState(false);
   const [appleEmail, setAppleEmail] = useState('');
+  const [websiteUrl, setWebsiteUrl] = useState('');
+  const [websiteStatus, setWebsiteStatus] = useState<'idle' | 'analyzing' | 'connected' | 'error'>('idle');
+  const [websiteError, setWebsiteError] = useState('');
+  const [websitePlatform, setWebsitePlatform] = useState<string | null>(null);
   const [applePassword, setApplePassword] = useState('');
   const [appleError, setAppleError] = useState('');
 
@@ -246,6 +250,87 @@ export default function ConnectTools({ onComplete, businessName, businessType }:
       )}
 
       {/* Instagram */}
+      {/* Website */}
+      <div className="eyebrow" style={{ marginBottom: 10, paddingLeft: 4 }}>Your Website (optional)</div>
+      <div
+        style={{
+          padding: '1rem',
+          borderRadius: 12,
+          marginBottom: '1rem',
+          background: websiteStatus === 'connected' ? 'rgba(44, 176, 112, 0.08)' : 'rgba(255,255,255,0.5)',
+          border: `1px solid ${websiteStatus === 'connected' ? 'rgba(44, 176, 112, 0.3)' : 'var(--glass-border)'}`,
+        }}
+      >
+        {websiteStatus === 'connected' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: '1.25rem' }}>✓</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Website connected</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>
+                {websiteUrl} · {websitePlatform ? `Platform: ${websitePlatform}` : 'Analyzed'}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 12 }}>
+              Your agent will read it and propose improvements. URL only — we don't change anything without your approval.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                type="url"
+                placeholder="https://yourbusiness.com"
+                value={websiteUrl}
+                onChange={(e) => setWebsiteUrl(e.target.value)}
+                disabled={websiteStatus === 'analyzing'}
+                style={{
+                  flex: 1,
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  border: '1px solid var(--glass-border-strong)',
+                  background: 'rgba(255,255,255,0.65)',
+                  color: 'var(--text)',
+                  fontSize: 13,
+                  outline: 'none',
+                  fontFamily: 'inherit',
+                }}
+              />
+              <button
+                onClick={async () => {
+                  if (!websiteUrl || websiteUrl.length < 4) return;
+                  setWebsiteStatus('analyzing');
+                  setWebsiteError('');
+                  try {
+                    const res = await fetch('/api/analyze-website', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ url: websiteUrl, phoneNumber }),
+                    });
+                    const data = await res.json();
+                    if (data.success && data.snapshot) {
+                      setWebsiteStatus('connected');
+                      setWebsitePlatform(data.snapshot.platform);
+                    } else {
+                      setWebsiteStatus('error');
+                      setWebsiteError(data.error ?? 'Could not reach website');
+                    }
+                  } catch (e) {
+                    setWebsiteStatus('error');
+                    setWebsiteError(String(e));
+                  }
+                }}
+                disabled={!phoneSaved || websiteStatus === 'analyzing'}
+                className="btn"
+                style={{ fontSize: 12, minWidth: 90, justifyContent: 'center' }}
+              >
+                {websiteStatus === 'analyzing' ? 'Analyzing…' : 'Analyze'}
+              </button>
+            </div>
+            {websiteError && <div style={{ fontSize: 11, color: 'var(--bad-text)', marginTop: 6 }}>{websiteError}</div>}
+          </div>
+        )}
+      </div>
+
       <div className="eyebrow" style={{ marginBottom: 10, paddingLeft: 4 }}>Instagram (optional)</div>
       <div
         style={{
