@@ -168,11 +168,47 @@ export interface PricingBreakdown {
   /** Currency */
   currency: string;
   currencySymbol: string;
+  /** Real cost breakdown — internal use only */
+  costBreakdown: {
+    ai: number;
+    whatsapp: number;
+    infrastructure: number;
+    stripe: number;
+    total: number;
+  };
 }
 
-const TARGET_MARGIN = 0.70; // 70% gross margin target
+// ─── Real operating costs ───
+// All prices in USD/month, per customer (variable) or amortized (fixed)
+
+const TARGET_MARGIN = 0.65; // 65% gross margin target — realistic after all infra costs
 const MIN_PRICE = 49;       // Floor price regardless of calculation
-const PLATFORM_FEE = 5;     // Base platform cost per tenant (hosting, storage, etc.)
+
+// Infrastructure (per customer, amortized)
+const VERCEL_COST_PER_CUSTOMER = 0.50;     // function invocations + bandwidth
+const SUPABASE_COST_PER_CUSTOMER = 1.50;   // database storage + read/write ops
+const FIXED_OVERHEAD_PER_CUSTOMER = 1.00;  // domain, monitoring, misc SaaS
+
+// Stripe processing
+const STRIPE_FEE_PERCENT = 0.029;          // 2.9%
+const STRIPE_FEE_FIXED = 0.30;             // $0.30 per charge
+
+// WhatsApp Business API (Meta) — per conversation outside 24hr service window
+// Service conversations (user-initiated within 24hr) are FREE
+// Business-initiated outside window: $0.02-0.08 depending on type & country
+const WHATSAPP_FREE_TIER_PER_BUSINESS = 1000; // shared across all customers
+const WHATSAPP_AVG_COST_PER_CONVERSATION = 0.04; // utility/marketing avg
+// Typical: customer with 100 clients/mo → ~30% of conversations are business-initiated outside window
+const WHATSAPP_BILLABLE_RATIO = 0.30;
+const WHATSAPP_CONVERSATIONS_PER_CLIENT = 3.5; // avg messages back and forth
+
+// Twilio Voice (when enabled)
+const VOICE_COST_PER_MINUTE = 0.0085;  // $0.0085/min in/out
+const VOICE_AVG_MINUTES_PER_CLIENT = 0.5; // 30 sec avg if enabled
+
+// Email sending (if user uses Outlook/Yahoo we pay nothing — user's own SMTP)
+// Only relevant if we send on behalf via SendGrid: ~$0.0008/email at volume
+const EMAIL_COST_PER_SEND = 0.001; // negligible
 
 /**
  * Calculate the monthly price for a customer based on their profile.
@@ -213,20 +249,36 @@ export function calculatePricing(input: PricingInput): PricingBreakdown {
 
   // Apply complexity multiplier — complex businesses generate longer outputs, more reasoning
   const rawTokenCost = agentCosts.reduce((sum, a) => sum + a.monthlyCost, 0);
-  const totalCost = (rawTokenCost * complexity.costMultiplier) + PLATFORM_FEE;
+  const aiCost = rawTokenCost * complexity.costMultiplier;
+
+  // Variable infrastructure costs per customer
+  const infraCost = VERCEL_COST_PER_CUSTOMER + SUPABASE_COST_PER_CUSTOMER + FIXED_OVERHEAD_PER_CUSTOMER;
+
+  // WhatsApp conversation costs (scales with client volume)
+  // Note: 1,000 free conversations per Meta business account is shared across ALL customers,
+  // so we don't credit it per-customer — at scale every conversation costs us money.
+  const conversationsPerMonth = (input.clientVolumeMonthly ?? 0) * WHATSAPP_CONVERSATIONS_PER_CLIENT;
+  const billableConversations = conversationsPerMonth * WHATSAPP_BILLABLE_RATIO;
+  const whatsappCost = billableConversations * WHATSAPP_AVG_COST_PER_CONVERSATION;
+
+  // Pre-Stripe COGS (everything except payment processing, which we calculate from final price)
+  const preStripeCost = aiCost + infraCost + whatsappCost;
+
+  // Solve for price that achieves target margin AFTER stripe fees
+  // monthlyPrice * (1 - stripe%) - stripeFixed - preStripeCost = monthlyPrice * (1 - margin)
+  // Solving: monthlyPrice = (preStripeCost + stripeFixed) / (margin - stripe%)
+  const colMultiplier = input.costOfLivingMultiplier ?? 1.0;
+  let monthlyPrice = (preStripeCost + STRIPE_FEE_FIXED) / (TARGET_MARGIN - STRIPE_FEE_PERCENT);
+  monthlyPrice *= colMultiplier;
+  monthlyPrice = Math.max(MIN_PRICE, Math.ceil(monthlyPrice / 5) * 5);
+
+  // Now calculate actual stripe fee on the final price
+  const stripeCost = monthlyPrice * STRIPE_FEE_PERCENT + STRIPE_FEE_FIXED;
+  const totalCost = preStripeCost + stripeCost;
+
   const totalInputTokens = agentCosts.reduce((sum, a) => sum + a.inputTokens, 0);
   const totalOutputTokens = agentCosts.reduce((sum, a) => sum + a.outputTokens, 0);
   const totalCachedTokens = agentCosts.reduce((sum, a) => sum + a.cachedTokens, 0);
-
-  // Calculate price: cost / (1 - target margin)
-  let monthlyPrice = totalCost / (1 - TARGET_MARGIN);
-
-  // Apply cost-of-living adjustment
-  const colMultiplier = input.costOfLivingMultiplier ?? 1.0;
-  monthlyPrice *= colMultiplier;
-
-  // Round to nearest $5
-  monthlyPrice = Math.max(MIN_PRICE, Math.ceil(monthlyPrice / 5) * 5);
 
   // Determine currency
   const { currency, currencySymbol } = getCurrency(colMultiplier);
@@ -247,6 +299,13 @@ export function calculatePricing(input: PricingInput): PricingBreakdown {
     pricePerAgent: Math.round((monthlyPrice / agents.length) * 100) / 100,
     currency,
     currencySymbol,
+    costBreakdown: {
+      ai: Math.round(aiCost * 100) / 100,
+      whatsapp: Math.round(whatsappCost * 100) / 100,
+      infrastructure: Math.round(infraCost * 100) / 100,
+      stripe: Math.round(stripeCost * 100) / 100,
+      total: Math.round(totalCost * 100) / 100,
+    },
   };
 }
 
@@ -350,11 +409,18 @@ export function formatPrice(pricing: PricingBreakdown): string {
  * Format a summary for internal use (Devon's dashboard).
  */
 export function formatPricingSummary(pricing: PricingBreakdown): string {
+  const sym = pricing.currencySymbol;
+  const cb = pricing.costBreakdown;
   return [
-    `Price: ${pricing.currencySymbol}${pricing.monthlyPrice}/mo`,
-    `Cost: ${pricing.currencySymbol}${pricing.monthlyCost}/mo`,
-    `Margin: ${pricing.marginPercent}%`,
-    `Agents: ${pricing.agentCount} (${pricing.currencySymbol}${pricing.pricePerAgent}/agent)`,
+    `Price: ${sym}${pricing.monthlyPrice}/mo`,
+    `Cost breakdown:`,
+    `  AI tokens:      ${sym}${cb.ai}`,
+    `  WhatsApp:       ${sym}${cb.whatsapp}`,
+    `  Infrastructure: ${sym}${cb.infrastructure}`,
+    `  Stripe fees:    ${sym}${cb.stripe}`,
+    `  Total cost:     ${sym}${cb.total}`,
+    `Margin: ${pricing.marginPercent}% (${sym}${pricing.monthlyPrice - pricing.monthlyCost}/mo gross profit)`,
+    `Agents: ${pricing.agentCount} (${sym}${pricing.pricePerAgent}/agent)`,
     `Tokens/mo: ~${Math.round(pricing.estimatedTokens.input / 1000)}K input, ~${Math.round(pricing.estimatedTokens.output / 1000)}K output (${Math.round(pricing.estimatedTokens.cached / pricing.estimatedTokens.input * 100)}% cached)`,
   ].join('\n');
 }
