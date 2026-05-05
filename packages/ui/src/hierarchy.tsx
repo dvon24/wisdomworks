@@ -450,7 +450,13 @@ export function Hierarchy({
 
   return (
     <div
-      style={{ position: 'relative', width: '100%', height: '100%' }}
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        overflow: 'hidden',
+        borderRadius: 12,
+      }}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -500,7 +506,7 @@ export function Hierarchy({
         height="100%"
         style={{
           display: 'block',
-          overflow: 'visible',
+          overflow: 'hidden',
           cursor: dragStart ? 'grabbing' : zoom > 1 ? 'grab' : 'default',
           userSelect: 'none',
         }}

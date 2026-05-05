@@ -64,30 +64,100 @@ function pickTier(raw: any): 'Opus' | 'Sonnet' | 'Haiku' {
   return 'Sonnet';
 }
 
+// Curated pool of friendly, modern, gender-neutral agent names.
+// Used when AI returns a role-as-name (e.g. "Patient Experience Coordinator") instead of a real name.
+const AGENT_NAME_POOL = [
+  'Atlas', 'Sable', 'Juno', 'Vega', 'Wren', 'Cedar', 'Orin', 'Mira',
+  'Sage', 'River', 'Quinn', 'Avery', 'Rowan', 'Sky', 'Emery', 'Kai',
+  'Nova', 'Phoenix', 'Reese', 'Indigo', 'Lark', 'Vale', 'Ember', 'Cove',
+  'Ash', 'Linden', 'Marlow', 'Tate', 'Sloane', 'Briar', 'Onyx', 'Pax',
+  'Lux', 'Wynn', 'Echo', 'Rune', 'Eden', 'Auden', 'Soren', 'Astrid',
+  'Holland', 'Elliot', 'Finley', 'Hadley', 'Iver', 'June', 'Kit', 'Lane',
+];
+
+/** Detects when AI returned a generic role-as-name (e.g. "Patient Experience Coordinator", "Marketing Manager") */
+function looksLikeRoleNotName(name: string): boolean {
+  if (!name) return true;
+  // If multiple words, contains words like Coordinator/Manager/Specialist/Lead/Department/Team
+  const lower = name.toLowerCase();
+  const roleWords = ['coordinator', 'manager', 'specialist', 'lead', 'department', 'team', 'agent', 'assistant', 'director', 'analyst', 'monitor'];
+  if (roleWords.some((w) => lower.includes(w))) return true;
+  // Or if it has 3+ words (real names are usually 1-2 words)
+  if (name.split(/\s+/).length >= 3) return true;
+  return false;
+}
+
+/** Get the next unused name from the pool, given a Set of names already used */
+function nextAvailableName(used: Set<string>, seed: number): string {
+  let i = seed;
+  for (let tries = 0; tries < AGENT_NAME_POOL.length; tries++) {
+    const name = AGENT_NAME_POOL[(i + tries) % AGENT_NAME_POOL.length]!;
+    if (!used.has(name.toLowerCase())) {
+      used.add(name.toLowerCase());
+      return name;
+    }
+  }
+  // Fallback if all names exhausted (very rare)
+  return `Aide ${seed + 1}`;
+}
+
 /** Map AI-suggested agents to the Hierarchy component shape — preserves sub-team structure */
 function mapToHierarchyAgents(structuredAgents: any[]): HierarchyAgent[] {
   if (!structuredAgents?.length) {
     return [{ id: 'iris', label: 'Iris', role: 'Personal assistant', tier: 'Opus', status: 'ok', required: true }];
   }
 
+  // Track all used names (start with Iris) to avoid duplicates
+  const usedNames = new Set<string>(['iris']);
+
   return structuredAgents.map((a: any, i: number) => {
-    const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
+    // Iris (first agent) is always the personal assistant
+    if (i === 0) {
+      const irisName = a.name && !looksLikeRoleNotName(a.name) ? a.name : 'Iris';
+      usedNames.add(irisName.toLowerCase());
+      return { id: 'iris', label: irisName, role: a.role || 'Personal assistant', tier: 'Opus' as const, status: 'ok' as const, required: true };
+    }
+
+    // Determine name: use AI's name if it's actually a name, otherwise pick from pool
+    let label: string;
+    let role: string;
+    if (a.name && !looksLikeRoleNotName(a.name)) {
+      label = a.name;
+      role = a.role || 'Specialist';
+      usedNames.add(label.toLowerCase());
+    } else {
+      // AI returned a role-as-name → keep the role, generate a friendly name
+      label = nextAvailableName(usedNames, i);
+      role = a.name || a.role || 'Specialist';
+    }
+
+    const id = label.toLowerCase().replace(/\s+/g, '-');
     const tier = pickTier(a.aiModel ?? a.tier);
-    const base: HierarchyAgent = i === 0
-      ? { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus', status: 'ok', required: true }
-      : { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
+    const base: HierarchyAgent = { id, label, role, tier, status: 'ok' as const };
 
     // Pass through sub-team if AI returned one
     if (a.subTeam && typeof a.subTeam === 'object' && a.subTeam.count > 0) {
       base.subTeam = {
         count: a.subTeam.count,
         label: a.subTeam.label || 'Specialists',
-        agents: (a.subTeam.agents ?? []).map((sub: any, j: number) => ({
-          id: `${id}-sub-${j}`,
-          label: sub.name || `Specialist ${j + 1}`,
-          role: sub.role || 'Specialist',
-          tier: pickTier(sub.tier ?? sub.aiModel),
-        })),
+        agents: (a.subTeam.agents ?? []).map((sub: any, j: number) => {
+          let subLabel: string;
+          let subRole: string;
+          if (sub.name && !looksLikeRoleNotName(sub.name)) {
+            subLabel = sub.name;
+            subRole = sub.role || a.subTeam.label || 'Specialist';
+            usedNames.add(subLabel.toLowerCase());
+          } else {
+            subLabel = nextAvailableName(usedNames, j + i * 7);
+            subRole = sub.role || a.subTeam.label || 'Specialist';
+          }
+          return {
+            id: `${id}-${subLabel.toLowerCase()}`,
+            label: subLabel,
+            role: subRole,
+            tier: pickTier(sub.tier ?? sub.aiModel),
+          };
+        }),
       };
     }
     return base;
@@ -229,6 +299,7 @@ export default function HomePage() {
       }
     }
 
+    // Otherwise: send to AI for free-form response (questions, complex requests)
     setIsLoading(true);
     try {
       const res = await fetch('/api/onboarding', {
@@ -254,6 +325,90 @@ export default function HomePage() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  /**
+   * Apply an accepted action card — modify structuredData to add/remove/tier-change/rename agents.
+   * Then show the price diff toast.
+   */
+  const acceptAction = (actionId: string) => {
+    const action = refineActions.find((a) => a.id === actionId);
+    if (!action) return;
+
+    const before = totalPrice;
+    setStructuredData((prev: any) => {
+      if (!prev) return prev;
+      const agents = [...(prev.agents ?? [])];
+
+      if (action.kind === 'add') {
+        // Add a new top-level agent
+        agents.push({
+          name: action.agentLabel,
+          role: action.agentRole,
+          aiModel: action.toTier ?? 'Sonnet',
+          description: action.note,
+          channels: ['WhatsApp'],
+          tools: [],
+          strengths: [],
+          limitations: [],
+        });
+      } else if (action.kind === 'remove' && action.agentId) {
+        // Remove by id (after mapping)
+        const target = mapToHierarchyAgents(prev.agents).find((a) => a.id === action.agentId);
+        if (target) {
+          // Remove from raw agents by name match
+          const idx = agents.findIndex((a: any) => a.name === target.label || a.name === action.agentLabel);
+          if (idx >= 0) agents.splice(idx, 1);
+        }
+      } else if (action.kind === 'tier' && action.agentId) {
+        const target = mapToHierarchyAgents(prev.agents).find((a) => a.id === action.agentId);
+        if (target) {
+          const idx = agents.findIndex((a: any) => a.name === target.label || a.name === action.agentLabel);
+          if (idx >= 0) agents[idx] = { ...agents[idx], aiModel: action.toTier };
+        }
+      } else if (action.kind === 'rename' && action.agentId && action.newName) {
+        // Add to overrides — same as click-to-rename
+        setAgentOverrides((prev) => ({ ...prev, [action.agentId!]: action.newName! }));
+      }
+
+      // Recalculate tierCounts
+      const tierCounts = { opus: 0, sonnet: 0, haiku: 0 };
+      agents.forEach((a: any) => {
+        const t = pickTier(a.aiModel ?? a.tier).toLowerCase() as 'opus' | 'sonnet' | 'haiku';
+        tierCounts[t]++;
+        if (a.subTeam?.agents) {
+          a.subTeam.agents.forEach((sub: any) => {
+            const st = pickTier(sub.tier ?? sub.aiModel).toLowerCase() as 'opus' | 'sonnet' | 'haiku';
+            tierCounts[st]++;
+          });
+          if (a.subTeam.count > a.subTeam.agents.length) {
+            const fillerTier = pickTier(a.aiModel).toLowerCase() as 'opus' | 'sonnet' | 'haiku';
+            tierCounts[fillerTier] += a.subTeam.count - a.subTeam.agents.length;
+          }
+        }
+      });
+
+      return { ...prev, agents, tierCounts };
+    });
+
+    // Mark action as accepted
+    setRefineActions((prev) => prev.map((a) => (a.id === actionId ? { ...a, status: 'accepted' as const } : a)));
+
+    // Show price diff toast (defer to next tick so totalPrice updates)
+    setTimeout(() => {
+      const after = calculateTotalPrice(structuredData);
+      const delta = after - before;
+      if (delta !== 0) setPriceDiff({ delta, total: after });
+    }, 100);
+
+    // Iris confirmation message
+    setTimeout(() => {
+      setMessages((prev) => [...prev, { role: 'assistant', content: 'Done. I\'ll keep watching.' }]);
+    }, 700);
+  };
+
+  const rejectAction = (actionId: string) => {
+    setRefineActions((prev) => prev.map((a) => (a.id === actionId ? { ...a, status: 'rejected' as const } : a)));
   };
 
   const handleStartTrial = async () => {
@@ -765,7 +920,7 @@ export default function HomePage() {
               <div style={{ textAlign: 'center' }}>
                 <div className="eyebrow" style={{ marginBottom: 6 }}>With WisdomWorks</div>
                 <div className="num-md mono" style={{ color: 'var(--accent-deep)' }}>{currencySymbol}{totalPrice}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>per month</div>
+                <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>per month · may vary by usage</div>
                 <button
                   onClick={() => setShowPriceBreakdown(!showPriceBreakdown)}
                   className="btn ghost"
@@ -833,23 +988,34 @@ export default function HomePage() {
                   </div>
                 </header>
 
-                <div className="scroll" style={{ maxHeight: '30vh', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {messages.slice(-6).map((msg, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                        maxWidth: '85%',
-                        padding: '8px 12px',
-                        borderRadius: 12,
-                        background: msg.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,0.85)',
-                        color: msg.role === 'user' ? 'white' : 'var(--text)',
-                        fontSize: 13,
-                        lineHeight: 1.5,
-                        border: msg.role === 'user' ? 'none' : '1px solid var(--glass-border)',
-                      }}
-                    >
-                      {formatMessage(msg.content)}
+                <div className="scroll" style={{ maxHeight: '40vh', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {messages.slice(-8).map((msg, i) => (
+                    <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start', gap: 6 }}>
+                      <div
+                        style={{
+                          maxWidth: '85%',
+                          padding: '8px 12px',
+                          borderRadius: 12,
+                          background: msg.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,0.85)',
+                          color: msg.role === 'user' ? 'white' : 'var(--text)',
+                          fontSize: 13,
+                          lineHeight: 1.5,
+                          border: msg.role === 'user' ? 'none' : '1px solid var(--glass-border)',
+                        }}
+                      >
+                        {formatMessage(msg.content)}
+                      </div>
+                      {/* Render any action cards that came after this assistant message (last assistant only) */}
+                      {msg.role === 'assistant' && i === messages.slice(-8).length - 1 &&
+                        refineActions.map((action) => (
+                          <ActionCard
+                            key={action.id}
+                            action={action}
+                            currencySymbol={currencySymbol}
+                            onAccept={() => acceptAction(action.id)}
+                            onReject={() => rejectAction(action.id)}
+                          />
+                        ))}
                     </div>
                   ))}
                   {isLoading && (
@@ -969,6 +1135,16 @@ export default function HomePage() {
           </div>
         )}
       </main>
+
+      {/* Floating price diff toast — appears when team composition changes */}
+      {priceDiff && (
+        <PriceDiff
+          delta={priceDiff.delta}
+          total={priceDiff.total}
+          currencySymbol={currencySymbol}
+          onDismiss={() => setPriceDiff(null)}
+        />
+      )}
     </>
   );
 }
