@@ -32,3 +32,15 @@ export * as apple from './apple-caldav';
 // Website analyzer (read-only crawler + platform detection)
 export { analyzeWebsite } from './website';
 export type { WebsiteSnapshot, WebsitePlatform } from './website';
+
+// Slack — post messages, list channels, read history, search
+export * as slack from './slack';
+export type { SlackChannel, SlackMessage, PostMessageRequest } from './slack';
+
+// Notion — search, read pages, create pages, append blocks
+export * as notion from './notion';
+export type { NotionPage, NotionDatabase } from './notion';
+
+// Stripe (customer-side — for SaaS customers who want their agent to see their MRR)
+export * as customerStripe from './stripe';
+export type { StripeCustomerSummary } from './stripe';
