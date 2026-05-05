@@ -45,6 +45,16 @@ const EXAMPLE_TEAM: ExampleAgent[] = [
     channels: ['WhatsApp', 'Web chat'],
     skills: 'Parts lookup · Compatibility · Full inventory knowledge',
     needs: 'Inventory integration',
+    subTeam: {
+      count: 4,
+      label: 'Specialty technicians',
+      agents: [
+        { id: 'parts-1', label: 'Cogs', role: 'Engine specialist', tier: 'Haiku' as const },
+        { id: 'parts-2', label: 'Sparkle', role: 'Electrical', tier: 'Haiku' as const },
+        { id: 'parts-3', label: 'Tread', role: 'Tires & wheels', tier: 'Haiku' as const },
+        { id: 'parts-4', label: 'Brake', role: 'Brakes & suspension', tier: 'Haiku' as const },
+      ],
+    },
   },
   {
     id: 'service',
@@ -85,6 +95,7 @@ const TOTAL_PRICE = EXAMPLE_TEAM.reduce((sum, a) => sum + (TIER_PRICE[a.tier as 
 
 export default function ExamplePreview() {
   const [selectedId, setSelectedId] = useState<string>('iris');
+  const [focusedSubTeam, setFocusedSubTeam] = useState<string | null>(null);
   const detail = EXAMPLE_TEAM.find((a) => a.id === selectedId);
 
   return (
@@ -119,6 +130,9 @@ export default function ExamplePreview() {
             showArcs
             accent="var(--accent)"
             onSelect={(agent) => setSelectedId(agent.id)}
+            focusedSubTeam={focusedSubTeam}
+            onSubTeamOpen={(parentId) => setFocusedSubTeam(parentId)}
+            onSubTeamClose={() => setFocusedSubTeam(null)}
           />
         </div>
 

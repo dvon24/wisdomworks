@@ -44,17 +44,47 @@ function mapToHierarchyAgents(structuredAgents: any[]): HierarchyAgent[] {
   if (!structuredAgents?.length) {
     return [{ id: 'iris', label: 'Iris', role: 'Personal assistant', tier: 'Opus', status: 'ok', required: true }];
   }
-  return structuredAgents.map((a: any, i: number) => {
+
+  // Map raw agents
+  const mapped: HierarchyAgent[] = structuredAgents.map((a: any, i: number) => {
     const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
-    // First agent is always the personal assistant — show as Iris-style
     if (i === 0) {
       return { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus', status: 'ok', required: true };
     }
-    // Tier from AI model name (Opus/Sonnet/Haiku)
     const model = (a.aiModel || '').toLowerCase();
     const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
     return { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
   });
+
+  // Group: detect agents whose role indicates they're part of a sub-team (employees, sub-managers, etc.)
+  // Strategy: look for repeated role keywords. If 4+ agents share a role pattern, fold them under a parent.
+  const irisAgent = mapped[0];
+  const others = mapped.slice(1);
+
+  // Find Tier 3 (Haiku) employee-style agents
+  const employeeLike = others.filter(
+    (a) => a.tier === 'Haiku' && (a.role.toLowerCase().includes('employee') || a.role.toLowerCase().includes('personal') || a.role.toLowerCase().includes('assistant')),
+  );
+  const nonEmployees = others.filter((a) => !employeeLike.includes(a));
+
+  if (employeeLike.length >= 4) {
+    // Create a parent agent that holds all employee assistants as a sub-team
+    const parent: HierarchyAgent = {
+      id: 'employee-team',
+      label: 'Team',
+      role: 'Personal Assistants',
+      tier: 'Sonnet',
+      status: 'ok',
+      subTeam: {
+        count: employeeLike.length,
+        label: 'Employee Personal Assistants',
+        agents: employeeLike.map((a) => ({ id: a.id, label: a.label, role: a.role, tier: a.tier })),
+      },
+    };
+    return [irisAgent, ...nonEmployees, parent].filter(Boolean) as HierarchyAgent[];
+  }
+
+  return mapped;
 }
 
 const TIER_PRICE = { Haiku: 19, Sonnet: 39, Opus: 79 };
@@ -78,6 +108,7 @@ export default function HomePage() {
   const [showExample, setShowExample] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string>('iris');
   const [showRefineChat, setShowRefineChat] = useState(false);
+  const [focusedSubTeam, setFocusedSubTeam] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Restore state if returning from Stripe
@@ -397,6 +428,9 @@ export default function HomePage() {
                   showArcs
                   accent="var(--accent)"
                   onSelect={(agent) => setSelectedAgentId(agent.id)}
+                  focusedSubTeam={focusedSubTeam}
+                  onSubTeamOpen={(parentId) => setFocusedSubTeam(parentId)}
+                  onSubTeamClose={() => setFocusedSubTeam(null)}
                 />
               </div>
 
@@ -674,6 +708,9 @@ export default function HomePage() {
                 }}
                 showArcs
                 accent="var(--accent)"
+                focusedSubTeam={focusedSubTeam}
+                onSubTeamOpen={(parentId) => setFocusedSubTeam(parentId)}
+                onSubTeamClose={() => setFocusedSubTeam(null)}
               />
             </div>
 

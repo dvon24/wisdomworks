@@ -11,6 +11,19 @@ import { WisdomMarkInline } from './wisdom-mark';
 export type AgentTier = 'Haiku' | 'Sonnet' | 'Opus';
 export type AgentStatus = 'ok' | 'warn' | 'bad';
 
+export interface HierarchySubAgent {
+  id: string;
+  label: string;
+  role: string;
+  tier?: AgentTier;
+}
+
+export interface HierarchySubTeam {
+  count: number;
+  label: string;
+  agents: HierarchySubAgent[];
+}
+
 export interface HierarchyAgent {
   id: string;
   label: string;
@@ -19,6 +32,8 @@ export interface HierarchyAgent {
   status?: AgentStatus;
   required?: boolean;
   ghost?: boolean;
+  /** When set, shows a pulsing badge on this agent. Click opens focused sub-team view. */
+  subTeam?: HierarchySubTeam;
 }
 
 export interface HierarchyExternal {
@@ -49,6 +64,12 @@ interface HierarchyProps {
   onSelect?: (agent: HierarchyAgent) => void;
   /** Max specialists to render individually before clustering (default 8) */
   maxIndividualNodes?: number;
+  /** ID of the parent agent whose sub-team is currently focused (zoomed-in view) */
+  focusedSubTeam?: string | null;
+  /** Called when user clicks the sub-team badge on a parent agent */
+  onSubTeamOpen?: (parentId: string) => void;
+  /** Called when user clicks "Back to team" in the focused sub-team view */
+  onSubTeamClose?: () => void;
 }
 
 export function Hierarchy({
@@ -65,6 +86,9 @@ export function Hierarchy({
   recentlyAdded = null,
   onSelect,
   maxIndividualNodes = 8,
+  focusedSubTeam = null,
+  onSubTeamOpen,
+  onSubTeamClose,
 }: HierarchyProps) {
   const cx = width / 2;
   const principalPos = { x: cx, y: 50 };
@@ -119,6 +143,14 @@ export function Hierarchy({
     return () => clearInterval(t);
   }, [showArcs, positions.length]);
 
+  // Sub-team peer comm pulse — runs when a sub-team is focused
+  const [peerIdx, setPeerIdx] = useState(0);
+  useEffect(() => {
+    if (!focusedSubTeam) return;
+    const t = setInterval(() => setPeerIdx((i) => i + 1), 1700);
+    return () => clearInterval(t);
+  }, [focusedSubTeam]);
+
   const exts = showExternals
     ? externals.map((e, i) => ({
         ...e,
@@ -133,6 +165,175 @@ export function Hierarchy({
     return `M ${x1} ${y1} Q ${mx} ${my} ${x2} ${y2}`;
   };
 
+  // Focused sub-team view rendering
+  const renderFocusedSubTeam = () => {
+    const parent = team.find((a) => a.id === focusedSubTeam);
+    if (!parent || !parent.subTeam) return null;
+    const subs = parent.subTeam.agents;
+    const fcx = width / 2;
+    const parentY = 110;
+    const ringY = 290;
+    const innerSpan = width - 220;
+    const subX = (j: number) => 110 + (innerSpan * (j + 0.5)) / Math.max(1, subs.length);
+
+    const peerActive = (() => {
+      const n = subs.length;
+      if (n < 2) return null;
+      const a = peerIdx % n;
+      const b = (a + 1 + (peerIdx % 2)) % n;
+      if (a === b) return null;
+      return { a, b };
+    })();
+    const peerActivePath = peerActive
+      ? (() => {
+          const sx = subX(peerActive.a);
+          const sx2 = subX(peerActive.b);
+          const dist = Math.abs(peerActive.b - peerActive.a);
+          const lift = 30 + Math.min(dist, 3) * 12;
+          return `M ${sx} ${ringY - 18} Q ${(sx + sx2) / 2} ${ringY - lift} ${sx2} ${ringY - 18}`;
+        })()
+      : null;
+    const mgrActiveIdx = subs.length > 0 ? peerIdx % subs.length : 0;
+    const mgrPath = subs.length > 0 ? arc(fcx, parentY + 28, subX(mgrActiveIdx), ringY - 22, 38) : '';
+
+    return (
+      <g key={'focus-' + focusedSubTeam} style={{ animation: 'fadeIn 0.4s ease' }}>
+        {/* Back button */}
+        <foreignObject x="14" y="14" width="160" height="32">
+          <button
+            onClick={() => onSubTeamClose?.()}
+            style={{
+              padding: '6px 12px',
+              background: 'rgba(255,255,255,0.7)',
+              border: '1px solid rgba(20,20,30,0.12)',
+              borderRadius: 999,
+              fontSize: 12,
+              color: 'rgba(26,26,34,0.7)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              fontFamily: 'inherit',
+            }}
+          >
+            <span style={{ fontSize: 14 }}>‹</span> Back to team
+          </button>
+        </foreignObject>
+
+        {/* Parent agent */}
+        <circle cx={fcx} cy={parentY} r="44" fill="url(#hierarchy-halo)" className="breathe" />
+        <circle cx={fcx} cy={parentY} r="28" fill="rgba(255,255,255,0.96)" stroke={accent} strokeWidth="2" />
+        <text x={fcx} y={parentY + 5} textAnchor="middle" fontSize="14" fontWeight="600" fill="#1a1a22">
+          {parent.label[0]}
+        </text>
+        <text x={fcx} y={parentY + 56} textAnchor="middle" fontSize="13" fontWeight="600" fill="#1a1a22">
+          {parent.label}
+        </text>
+        <text x={fcx} y={parentY + 74} textAnchor="middle" fontSize="10" fill="rgba(26,26,34,0.55)" fontFamily="Geist Mono" letterSpacing="0.06em">
+          {parent.role.toUpperCase()}
+        </text>
+
+        {/* Parent → sub connectors */}
+        {subs.map((sub, j) => (
+          <path
+            key={'l-sub-' + sub.id}
+            d={arc(fcx, parentY + 28, subX(j), ringY - 22, 30)}
+            fill="none"
+            stroke={accent}
+            strokeOpacity="0.3"
+            strokeWidth="1"
+            strokeDasharray="3 4"
+          />
+        ))}
+
+        {/* Static peer-to-peer arcs */}
+        {subs.map((_, j) =>
+          subs.slice(j + 1).map((__, k) => {
+            const j2 = j + 1 + k;
+            const dist = j2 - j;
+            if (dist > 2) return null;
+            const sx = subX(j);
+            const sx2 = subX(j2);
+            const lift = 30 + dist * 12;
+            return (
+              <path
+                key={`peer-${j}-${j2}`}
+                d={`M ${sx} ${ringY - 18} Q ${(sx + sx2) / 2} ${ringY - lift} ${sx2} ${ringY - 18}`}
+                fill="none"
+                stroke={accent}
+                strokeOpacity="0.15"
+                strokeWidth="0.8"
+                strokeDasharray="2 3"
+              />
+            );
+          }),
+        )}
+
+        {/* Active peer pulse */}
+        {peerActive && peerActivePath && (
+          <g key={`pulse-${peerIdx}`}>
+            <path d={peerActivePath} fill="none" stroke={accent} strokeWidth="1.6" strokeOpacity="0.7" />
+            <circle r="3" fill={accent}>
+              <animateMotion dur="1.4s" repeatCount="indefinite" path={peerActivePath} />
+            </circle>
+          </g>
+        )}
+
+        {/* Active manager → sub-agent pulse */}
+        {mgrPath && (
+          <g key={`mgr-${peerIdx}`}>
+            <path d={mgrPath} fill="none" stroke={accent} strokeWidth="2" opacity="0.85" />
+            <circle r="3.5" fill={accent}>
+              <animateMotion dur="1.4s" repeatCount="indefinite" path={mgrPath} />
+            </circle>
+          </g>
+        )}
+
+        {/* Sub-agents */}
+        {subs.map((sub, j) => {
+          const sx = subX(j);
+          const sy = ringY;
+          return (
+            <g
+              key={sub.id}
+              className="pop-in"
+              style={{ animationDelay: 180 + j * 70 + 'ms', cursor: onSelect ? 'pointer' : 'default' }}
+              onClick={() => onSelect?.(sub as HierarchyAgent)}
+            >
+              <circle cx={sx} cy={sy} r="22" fill="rgba(255,255,255,0.96)" stroke={accent} strokeOpacity="0.4" strokeWidth="1.2" />
+              <text x={sx} y={sy + 5} textAnchor="middle" fontSize="13" fontWeight="600" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
+                {sub.label[0]}
+              </text>
+              <text x={sx} y={sy + 44} textAnchor="middle" fontSize="11" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
+                {sub.label}
+              </text>
+              <text
+                x={sx}
+                y={sy + 60}
+                textAnchor="middle"
+                fontSize="9"
+                fill="rgba(26,26,34,0.5)"
+                fontFamily="Geist Mono"
+                letterSpacing="0.05em"
+                style={{ pointerEvents: 'none' }}
+              >
+                {sub.role.toUpperCase()}
+              </text>
+              {sub.tier && (
+                <g style={{ pointerEvents: 'none' }}>
+                  <rect x={sx - 24} y={sy + 70} width="48" height="14" rx="7" fill={accent} fillOpacity="0.12" stroke={accent} strokeOpacity="0.4" strokeWidth="0.8" />
+                  <text x={sx} y={sy + 80} textAnchor="middle" fontSize="8.5" fontFamily="Geist Mono" fontWeight="500" fill={accent} letterSpacing="0.06em">
+                    {sub.tier.toUpperCase()}
+                  </text>
+                </g>
+              )}
+            </g>
+          );
+        })}
+      </g>
+    );
+  };
+
   return (
     <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
       <defs>
@@ -142,6 +343,10 @@ export function Hierarchy({
         </radialGradient>
       </defs>
 
+      {focusedSubTeam && renderFocusedSubTeam()}
+
+      {!focusedSubTeam && (
+        <>
       {/* principal -> personal */}
       <line
         x1={principalPos.x}
@@ -359,6 +564,23 @@ export function Hierarchy({
                 </text>
               </g>
             )}
+            {/* Sub-team badge — pulsing circle with count, click to focus */}
+            {!s.ghost && s.subTeam && (
+              <g
+                style={{ cursor: 'pointer' }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSubTeamOpen?.(s.id);
+                }}
+              >
+                <circle cx={s.x + 14} cy={s.y - 14} r="9" fill={accent} stroke="white" strokeWidth="1.5">
+                  <animate attributeName="r" values="9;10.5;9" dur="2s" repeatCount="indefinite" />
+                </circle>
+                <text x={s.x + 14} y={s.y - 11} textAnchor="middle" fontSize="9" fontWeight="700" fill="white" style={{ pointerEvents: 'none' }}>
+                  {s.subTeam.count}
+                </text>
+              </g>
+            )}
           </g>
         );
       })}
@@ -372,6 +594,8 @@ export function Hierarchy({
           </text>
         </g>
       ))}
+        </>
+      )}
     </svg>
   );
 }

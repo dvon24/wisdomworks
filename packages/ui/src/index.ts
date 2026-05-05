@@ -15,6 +15,8 @@ export type {
   HierarchyAgent,
   HierarchyExternal,
   HierarchyPrincipal,
+  HierarchySubTeam,
+  HierarchySubAgent,
 } from './hierarchy';
 
 // Note: Import design-tokens.css from your app's global stylesheet:
