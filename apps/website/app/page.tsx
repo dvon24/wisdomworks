@@ -142,6 +142,9 @@ export default function HomePage() {
   const [focusedSubTeam, setFocusedSubTeam] = useState<string | null>(null);
   const [refineActions, setRefineActions] = useState<ActionCardData[]>([]);
   const [priceDiff, setPriceDiff] = useState<{ delta: number; total: number } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [agentOverrides, setAgentOverrides] = useState<Record<string, string>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Restore state if returning from Stripe
@@ -286,7 +289,21 @@ export default function HomePage() {
   };
 
   const s = structuredData ?? {};
-  const hierarchyAgents = mapToHierarchyAgents(s.agents ?? []);
+  const rawHierarchyAgents = mapToHierarchyAgents(s.agents ?? []);
+  // Apply user renames
+  const hierarchyAgents = rawHierarchyAgents.map((a) => ({
+    ...a,
+    label: agentOverrides[a.id] ?? a.label,
+    subTeam: a.subTeam
+      ? {
+          ...a.subTeam,
+          agents: a.subTeam.agents.map((sub) => ({
+            ...sub,
+            label: agentOverrides[sub.id] ?? sub.label,
+          })),
+        }
+      : undefined,
+  }));
   const totalPrice = calculateTotalPrice(s);
   // Total agents = parent agents + all sub-agents
   const totalAgentCount = hierarchyAgents.reduce(
@@ -540,7 +557,64 @@ export default function HomePage() {
                       </div>
                       <div style={{ flex: 1 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div style={{ fontSize: 17, fontWeight: 600 }}>{selected.label}</div>
+                          {renamingId === selected.id ? (
+                            <input
+                              autoFocus
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onBlur={() => {
+                                if (renameValue.trim()) {
+                                  setAgentOverrides((prev) => ({ ...prev, [selected.id]: renameValue.trim() }));
+                                }
+                                setRenamingId(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  if (renameValue.trim()) {
+                                    setAgentOverrides((prev) => ({ ...prev, [selected.id]: renameValue.trim() }));
+                                  }
+                                  setRenamingId(null);
+                                }
+                                if (e.key === 'Escape') setRenamingId(null);
+                              }}
+                              style={{
+                                fontSize: 17,
+                                fontWeight: 600,
+                                background: 'rgba(124,58,237,0.08)',
+                                border: '1px solid var(--accent-line)',
+                                borderRadius: 6,
+                                padding: '2px 8px',
+                                outline: 'none',
+                                fontFamily: 'inherit',
+                                color: 'var(--text)',
+                                width: 200,
+                              }}
+                            />
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setRenameValue(selected.label);
+                                setRenamingId(selected.id);
+                              }}
+                              style={{
+                                fontSize: 17,
+                                fontWeight: 600,
+                                background: 'transparent',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: 0,
+                                color: 'var(--text)',
+                                fontFamily: 'inherit',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                              }}
+                              title="Click to rename"
+                            >
+                              {selected.label}
+                              <span style={{ fontSize: 11, color: 'var(--text-faint)', opacity: 0.6 }}>✎</span>
+                            </button>
+                          )}
                           {selected.subTeam && (
                             <span className="pill info" style={{ fontSize: 10 }}>
                               Manages {selected.subTeam.count}

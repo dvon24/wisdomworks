@@ -173,16 +173,36 @@ export function Hierarchy({
     const parent = team.find((a) => a.id === focusedSubTeam);
     if (!parent || !parent.subTeam) return null;
 
-    // If subTeam.count > agents listed, generate placeholder agents to fill the count.
+    // If subTeam.count > agents listed, generate placeholder agents with friendly names.
     // This happens when the AI says "20 employee assistants" but doesn't list each by name.
     const listed = parent.subTeam.agents;
     const count = parent.subTeam.count;
     const subs: HierarchySubAgent[] = [...listed];
     if (count > listed.length) {
+      // Curated pool of short, modern, gender-neutral names — pick deterministically by index
+      // so the same agent always has the same name across renders.
+      const names = [
+        'Sage', 'River', 'Quinn', 'Avery', 'Rowan', 'Sky', 'Wren', 'Emery',
+        'Kai', 'Nova', 'Phoenix', 'Reese', 'Indigo', 'Lark', 'Vale', 'Ember',
+        'Cove', 'Ash', 'Linden', 'Marlow', 'Tate', 'Sloane', 'Briar', 'Onyx',
+        'Pax', 'Lux', 'Wynn', 'Echo', 'Rune', 'Eden', 'Auden', 'Soren',
+        'Nova', 'Astrid', 'Holland', 'Elliot', 'Finley', 'Hadley', 'Iver', 'June',
+        'Kit', 'Lane', 'Mae', 'Nico', 'Ocean', 'Poe', 'Remy', 'Sage',
+      ];
+      // Skip names that are already used by listed agents to avoid duplicates
+      const usedLabels = new Set(listed.map((a) => a.label.toLowerCase()));
+      let nameIdx = 0;
       for (let i = listed.length; i < count; i++) {
+        let name = names[nameIdx % names.length]!;
+        while (usedLabels.has(name.toLowerCase())) {
+          nameIdx++;
+          name = names[nameIdx % names.length]!;
+        }
+        usedLabels.add(name.toLowerCase());
+        nameIdx++;
         subs.push({
-          id: `${parent.id}-placeholder-${i}`,
-          label: `Agent ${i + 1}`,
+          id: `${parent.id}-generated-${i}`,
+          label: name,
           role: parent.subTeam.label.replace(/s$/, ''),
           tier: parent.tier ?? 'Haiku',
         });
@@ -340,22 +360,21 @@ export function Hierarchy({
         {subPos.map(({ sub, x, y }, j) => {
           const sx = x;
           const sy = y;
-          const isPlaceholder = sub.id.includes('-placeholder-');
           return (
             <g
               key={sub.id}
               className="pop-in"
-              style={{ animationDelay: 180 + j * 30 + 'ms', cursor: onSelect && !isPlaceholder ? 'pointer' : 'default' }}
-              onClick={() => !isPlaceholder && onSelect?.(sub as HierarchyAgent)}
+              style={{ animationDelay: 180 + j * 30 + 'ms', cursor: onSelect ? 'pointer' : 'default' }}
+              onClick={() => onSelect?.(sub as HierarchyAgent)}
             >
-              <circle cx={sx} cy={sy} r="20" fill="rgba(255,255,255,0.96)" stroke={accent} strokeOpacity={isPlaceholder ? 0.2 : 0.4} strokeWidth="1.2" strokeDasharray={isPlaceholder ? '3 3' : 'none'} />
+              <circle cx={sx} cy={sy} r="20" fill="rgba(255,255,255,0.96)" stroke={accent} strokeOpacity="0.4" strokeWidth="1.2" />
               <text x={sx} y={sy + 5} textAnchor="middle" fontSize="12" fontWeight="600" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
                 {sub.label[0]}
               </text>
               <text x={sx} y={sy + 38} textAnchor="middle" fontSize="10" fontWeight="500" fill="#1a1a22" style={{ pointerEvents: 'none' }}>
                 {sub.label.length > 14 ? sub.label.slice(0, 13) + '…' : sub.label}
               </text>
-              {sub.role && !isPlaceholder && (
+              {sub.role && (
                 <text
                   x={sx}
                   y={sy + 52}
@@ -369,7 +388,7 @@ export function Hierarchy({
                   {sub.role.length > 16 ? sub.role.slice(0, 15).toUpperCase() + '…' : sub.role.toUpperCase()}
                 </text>
               )}
-              {sub.tier && !isPlaceholder && (
+              {sub.tier && (
                 <g style={{ pointerEvents: 'none' }}>
                   <rect x={sx - 22} y={sy + 60} width="44" height="13" rx="6.5" fill={accent} fillOpacity="0.12" stroke={accent} strokeOpacity="0.4" strokeWidth="0.8" />
                   <text x={sx} y={sy + 69} textAnchor="middle" fontSize="8" fontFamily="Geist Mono" fontWeight="500" fill={accent} letterSpacing="0.06em">
