@@ -159,8 +159,15 @@ export default function ExamplePreview() {
                 >
                   {detail.id === 'iris' ? '✦' : detail.label[0]}
                 </div>
-                <div>
-                  <div style={{ fontSize: 17, fontWeight: 600 }}>{detail.label}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ fontSize: 17, fontWeight: 600 }}>{detail.label}</div>
+                    {detail.subTeam && (
+                      <span className="pill info" style={{ fontSize: 10 }}>
+                        Manages {detail.subTeam.count}
+                      </span>
+                    )}
+                  </div>
                   <div
                     className="mono"
                     style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.15em', marginTop: 2 }}
@@ -171,6 +178,37 @@ export default function ExamplePreview() {
               </div>
 
               <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>{detail.desc}</div>
+
+              {/* Sub-team roster */}
+              {detail.subTeam && (
+                <div style={{ padding: 12, background: 'var(--accent-soft)', border: '1px solid var(--accent-line)', borderRadius: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span className="eyebrow" style={{ color: 'var(--accent-deep)' }}>{detail.subTeam.label}</span>
+                    <button
+                      onClick={() => setFocusedSubTeam(detail.id)}
+                      className="btn ghost"
+                      style={{ fontSize: 11, padding: '3px 8px', color: 'var(--accent-deep)' }}
+                    >
+                      View team →
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {detail.subTeam.agents.slice(0, 5).map((sub: any) => (
+                      <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                        <div style={{ width: 22, height: 22, borderRadius: 6, background: 'rgba(255,255,255,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 11, border: '1px solid var(--glass-border)' }}>
+                          {sub.label[0]}
+                        </div>
+                        <span style={{ fontWeight: 500 }}>{sub.label}</span>
+                        <span style={{ color: 'var(--text-faint)' }}>·</span>
+                        <span style={{ color: 'var(--text-dim)' }}>{sub.role}</span>
+                        {sub.tier && (
+                          <span className="mono" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--accent-deep)' }}>{sub.tier}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {detail.channels.map((c) => (

@@ -19,7 +19,24 @@ import {
 // Demo data — will be replaced with real tenant data from API
 const DEMO_TEAM: HierarchyAgent[] = [
   { id: 'iris', label: 'Iris', role: 'Personal assistant', tier: 'Opus', status: 'ok', required: true },
-  { id: 'atlas', label: 'Atlas', role: 'Client manager', tier: 'Opus', status: 'ok' },
+  {
+    id: 'atlas',
+    label: 'Atlas',
+    role: 'Client manager',
+    tier: 'Opus',
+    status: 'ok',
+    subTeam: {
+      count: 5,
+      label: 'Account managers',
+      agents: [
+        { id: 'atl1', label: 'Noor', role: 'ACME lead', tier: 'Sonnet' },
+        { id: 'atl2', label: 'Bram', role: 'Patagonia lead', tier: 'Sonnet' },
+        { id: 'atl3', label: 'Inez', role: 'Hinrich lead', tier: 'Sonnet' },
+        { id: 'atl4', label: 'Theo', role: 'New business', tier: 'Opus' },
+        { id: 'atl5', label: 'Saoirse', role: 'Renewals', tier: 'Haiku' },
+      ],
+    },
+  },
   { id: 'vega', label: 'Vega', role: 'Operations', tier: 'Sonnet', status: 'warn' },
   { id: 'juno', label: 'Juno', role: 'Marketing', tier: 'Sonnet', status: 'ok' },
   { id: 'sable', label: 'Sable', role: 'Finance', tier: 'Opus', status: 'ok' },
@@ -39,7 +56,7 @@ const INITIAL_MESSAGES = [
   { from: 'iris' as const, text: 'First up: Vega found a 31% Tuesday capacity hole. I built the fix — three moves, ready to deploy whenever you\'re ready.' },
 ];
 
-type SidebarMode = 'briefing' | 'approvals' | 'activity';
+type SidebarMode = 'briefing' | 'approvals' | 'activity' | 'agent';
 type ViewMode = 'overview' | 'team' | 'activity';
 
 export default function CommandDeck() {
@@ -47,6 +64,7 @@ export default function CommandDeck() {
   const [view, setView] = useState<ViewMode>('team');
   const [sidebar, setSidebar] = useState<SidebarMode>('briefing');
   const [selectedAgent, setSelectedAgent] = useState<HierarchyAgent | null>(null);
+  const [focusedSubTeam, setFocusedSubTeam] = useState<string | null>(null);
   const [messages, setMessages] = useState(INITIAL_MESSAGES);
   const [chatInput, setChatInput] = useState('');
 
@@ -160,7 +178,13 @@ export default function CommandDeck() {
                 showExternals={false}
                 showArcs
                 accent="var(--accent)"
-                onSelect={(agent) => setSelectedAgent(agent)}
+                onSelect={(agent) => {
+                  setSelectedAgent(agent);
+                  setSidebar('agent');
+                }}
+                focusedSubTeam={focusedSubTeam}
+                onSubTeamOpen={(parentId) => setFocusedSubTeam(parentId)}
+                onSubTeamClose={() => setFocusedSubTeam(null)}
               />
             </div>
           )}
@@ -227,8 +251,8 @@ export default function CommandDeck() {
         {/* Right sidebar */}
         <aside className="glass-strong" style={{ display: 'flex', flexDirection: 'column', minHeight: 'calc(100vh - 92px)' }}>
           {/* Sidebar tabs */}
-          <div style={{ display: 'flex', borderBottom: '1px solid var(--glass-border)', padding: 8 }}>
-            {(['briefing', 'approvals', 'activity'] as SidebarMode[]).map((mode) => (
+          <div style={{ display: 'flex', borderBottom: '1px solid var(--glass-border)', padding: 8, gap: 4 }}>
+            {((['briefing', 'approvals', 'activity'] as SidebarMode[])).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setSidebar(mode)}
@@ -238,6 +262,15 @@ export default function CommandDeck() {
                 {mode}
               </button>
             ))}
+            {selectedAgent && (
+              <button
+                onClick={() => setSidebar('agent')}
+                className={sidebar === 'agent' ? 'btn primary' : 'btn ghost'}
+                style={{ flex: 1, fontSize: 11.5, padding: '6px' }}
+              >
+                {selectedAgent.label}
+              </button>
+            )}
           </div>
 
           {sidebar === 'briefing' && (
@@ -338,6 +371,104 @@ export default function CommandDeck() {
                   <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{e.time}</span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {sidebar === 'agent' && selectedAgent && (
+            <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 10,
+                    background: selectedAgent.id === 'iris' ? 'var(--accent)' : 'rgba(255,255,255,0.7)',
+                    color: selectedAgent.id === 'iris' ? 'white' : 'var(--text)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: 600,
+                    fontSize: 16,
+                    border: '1px solid var(--glass-border)',
+                  }}
+                >
+                  {selectedAgent.id === 'iris' ? '✦' : selectedAgent.label[0]}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600 }}>{selectedAgent.label}</div>
+                    {selectedAgent.subTeam && (
+                      <span className="pill info" style={{ fontSize: 9 }}>Manages {selectedAgent.subTeam.count}</span>
+                    )}
+                  </div>
+                  <div className="mono" style={{ fontSize: 9, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.15em', marginTop: 2 }}>
+                    {selectedAgent.role}
+                  </div>
+                </div>
+              </div>
+
+              {/* Status */}
+              {selectedAgent.status && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-dim)' }}>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: selectedAgent.status === 'ok' ? 'var(--ok)' : selectedAgent.status === 'warn' ? 'var(--warn)' : 'var(--bad)' }} />
+                  {selectedAgent.status === 'ok' ? 'Operating normally' : selectedAgent.status === 'warn' ? 'Needs attention' : 'Has issues'}
+                </div>
+              )}
+
+              {/* Sub-team roster */}
+              {selectedAgent.subTeam && (
+                <div style={{ padding: 12, background: 'var(--accent-soft)', border: '1px solid var(--accent-line)', borderRadius: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span className="eyebrow" style={{ color: 'var(--accent-deep)' }}>{selectedAgent.subTeam.label}</span>
+                    <button
+                      onClick={() => setFocusedSubTeam(selectedAgent.id)}
+                      className="btn ghost"
+                      style={{ fontSize: 10, padding: '3px 8px', color: 'var(--accent-deep)' }}
+                    >
+                      View team →
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {selectedAgent.subTeam.agents.slice(0, 5).map((sub) => (
+                      <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                        <div style={{ width: 20, height: 20, borderRadius: 6, background: 'rgba(255,255,255,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 10, border: '1px solid var(--glass-border)' }}>
+                          {sub.label[0]}
+                        </div>
+                        <span style={{ fontWeight: 500 }}>{sub.label}</span>
+                        <span style={{ color: 'var(--text-faint)' }}>·</span>
+                        <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{sub.role}</span>
+                        {sub.tier && (
+                          <span className="mono" style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--accent-deep)' }}>{sub.tier}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Tier + price */}
+              {selectedAgent.tier && (
+                <div style={{ padding: 12, background: 'rgba(255,255,255,0.5)', border: '1px solid var(--glass-border)', borderRadius: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span className="eyebrow">Model</span>
+                    <span className="mono" style={{ fontSize: 11, color: 'var(--accent-deep)' }}>
+                      {selectedAgent.tier} · €{TIER_PRICE[selectedAgent.tier as keyof typeof TIER_PRICE]}/mo
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={() => {
+                  setSelectedAgent(null);
+                  setSidebar('briefing');
+                }}
+                className="btn ghost"
+                style={{ fontSize: 11, justifyContent: 'center' }}
+              >
+                Close
+              </button>
             </div>
           )}
         </aside>

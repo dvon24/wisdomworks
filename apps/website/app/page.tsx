@@ -457,8 +457,15 @@ export default function HomePage() {
                       >
                         {selected.id === 'iris' ? '✦' : selected.label[0]}
                       </div>
-                      <div>
-                        <div style={{ fontSize: 17, fontWeight: 600 }}>{selected.label}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <div style={{ fontSize: 17, fontWeight: 600 }}>{selected.label}</div>
+                          {selected.subTeam && (
+                            <span className="pill info" style={{ fontSize: 10 }}>
+                              Manages {selected.subTeam.count}
+                            </span>
+                          )}
+                        </div>
                         <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.15em', marginTop: 2 }}>
                           {selected.role}
                         </div>
@@ -468,6 +475,42 @@ export default function HomePage() {
                     {/* Description from AI's structured data */}
                     {selectedDetail?.description && (
                       <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>{selectedDetail.description}</div>
+                    )}
+
+                    {/* Sub-team roster — show who reports to this agent */}
+                    {selected.subTeam && (
+                      <div style={{ padding: 12, background: 'var(--accent-soft)', border: '1px solid var(--accent-line)', borderRadius: 12 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                          <span className="eyebrow" style={{ color: 'var(--accent-deep)' }}>{selected.subTeam.label}</span>
+                          <button
+                            onClick={() => setFocusedSubTeam(selected.id)}
+                            className="btn ghost"
+                            style={{ fontSize: 11, padding: '3px 8px', color: 'var(--accent-deep)' }}
+                          >
+                            View team →
+                          </button>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {selected.subTeam.agents.slice(0, 5).map((sub) => (
+                            <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                              <div style={{ width: 22, height: 22, borderRadius: 6, background: 'rgba(255,255,255,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 11, border: '1px solid var(--glass-border)' }}>
+                                {sub.label[0]}
+                              </div>
+                              <span style={{ fontWeight: 500 }}>{sub.label}</span>
+                              <span style={{ color: 'var(--text-faint)' }}>·</span>
+                              <span style={{ color: 'var(--text-dim)' }}>{sub.role}</span>
+                              {sub.tier && (
+                                <span className="mono" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--accent-deep)' }}>{sub.tier}</span>
+                              )}
+                            </div>
+                          ))}
+                          {selected.subTeam.agents.length > 5 && (
+                            <div style={{ fontSize: 11, color: 'var(--text-faint)', paddingLeft: 30 }}>
+                              + {selected.subTeam.agents.length - 5} more…
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     )}
 
                     {/* Channels */}
