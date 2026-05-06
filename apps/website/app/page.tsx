@@ -218,10 +218,14 @@ export default function HomePage() {
   const [showPriceBreakdown, setShowPriceBreakdown] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Restore state if returning from Stripe
+  // Restore state if returning from Stripe payment OR from an OAuth provider
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('paid') === 'true') {
+    const isReturningFromStripe = params.get('paid') === 'true';
+    const isReturningFromOAuth = params.has('oauth'); // success | denied | error
+
+    if (isReturningFromStripe || isReturningFromOAuth) {
+      // Restore the saved onboarding state so we don't drop back to the chat
       try {
         const saved = localStorage.getItem('wisdomworks_onboarding');
         if (saved) {
@@ -233,10 +237,17 @@ export default function HomePage() {
       } catch (e) {
         console.error('Failed to restore onboarding data:', e);
       }
+
+      // Stripe + OAuth flows both happen post-payment, so always treat as paid
       setHasPaid(true);
       setShowConnectTools(true);
       setShowPreview(true);
-      window.history.replaceState({}, '', '/');
+
+      // Keep oauth=success params so ConnectTools can read them and show "Connected"
+      // Strip only the paid param when present
+      if (isReturningFromStripe && !isReturningFromOAuth) {
+        window.history.replaceState({}, '', '/');
+      }
     }
   }, []);
 
