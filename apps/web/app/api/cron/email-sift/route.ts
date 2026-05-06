@@ -12,7 +12,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { listEmails, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
+import { listEmails, decryptToken, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -89,10 +89,13 @@ async function fetchActiveEmailConnections(): Promise<(OAuthConnection & { phone
 async function processCustomer(
   conn: OAuthConnection & { phone_number: string },
 ): Promise<{ processed: number; actionable: number }> {
-  // Note: in production, decrypt token via _lib/store.decryptToken before use.
-  // For now, the email-sift cron runs in apps/web which doesn't have the decrypt helper.
-  // TODO: extract crypto helper to packages/shared and call from here.
-  const result = await listEmails(conn, 10);
+  // Decrypt the access token before passing to API client
+  const decrypted: OAuthConnection = {
+    ...conn,
+    access_token: await decryptToken(conn.access_token),
+    refresh_token: conn.refresh_token ? await decryptToken(conn.refresh_token) : undefined,
+  };
+  const result = await listEmails(decrypted, 10);
   if (!result.success || !result.data?.length) {
     return { processed: 0, actionable: 0 };
   }

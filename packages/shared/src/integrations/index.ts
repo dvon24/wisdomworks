@@ -44,3 +44,7 @@ export type { NotionPage, NotionDatabase } from './notion';
 // Stripe (customer-side — for SaaS customers who want their agent to see their MRR)
 export * as customerStripe from './stripe';
 export type { StripeCustomerSummary } from './stripe';
+
+// Token encryption + connection loading
+export { encryptToken, decryptToken } from './crypto';
+export { loadConnectionsForPhone, getConnectionForPhone } from './connections';

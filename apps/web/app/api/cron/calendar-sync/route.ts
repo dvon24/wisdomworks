@@ -11,7 +11,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { listCalendarEvents, type CalendarEvent, type OAuthConnection } from '@wisdomworks/shared';
+import { listCalendarEvents, decryptToken, type CalendarEvent, type OAuthConnection } from '@wisdomworks/shared';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -71,12 +71,19 @@ async function fetchActiveCalendarConnections(): Promise<(OAuthConnection & { ph
 }
 
 async function syncCustomer(conn: OAuthConnection & { phone_number: string }): Promise<void> {
+  // Decrypt the access token before passing to API client
+  const decrypted: OAuthConnection = {
+    ...conn,
+    access_token: await decryptToken(conn.access_token),
+    refresh_token: conn.refresh_token ? await decryptToken(conn.refresh_token) : undefined,
+  };
+
   // Pull today's events (now → end of day)
   const now = new Date();
   const endOfDay = new Date(now);
   endOfDay.setHours(23, 59, 59, 999);
 
-  const result = await listCalendarEvents(conn, { from: now, to: endOfDay });
+  const result = await listCalendarEvents(decrypted, { from: now, to: endOfDay });
   if (!result.success || !result.data) {
     console.warn(`[calendar-sync] Could not fetch events for ${conn.phone_number}`);
     return;

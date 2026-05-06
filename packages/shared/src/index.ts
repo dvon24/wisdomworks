@@ -153,6 +153,10 @@ export {
   updateCalendarEvent,
   deleteCalendarEvent,
   analyzeWebsite,
+  encryptToken,
+  decryptToken,
+  loadConnectionsForPhone,
+  getConnectionForPhone,
 } from './integrations';
 export type { WebsiteSnapshot, WebsitePlatform } from './integrations';
 

@@ -17,6 +17,8 @@ import {
   buildContextMessages,
   type UserContext,
 } from './context-store';
+import { loadConnectionsForPhone } from '@wisdomworks/shared';
+import { buildToolList, executeTool, type ToolCall } from './agent-tools';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -142,6 +144,43 @@ When they need something done, do it and present for approval.
 Proactively surface insights when you notice patterns.`;
 }
 
+async function callAnthropic(
+  apiKey: string,
+  systemPrompt: string,
+  messages: any[],
+  tools: any[],
+): Promise<any> {
+  const body: any = {
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    system: [
+      {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
+    messages,
+  };
+  if (tools.length > 0) body.tools = tools;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`Anthropic API error: ${JSON.stringify(error)}`);
+  }
+  return response.json();
+}
+
 async function generateAIResponse(text: string, user: UserContext): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -155,43 +194,52 @@ async function generateAIResponse(text: string, user: UserContext): Promise<stri
     timestamp: new Date().toISOString(),
   });
 
+  // Load the user's OAuth connections to know what tools are available
+  const connections = await loadConnectionsForPhone(user.phoneNumber);
+  const tools = buildToolList(connections);
+
   // Build context-aware message list (includes summary of older conversations)
-  const messages = buildContextMessages(user);
+  // Cast to any[] to allow tool_use / tool_result content blocks during the loop
+  const messages: any[] = buildContextMessages(user);
+  const systemPrompt = buildSystemPrompt(user);
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 500,
-        system: [
-          {
-            type: 'text',
-            text: buildSystemPrompt(user),
-            // Prompt caching — system prompt cached for 5 min across calls
-            // Saves ~80% input token cost on multi-turn conversations
-            cache_control: { type: 'ephemeral' },
-          },
-        ],
-        messages,
-      }),
-    });
+    // Tool use loop: keep calling Claude until she stops asking for tools
+    const MAX_ITERATIONS = 5; // safety cap
+    let iteration = 0;
+    let response = await callAnthropic(apiKey, systemPrompt, messages, tools);
 
-    if (!response.ok) {
-      const error = await response.json();
-      console.error('[whatsapp-ai] API error:', error);
-      return `Hi ${user.name}! I had a brief hiccup. Could you try again?`;
+    while (response.stop_reason === 'tool_use' && iteration < MAX_ITERATIONS) {
+      iteration++;
+      const toolUseBlocks = response.content.filter((b: any) => b.type === 'tool_use');
+
+      // Add Claude's tool-use turn to messages
+      messages.push({ role: 'assistant', content: response.content });
+
+      // Execute each tool and build a single user message with all tool results
+      const toolResults: any[] = [];
+      for (const block of toolUseBlocks) {
+        const call: ToolCall = { name: block.name, input: block.input };
+        console.log(`[whatsapp-ai] Tool call: ${call.name}`, call.input);
+        const result = await executeTool(call, connections);
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: result.content,
+          is_error: !result.success,
+        });
+      }
+      messages.push({ role: 'user', content: toolResults });
+
+      // Ask Claude to produce a final response (or another tool call)
+      response = await callAnthropic(apiKey, systemPrompt, messages, tools);
     }
 
-    const data = await response.json();
-    const assistantMessage = data.content?.[0]?.text ?? 'I couldn\'t process that. Try again?';
+    // Extract text from the final response
+    const textBlock = response.content.find((b: any) => b.type === 'text');
+    const assistantMessage = textBlock?.text ?? 'I couldn\'t process that. Try again?';
 
-    // Add response to history
+    // Add response to history (only the final text — tool noise stays out of memory)
     user.conversationHistory.push({
       role: 'assistant',
       content: assistantMessage,
@@ -201,9 +249,11 @@ async function generateAIResponse(text: string, user: UserContext): Promise<stri
     // Save updated context to database
     await saveUserContext(user);
 
-    const cached = data.usage?.cache_read_input_tokens ?? 0;
-    const total = data.usage?.input_tokens ?? 0;
-    console.log(`[whatsapp-ai] Tokens: ${total} in / ${data.usage?.output_tokens ?? '?'} out | Cached: ${cached} (${total > 0 ? Math.round(cached / total * 100) : 0}%)`);
+    const cached = response.usage?.cache_read_input_tokens ?? 0;
+    const total = response.usage?.input_tokens ?? 0;
+    console.log(
+      `[whatsapp-ai] iters=${iteration} | tokens: ${total}in/${response.usage?.output_tokens ?? '?'}out | cached: ${cached} (${total > 0 ? Math.round((cached / total) * 100) : 0}%) | tools: ${tools.length}`,
+    );
 
     return assistantMessage;
   } catch (error) {
