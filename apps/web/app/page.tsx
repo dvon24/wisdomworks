@@ -85,6 +85,8 @@ export default function CommandDeck() {
   const [phoneNumber, setPhoneNumber] = useState<string | null>(null);
   const [tenantData, setTenantData] = useState<any>(null);
   const [loadingTenant, setLoadingTenant] = useState(true);
+  // Map of id → rich AI metadata (description, channels, tools, strengths, limitations, emoji)
+  const [teamMeta, setTeamMeta] = useState<Record<string, any>>({});
 
   // Load tenant data on mount — phone from URL param or localStorage
   useEffect(() => {
@@ -108,10 +110,22 @@ export default function CommandDeck() {
         }
         setTenantData(data);
 
-        // Convert saved AI team into HierarchyAgent shape
+        // Convert saved AI team into HierarchyAgent shape and capture rich metadata
         if (data.team && Array.isArray(data.team) && data.team.length > 0) {
+          const meta: Record<string, any> = {};
           const realTeam: HierarchyAgent[] = data.team.map((a: any, i: number) => {
             const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
+            meta[id] = {
+              emoji: a.emoji,
+              description: a.description,
+              channels: a.channels ?? [],
+              tools: a.tools ?? [],
+              strengths: a.strengths ?? [],
+              limitations: a.limitations ?? [],
+              aiModel: a.aiModel,
+            };
+            // First agent maps to "iris" id (preserves the assistant slot in hierarchy)
+            if (i === 0) meta['iris'] = meta[id];
             const model = (a.aiModel || a.tier || '').toString().toLowerCase();
             const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
             const base: HierarchyAgent = i === 0
@@ -134,6 +148,7 @@ export default function CommandDeck() {
             return base;
           });
           setTeam(realTeam);
+          setTeamMeta(meta);
         }
 
         // Use first message from Iris if no real history
@@ -380,6 +395,13 @@ export default function CommandDeck() {
                 onSelect={(agent) => {
                   setSelectedAgent(agent);
                   setSidebar('agent');
+                  // If the agent has a sub-team, also zoom/focus into it.
+                  // Clicking again on the same agent (when already focused) zooms back out.
+                  if (agent.subTeam) {
+                    setFocusedSubTeam((current) => (current === agent.id ? null : agent.id));
+                  } else {
+                    setFocusedSubTeam(null);
+                  }
                 }}
                 focusedSubTeam={focusedSubTeam}
                 onSubTeamOpen={(parentId) => setFocusedSubTeam(parentId)}
@@ -686,26 +708,28 @@ export default function CommandDeck() {
             </div>
           )}
 
-          {sidebar === 'agent' && selectedAgent && (
+          {sidebar === 'agent' && selectedAgent && (() => {
+            const meta = teamMeta[selectedAgent.id] ?? {};
+            return (
             <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
               {/* Header */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div
                   style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: 10,
+                    width: 44,
+                    height: 44,
+                    borderRadius: 12,
                     background: selectedAgent.id === 'iris' ? 'var(--accent)' : 'rgba(255,255,255,0.7)',
                     color: selectedAgent.id === 'iris' ? 'white' : 'var(--text)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     fontWeight: 600,
-                    fontSize: 16,
+                    fontSize: meta.emoji ? 22 : 16,
                     border: '1px solid var(--glass-border)',
                   }}
                 >
-                  {selectedAgent.id === 'iris' ? '✦' : selectedAgent.label[0]}
+                  {meta.emoji || (selectedAgent.id === 'iris' ? '✦' : selectedAgent.label[0])}
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -720,11 +744,66 @@ export default function CommandDeck() {
                 </div>
               </div>
 
+              {/* Description */}
+              {meta.description && (
+                <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                  {meta.description}
+                </div>
+              )}
+
               {/* Status */}
               {selectedAgent.status && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-dim)' }}>
                   <div style={{ width: 8, height: 8, borderRadius: '50%', background: selectedAgent.status === 'ok' ? 'var(--ok)' : selectedAgent.status === 'warn' ? 'var(--warn)' : 'var(--bad)' }} />
                   {selectedAgent.status === 'ok' ? 'Operating normally' : selectedAgent.status === 'warn' ? 'Needs attention' : 'Has issues'}
+                </div>
+              )}
+
+              {/* Channels */}
+              {meta.channels?.length > 0 && (
+                <div style={{ padding: 12, background: 'rgba(255,255,255,0.5)', border: '1px solid var(--glass-border)', borderRadius: 12 }}>
+                  <div className="eyebrow" style={{ marginBottom: 6 }}>📡 Talks via</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {meta.channels.map((c: string, i: number) => (
+                      <span key={i} className="pill" style={{ fontSize: 10 }}>{c}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Tools */}
+              {meta.tools?.length > 0 && (
+                <div style={{ padding: 12, background: 'rgba(255,255,255,0.5)', border: '1px solid var(--glass-border)', borderRadius: 12 }}>
+                  <div className="eyebrow" style={{ marginBottom: 6 }}>🔗 Connects to</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {meta.tools.map((t: string, i: number) => (
+                      <span key={i} className="pill" style={{ fontSize: 10 }}>{t}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Strengths */}
+              {meta.strengths?.length > 0 && (
+                <div style={{ padding: 12, background: 'rgba(34, 197, 94, 0.08)', border: '1px solid rgba(34, 197, 94, 0.25)', borderRadius: 12 }}>
+                  <div className="eyebrow" style={{ marginBottom: 6, color: '#15803d' }}>✓ Strengths</div>
+                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                    {meta.strengths.map((s: string, i: number) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Limitations */}
+              {meta.limitations?.length > 0 && (
+                <div style={{ padding: 12, background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.25)', borderRadius: 12 }}>
+                  <div className="eyebrow" style={{ marginBottom: 6, color: '#b45309' }}>△ Limitations</div>
+                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                    {meta.limitations.map((l: string, i: number) => (
+                      <li key={i}>{l}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
 
@@ -782,7 +861,8 @@ export default function CommandDeck() {
                 Close
               </button>
             </div>
-          )}
+            );
+          })()}
         </aside>
       </main>
 

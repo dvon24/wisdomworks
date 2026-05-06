@@ -1078,9 +1078,43 @@ export default function HomePage() {
                 onComplete={async () => {
                   try {
                     const agents = mapToHierarchyAgents(s.agents ?? []);
+                    const rawAgents = s.agents ?? [];
                     const savedPhone = localStorage.getItem('wisdomworks_phone');
                     const bName = businessName || s.businessName || 'Your Business';
                     if (savedPhone) {
+                      // Round-trip: pair the cleaned hierarchy agent (with friendly name)
+                      // with the AI's rich metadata (description, channels, tools, etc.)
+                      // so the Command Deck can render the same cards as onboarding.
+                      const enrichedAgents = agents.map((a, i) => {
+                        const raw = rawAgents[i] ?? {};
+                        return {
+                          id: a.id,
+                          name: a.label,
+                          role: a.role,
+                          tier: a.tier,
+                          required: a.required,
+                          emoji: raw.emoji,
+                          description: raw.description,
+                          channels: raw.channels ?? [],
+                          tools: raw.tools ?? [],
+                          strengths: raw.strengths ?? [],
+                          limitations: raw.limitations ?? [],
+                          aiModel: raw.aiModel ?? a.tier,
+                          subTeam: a.subTeam
+                            ? {
+                                count: a.subTeam.count,
+                                label: a.subTeam.label,
+                                agents: a.subTeam.agents.map((sub) => ({
+                                  id: sub.id,
+                                  name: sub.label,
+                                  role: sub.role,
+                                  tier: sub.tier,
+                                })),
+                              }
+                            : undefined,
+                        };
+                      });
+
                       await fetch('/api/deploy-complete', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -1089,25 +1123,7 @@ export default function HomePage() {
                           businessName: bName,
                           businessType: s.businessType,
                           agentCount: agents.length,
-                          agents: agents.map((a) => ({
-                            id: a.id,
-                            name: a.label,
-                            role: a.role,
-                            tier: a.tier,
-                            required: a.required,
-                            subTeam: a.subTeam
-                              ? {
-                                  count: a.subTeam.count,
-                                  label: a.subTeam.label,
-                                  agents: a.subTeam.agents.map((sub) => ({
-                                    id: sub.id,
-                                    name: sub.label,
-                                    role: sub.role,
-                                    tier: sub.tier,
-                                  })),
-                                }
-                              : undefined,
-                          })),
+                          agents: enrichedAgents,
                         }),
                       });
                     }
