@@ -1163,7 +1163,12 @@ export default function HomePage() {
                 style={{ padding: '12px 28px', fontSize: 14 }}
                 onClick={() => {
                   const savedPhone = typeof window !== 'undefined' ? localStorage.getItem('wisdomworks_phone') : null;
-                  const base = process.env.NEXT_PUBLIC_COMMAND_DECK_URL || 'https://wisdomworks.vercel.app';
+                  // In dev (localhost), route to local Command Deck on port 3000.
+                  // In prod, use NEXT_PUBLIC_COMMAND_DECK_URL or fall back to wisdomworks.vercel.app.
+                  const isLocal = typeof window !== 'undefined' && window.location.hostname === 'localhost';
+                  const base = isLocal
+                    ? 'http://localhost:3000'
+                    : (process.env.NEXT_PUBLIC_COMMAND_DECK_URL || 'https://wisdomworks.vercel.app');
                   const url = savedPhone ? `${base}?phone=${encodeURIComponent(savedPhone)}` : base;
                   window.open(url, '_blank', 'noopener');
                 }}
