@@ -293,7 +293,7 @@ export default function CommandDeck() {
 
         <div style={{ flex: 1 }} />
 
-        <span className="pill info">{PROPOSALS.length} pending</span>
+        <span className="pill info">{tenantData?.pendingEmailDrafts?.length ?? 0} pending</span>
         <button className="btn" style={{ fontSize: 12 }}>
           <span style={{ marginRight: 6 }}>✦</span>
           {team.length} agents · €{totalPrice}/mo
@@ -327,18 +327,42 @@ export default function CommandDeck() {
       >
         {/* Main pane */}
         <section style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* KPI strip */}
-          <div className="glass-strong" style={{ padding: '1.5rem 2rem', display: 'flex', alignItems: 'baseline', gap: 24 }}>
+          {/* KPI strip — real tenant data */}
+          <div className="glass-strong" style={{ padding: '1.25rem 2rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 20, alignItems: 'baseline' }}>
             <div>
-              <div className="eyebrow" style={{ marginBottom: 4 }}>Decisions handled overnight</div>
-              <div className="num-xxl">1,284</div>
-            </div>
-            <div style={{ flex: 1 }} />
-            <div style={{ textAlign: 'right' }}>
-              <div className="eyebrow" style={{ marginBottom: 4 }}>Today</div>
-              <div style={{ fontSize: 14, color: 'var(--text-dim)' }}>
-                Atlas, Vega and Sable are talking now
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Business</div>
+              <div className="num-md" style={{ fontSize: 22, fontWeight: 400 }}>
+                {tenantData?.user?.businessName ?? (loadingTenant ? '…' : 'Not connected')}
               </div>
+              <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                {tenantData?.user?.businessType ?? '—'}
+              </div>
+            </div>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Today's events</div>
+              <div className="num-md" style={{ fontSize: 28, fontWeight: 300 }}>{tenantData?.todaysCalendar?.length ?? 0}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                {tenantData?.todaysCalendar?.[0]?.title?.slice(0, 28) ?? 'no events'}
+              </div>
+            </div>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Drafts pending</div>
+              <div className="num-md" style={{ fontSize: 28, fontWeight: 300 }}>{tenantData?.pendingEmailDrafts?.length ?? 0}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                {tenantData?.pendingEmailDrafts?.length ? 'awaiting review' : 'inbox clear'}
+              </div>
+            </div>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Connections</div>
+              <div className="num-md" style={{ fontSize: 28, fontWeight: 300 }}>{tenantData?.connections?.length ?? 0}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                {tenantData?.connections?.map((c: any) => c.provider).join(' · ') || 'none yet'}
+              </div>
+            </div>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Iris messages</div>
+              <div className="num-md" style={{ fontSize: 28, fontWeight: 300 }}>{tenantData?.messageCount ?? 0}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>via WhatsApp</div>
             </div>
           </div>
 
@@ -476,26 +500,50 @@ export default function CommandDeck() {
             </div>
           )}
 
-          {/* Top decision card */}
+          {/* Bottom row of real cards — visible on team & overview tabs */}
           {view !== 'activity' && (
-            <div className="glass-strong" style={{ padding: 16, display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 16, alignItems: 'center' }}>
-              <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--accent-soft)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-deep)', fontWeight: 600 }}>
-                V
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              {/* Today's schedule */}
+              <div className="glass-strong" style={{ padding: 16, minHeight: 160 }}>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>Today's schedule</div>
+                {tenantData?.todaysCalendar?.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {tenantData.todaysCalendar.slice(0, 5).map((e: any) => {
+                      const time = new Date(e.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                      return (
+                        <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 13, padding: '5px 0', borderBottom: '1px solid var(--glass-border)' }}>
+                          <span className="mono" style={{ fontSize: 11, color: 'var(--accent-deep)', minWidth: 60 }}>{time}</span>
+                          <span style={{ flex: 1, fontWeight: 500 }}>{e.title}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: '8px 0' }}>
+                    {tenantData?.connections?.some((c: any) => c.service === 'calendar')
+                      ? 'No events today.'
+                      : 'Connect your calendar to see today\'s schedule here.'}
+                  </div>
+                )}
               </div>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                  <span className="pill warn">HIGH</span>
-                  <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>VEGA · 86% CONFIDENCE</span>
-                </div>
-                <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 3 }}>{PROPOSALS[0]?.title}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.45 }}>
-                  Three moves ready to deploy. <span className="mono" style={{ color: 'var(--accent-deep)' }}>{PROPOSALS[0]?.impact}</span>
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn">Modify</button>
-                <button className="btn ghost">Dismiss</button>
-                <button className="btn primary">Approve</button>
+
+              {/* Connected services */}
+              <div className="glass-strong" style={{ padding: 16, minHeight: 160 }}>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>Connected services</div>
+                {tenantData?.connections?.length > 0 ? (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {tenantData.connections.map((c: any, i: number) => (
+                      <span key={i} className="pill ok" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                        ✓ {c.provider} {c.service}
+                        {c.accountEmail && <span style={{ opacity: 0.65 }}>· {c.accountEmail}</span>}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: '8px 0' }}>
+                    No tools connected yet — head back to onboarding to wire up Gmail, Calendar, etc.
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -621,20 +669,20 @@ export default function CommandDeck() {
 
           {sidebar === 'activity' && (
             <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {[
-                { agent: 'Atlas', action: 'Replied to ACME', time: '2m' },
-                { agent: 'Vega', action: 'Found capacity gap', time: '14m' },
-                { agent: 'Sable', action: '47 invoices processed', time: '32m' },
-                { agent: 'Iris', action: 'Briefing drafted', time: '1h' },
-                { agent: 'Juno', action: 'Instagram post scheduled', time: '2h' },
-              ].map((e, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 4px', fontSize: 12 }}>
-                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--ok)' }} />
-                  <span style={{ fontWeight: 500 }}>{e.agent}</span>
-                  <span style={{ flex: 1, color: 'var(--text-dim)' }}>{e.action}</span>
-                  <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{e.time}</span>
+              {tenantData?.activity?.length > 0 ? (
+                tenantData.activity.map((e: any, i: number) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 4px', fontSize: 12 }}>
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--ok)' }} />
+                    <span style={{ fontWeight: 500 }}>{e.agent}</span>
+                    <span style={{ flex: 1, color: 'var(--text-dim)' }}>{e.action}</span>
+                    <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{e.time}</span>
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: '12px 4px', lineHeight: 1.5 }}>
+                  No activity yet. Once your agents start working — drafting emails, syncing calendar — you'll see it here.
                 </div>
-              ))}
+              )}
             </div>
           )}
 

@@ -24,11 +24,13 @@ export async function POST(request: Request) {
     const phoneId = process.env.WHATSAPP_PHONE_ID;
     const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
 
-    // Save the team to whatsapp_contexts.profile so Command Deck can render it
+    // Save the team to whatsapp_contexts.profile so Command Deck can render it.
+    // UPSERT — creates the row if missing (e.g. user skipped /api/link-phone).
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (supabaseUrl && supabaseKey) {
       try {
+        // 1. Read any existing profile so we don't clobber other keys
         const ctxRes = await fetch(
           `${supabaseUrl}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile`,
           {
@@ -38,24 +40,42 @@ export async function POST(request: Request) {
             },
           },
         );
-        if (ctxRes.ok) {
-          const rows = await ctxRes.json();
-          const profile = rows[0]?.profile ?? { preferences: {}, activeTopics: [] };
-          profile.team = agents ?? [];
-          profile.businessName = businessName;
-          profile.businessType = businessType;
-          profile.deployedAt = new Date().toISOString();
+        const rows = ctxRes.ok ? await ctxRes.json() : [];
+        const profile = rows[0]?.profile ?? { preferences: {}, activeTopics: [] };
+        profile.team = agents ?? [];
+        profile.businessName = businessName;
+        profile.businessType = businessType;
+        profile.agentCount = agentCount ?? (agents?.length ?? 0);
+        profile.deployedAt = new Date().toISOString();
 
-          await fetch(`${supabaseUrl}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
-            method: 'PATCH',
-            headers: {
-              apikey: supabaseKey,
-              Authorization: `Bearer ${supabaseKey}`,
-              'Content-Type': 'application/json',
-              Prefer: 'return=minimal',
-            },
-            body: JSON.stringify({ profile, business_name: businessName, business_type: businessType }),
-          });
+        // 2. UPSERT (merge-duplicates handles both new tenants and re-runs)
+        const now = new Date().toISOString();
+        const upsertRes = await fetch(`${supabaseUrl}/rest/v1/whatsapp_contexts`, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseKey,
+            Authorization: `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates,return=minimal',
+          },
+          body: JSON.stringify({
+            phone_number: cleanPhone,
+            name: businessName,
+            business_name: businessName,
+            business_type: businessType,
+            is_owner: true,
+            conversation_history: [],
+            profile,
+            first_seen: now,
+            last_seen: now,
+            message_count: 0,
+          }),
+        });
+        if (!upsertRes.ok) {
+          const err = await upsertRes.text();
+          console.error('[deploy-complete] UPSERT failed:', err);
+        } else {
+          console.log(`[deploy-complete] Saved team (${agents?.length ?? 0}) for ${cleanPhone} / ${businessName}`);
         }
       } catch (e) {
         console.error('[deploy-complete] Failed to save team:', e);

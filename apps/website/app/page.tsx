@@ -1089,7 +1089,25 @@ export default function HomePage() {
                           businessName: bName,
                           businessType: s.businessType,
                           agentCount: agents.length,
-                          agents: agents.slice(0, 5).map((a) => ({ name: a.label, role: a.role })),
+                          agents: agents.map((a) => ({
+                            id: a.id,
+                            name: a.label,
+                            role: a.role,
+                            tier: a.tier,
+                            required: a.required,
+                            subTeam: a.subTeam
+                              ? {
+                                  count: a.subTeam.count,
+                                  label: a.subTeam.label,
+                                  agents: a.subTeam.agents.map((sub) => ({
+                                    id: sub.id,
+                                    name: sub.label,
+                                    role: sub.role,
+                                    tier: sub.tier,
+                                  })),
+                                }
+                              : undefined,
+                          })),
                         }),
                       });
                     }
