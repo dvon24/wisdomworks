@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Background,
   WisdomLockup,
@@ -80,6 +80,75 @@ export default function CommandDeck() {
   const [priceDiff, setPriceDiff] = useState<{ delta: number; total: number } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+
+  // Real tenant data loaded from /api/dashboard
+  const [phoneNumber, setPhoneNumber] = useState<string | null>(null);
+  const [tenantData, setTenantData] = useState<any>(null);
+  const [loadingTenant, setLoadingTenant] = useState(true);
+
+  // Load tenant data on mount — phone from URL param or localStorage
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const phone = params.get('phone') || localStorage.getItem('wisdomworks_phone');
+    if (!phone) {
+      setLoadingTenant(false);
+      return;
+    }
+    setPhoneNumber(phone);
+    localStorage.setItem('wisdomworks_phone', phone);
+
+    fetch(`/api/dashboard?phone=${encodeURIComponent(phone)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.error) {
+          console.warn('[command-deck] No tenant data:', data.error);
+          setLoadingTenant(false);
+          return;
+        }
+        setTenantData(data);
+
+        // Convert saved AI team into HierarchyAgent shape
+        if (data.team && Array.isArray(data.team) && data.team.length > 0) {
+          const realTeam: HierarchyAgent[] = data.team.map((a: any, i: number) => {
+            const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
+            const model = (a.aiModel || a.tier || '').toString().toLowerCase();
+            const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
+            const base: HierarchyAgent = i === 0
+              ? { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus' as const, status: 'ok', required: true }
+              : { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
+
+            if (a.subTeam && a.subTeam.count > 0) {
+              base.subTeam = {
+                count: a.subTeam.count,
+                label: a.subTeam.label || 'Specialists',
+                agents: (a.subTeam.agents ?? []).map((sub: any, j: number) => ({
+                  id: `${id}-sub-${j}`,
+                  label: sub.name || `Specialist ${j + 1}`,
+                  role: sub.role || 'Specialist',
+                  tier: ((sub.tier || sub.aiModel || '').toString().toLowerCase().includes('opus') ? 'Opus' :
+                        (sub.tier || sub.aiModel || '').toString().toLowerCase().includes('haiku') ? 'Haiku' : 'Sonnet') as any,
+                })),
+              };
+            }
+            return base;
+          });
+          setTeam(realTeam);
+        }
+
+        // Use first message from Iris if no real history
+        if (data.user?.businessName) {
+          setMessages([
+            {
+              from: 'iris' as const,
+              text: `Good morning, ${data.user.name?.split(' ')[0] ?? 'there'}. Welcome to your Command Deck. I'm here to help you run ${data.user.businessName}.`,
+            },
+          ]);
+        }
+      })
+      .catch((e) => console.error('[command-deck] Load failed:', e))
+      .finally(() => setLoadingTenant(false));
+  }, []);
 
   const calculateTotalPrice = (currentTeam: HierarchyAgent[]) => {
     let total = 0;
@@ -296,36 +365,114 @@ export default function CommandDeck() {
           )}
 
           {view === 'overview' && (
-            <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ textAlign: 'center' }}>
-                <WisdomMark size={80} accent="var(--accent)" />
-                <div className="num-md" style={{ marginTop: 24, fontWeight: 300 }}>3D Intelligence Globe</div>
-                <div style={{ color: 'var(--text-dim)', marginTop: 8, fontSize: 14 }}>Coming in next sprint</div>
+            <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>At a glance</div>
+
+              {/* KPI grid — real metrics */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+                <div className="glass" style={{ padding: '1rem' }}>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Connections</div>
+                  <div className="num-md" style={{ fontSize: 32, fontWeight: 300 }}>{tenantData?.connections?.length ?? 0}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>
+                    {tenantData?.connections?.map((c: any) => `${c.provider} ${c.service}`).join(' · ') || 'none yet'}
+                  </div>
+                </div>
+                <div className="glass" style={{ padding: '1rem' }}>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Today's events</div>
+                  <div className="num-md" style={{ fontSize: 32, fontWeight: 300 }}>{tenantData?.todaysCalendar?.length ?? 0}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>
+                    {tenantData?.todaysCalendar?.length
+                      ? `next: ${tenantData.todaysCalendar[0]?.title?.slice(0, 24) ?? ''}`
+                      : 'no events'}
+                  </div>
+                </div>
+                <div className="glass" style={{ padding: '1rem' }}>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Drafts pending</div>
+                  <div className="num-md" style={{ fontSize: 32, fontWeight: 300 }}>{tenantData?.pendingEmailDrafts?.length ?? 0}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>
+                    {tenantData?.pendingEmailDrafts?.length ? 'awaiting your review' : 'inbox clear'}
+                  </div>
+                </div>
+                <div className="glass" style={{ padding: '1rem' }}>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Messages with Iris</div>
+                  <div className="num-md" style={{ fontSize: 32, fontWeight: 300 }}>{tenantData?.messageCount ?? 0}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>conversations exchanged</div>
+                </div>
               </div>
+
+              {/* Today's schedule preview */}
+              {tenantData?.todaysCalendar?.length > 0 && (
+                <div className="glass" style={{ padding: '1rem', flex: 1, minHeight: 0, overflow: 'auto' }}>
+                  <div className="eyebrow" style={{ marginBottom: 8 }}>Today's schedule</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {tenantData.todaysCalendar.map((e: any) => {
+                      const start = new Date(e.start);
+                      const time = start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                      return (
+                        <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--glass-border)' }}>
+                          <span className="mono" style={{ fontSize: 11, color: 'var(--accent-deep)', minWidth: 60 }}>{time}</span>
+                          <span style={{ flex: 1, fontWeight: 500 }}>{e.title}</span>
+                          {e.location && <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>{e.location}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Connected services detail */}
+              {tenantData?.connections?.length > 0 && (
+                <div className="glass" style={{ padding: '1rem' }}>
+                  <div className="eyebrow" style={{ marginBottom: 8 }}>Connected services</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {tenantData.connections.map((c: any, i: number) => (
+                      <span key={i} className="pill ok" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        ✓ {c.provider} {c.service}
+                        {c.accountEmail && <span style={{ opacity: 0.6 }}>· {c.accountEmail}</span>}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Empty state if no real data */}
+              {!tenantData && !loadingTenant && (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8 }}>
+                  <WisdomMark size={64} accent="var(--accent)" />
+                  <div className="num-md" style={{ fontWeight: 300, marginTop: 12 }}>No tenant data loaded</div>
+                  <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>
+                    Add ?phone=+yourphone to the URL or finish onboarding.
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {view === 'activity' && (
             <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540 }}>
               <div className="eyebrow" style={{ marginBottom: 16 }}>Live activity feed</div>
-              {[
-                { agent: 'Atlas', action: 'Replied to ACME inquiry', time: '2 min ago' },
-                { agent: 'Vega', action: 'Detected Tuesday capacity gap', time: '14 min ago' },
-                { agent: 'Sable', action: 'Processed 47 invoices', time: '32 min ago' },
-                { agent: 'Iris', action: 'Drafted morning briefing', time: '1 hr ago' },
-              ].map((event, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--glass-border)' }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--accent-soft)', color: 'var(--accent-deep)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 13 }}>
-                    {event.agent[0]}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500 }}>
-                      {event.agent} · <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>{event.action}</span>
+              {tenantData?.activity?.length > 0 ? (
+                tenantData.activity.map((event: any, i: number) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--glass-border)' }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--accent-soft)', color: 'var(--accent-deep)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 13 }}>
+                      {event.agent[0]}
                     </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500 }}>
+                        {event.agent} · <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>{event.action}</span>
+                      </div>
+                    </div>
+                    <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>{event.time}</div>
                   </div>
-                  <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>{event.time}</div>
+                ))
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 400, gap: 8 }}>
+                  <div style={{ fontSize: 14, color: 'var(--text-dim)' }}>No activity yet</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>
+                    Once your agents start working — sending emails, drafting replies, syncing calendar — you'll see it here.
+                  </div>
                 </div>
-              ))}
+              )}
             </div>
           )}
 

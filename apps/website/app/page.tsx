@@ -1139,9 +1139,19 @@ export default function HomePage() {
             </div>
 
             <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: '1.5rem' }}>
-              <a href="https://wisdomworks.vercel.app" target="_blank" rel="noopener" className="btn primary" style={{ padding: '12px 28px', fontSize: 14, textDecoration: 'none' }}>
+              <button
+                type="button"
+                className="btn primary"
+                style={{ padding: '12px 28px', fontSize: 14 }}
+                onClick={() => {
+                  const savedPhone = typeof window !== 'undefined' ? localStorage.getItem('wisdomworks_phone') : null;
+                  const base = process.env.NEXT_PUBLIC_COMMAND_DECK_URL || 'https://wisdomworks.vercel.app';
+                  const url = savedPhone ? `${base}?phone=${encodeURIComponent(savedPhone)}` : base;
+                  window.open(url, '_blank', 'noopener');
+                }}
+              >
                 Open Command Deck
-              </a>
+              </button>
             </div>
           </div>
         )}

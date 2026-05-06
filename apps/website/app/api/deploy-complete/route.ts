@@ -24,6 +24,44 @@ export async function POST(request: Request) {
     const phoneId = process.env.WHATSAPP_PHONE_ID;
     const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
 
+    // Save the team to whatsapp_contexts.profile so Command Deck can render it
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (supabaseUrl && supabaseKey) {
+      try {
+        const ctxRes = await fetch(
+          `${supabaseUrl}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile`,
+          {
+            headers: {
+              apikey: supabaseKey,
+              Authorization: `Bearer ${supabaseKey}`,
+            },
+          },
+        );
+        if (ctxRes.ok) {
+          const rows = await ctxRes.json();
+          const profile = rows[0]?.profile ?? { preferences: {}, activeTopics: [] };
+          profile.team = agents ?? [];
+          profile.businessName = businessName;
+          profile.businessType = businessType;
+          profile.deployedAt = new Date().toISOString();
+
+          await fetch(`${supabaseUrl}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
+            method: 'PATCH',
+            headers: {
+              apikey: supabaseKey,
+              Authorization: `Bearer ${supabaseKey}`,
+              'Content-Type': 'application/json',
+              Prefer: 'return=minimal',
+            },
+            body: JSON.stringify({ profile, business_name: businessName, business_type: businessType }),
+          });
+        }
+      } catch (e) {
+        console.error('[deploy-complete] Failed to save team:', e);
+      }
+    }
+
     if (!phoneId || !accessToken) {
       console.warn('[deploy-complete] WhatsApp not configured');
       return Response.json({ success: true, welcomeSent: false });
