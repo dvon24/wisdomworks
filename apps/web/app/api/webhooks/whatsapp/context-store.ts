@@ -226,8 +226,10 @@ export function buildContextMessages(
     });
   }
 
-  // Add recent conversation history
-  messages.push(...ctx.conversationHistory);
+  // Add recent conversation history — strip timestamp (Anthropic rejects unknown fields)
+  for (const m of ctx.conversationHistory) {
+    messages.push({ role: m.role, content: m.content });
+  }
 
   return messages;
 }
