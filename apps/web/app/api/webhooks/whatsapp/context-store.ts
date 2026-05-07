@@ -46,6 +46,38 @@ export interface UserProfile {
   activeTopics: string[];
   /** Summary of older conversation (compressed context) */
   conversationSummary?: string;
+  /** AI agent team selected during onboarding (saved by /api/deploy-complete) */
+  team?: TeamAgent[];
+  /** Display business name (also stored on whatsapp_contexts.business_name) */
+  businessName?: string;
+  businessType?: string;
+  agentCount?: number;
+  deployedAt?: string;
+  /** Today's calendar events (cached by calendar-sync cron) */
+  todaysCalendar?: any[];
+  todaysCalendarFetchedAt?: string;
+  /** Email drafts awaiting approval (cached by email-sift cron) */
+  pendingEmailDrafts?: any[];
+}
+
+export interface TeamAgent {
+  id?: string;
+  name: string;
+  role: string;
+  tier?: string;
+  required?: boolean;
+  emoji?: string;
+  description?: string;
+  channels?: string[];
+  tools?: string[];
+  strengths?: string[];
+  limitations?: string[];
+  aiModel?: string;
+  subTeam?: {
+    count: number;
+    label: string;
+    agents: { id?: string; name: string; role: string; tier?: string }[];
+  };
 }
 
 // ─── In-Memory Cache (per Lambda invocation) ───

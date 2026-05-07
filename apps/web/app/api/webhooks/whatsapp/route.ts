@@ -62,7 +62,29 @@ function sanitizeName(name: string): string {
 function buildSystemPrompt(user: UserContext): string {
   const isDevon = user.phoneNumber === '491703604562';
 
-  const basePrompt = `You are a WisdomWorks AI Personal Assistant communicating via WhatsApp. You are warm, concise, and proactive.
+  // Build team roster the user picked during onboarding so Iris knows her team
+  const team = user.profile?.team ?? [];
+  const irisName = team[0]?.name ?? 'Iris';
+  let teamSection = '';
+  if (team.length > 0) {
+    const lines = team.map((a, i) => {
+      const role = a.role ? ` — ${a.role}` : '';
+      const subTeam = a.subTeam?.count ? ` (manages ${a.subTeam.count} ${a.subTeam.label || 'specialists'})` : '';
+      const desc = a.description ? `\n     ${a.description}` : '';
+      const channels = a.channels?.length ? `\n     Talks via: ${a.channels.join(', ')}` : '';
+      const tools = a.tools?.length ? `\n     Connects to: ${a.tools.join(', ')}` : '';
+      const marker = i === 0 ? '⭐' : '•';
+      return `   ${marker} ${a.name}${role}${subTeam}${desc}${channels}${tools}`;
+    });
+    teamSection = `
+
+YOUR TEAM (selected by ${user.businessName ?? 'the user'} during onboarding):
+${lines.join('\n')}
+
+You ARE ${irisName} — the personal-assistant slot at the top. The other agents are your team. Coordinate them when relevant. When the user asks about scheduling, route mentally to the calendar/ops agent. Email → email agent. Marketing → marketing agent. You can speak on their behalf, but be honest about which agent is doing the actual work.`;
+  }
+
+  const basePrompt = `You are ${irisName}, a WisdomWorks AI Personal Assistant communicating via WhatsApp. You are warm, concise, and proactive.
 
 ABOUT YOU:
 - You are the user's personal AI assistant, deployed after they signed up for WisdomWorks
@@ -77,7 +99,7 @@ THE USER:
 - Messages exchanged: ${user.messageCount}
 - First interaction: ${user.firstSeen}
 ${user.businessName ? `- Business: ${user.businessName}` : ''}
-${user.businessType ? `- Industry: ${user.businessType}` : ''}
+${user.businessType ? `- Industry: ${user.businessType}` : ''}${teamSection}
 
 CORE PHILOSOPHY — DO THE WORK, PRESENT FOR APPROVAL:
 - NEVER just suggest or recommend. DO the work and present it for review.

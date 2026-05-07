@@ -344,7 +344,8 @@ export default function CommandDeck() {
       >
         {/* Main pane */}
         <section style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* KPI strip — real tenant data */}
+          {/* KPI strip — only on Team tab (Overview stays clean) */}
+          {view === 'team' && (
           <div className="glass-strong" style={{ padding: '1.25rem 2rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 20, alignItems: 'baseline' }}>
             <div>
               <div className="eyebrow" style={{ marginBottom: 4 }}>Business</div>
@@ -382,6 +383,7 @@ export default function CommandDeck() {
               <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>via WhatsApp</div>
             </div>
           </div>
+          )}
 
           {/* Hero — hierarchy or detail */}
           {view === 'team' && (
@@ -414,85 +416,30 @@ export default function CommandDeck() {
 
           {view === 'overview' && (
             <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div className="eyebrow" style={{ marginBottom: 4 }}>At a glance</div>
-
-              {/* KPI grid — real metrics */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
-                <div className="glass" style={{ padding: '1rem' }}>
-                  <div className="eyebrow" style={{ marginBottom: 4 }}>Connections</div>
-                  <div className="num-md" style={{ fontSize: 32, fontWeight: 300 }}>{tenantData?.connections?.length ?? 0}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>
-                    {tenantData?.connections?.map((c: any) => `${c.provider} ${c.service}`).join(' · ') || 'none yet'}
-                  </div>
+              <div style={{ textAlign: 'center', marginBottom: 4 }}>
+                <div className="eyebrow" style={{ marginBottom: 4 }}>Your AI team</div>
+                <div className="num-md" style={{ fontSize: 22, fontWeight: 300 }}>
+                  {tenantData?.user?.businessName ?? (loadingTenant ? '…' : 'Welcome')}
                 </div>
-                <div className="glass" style={{ padding: '1rem' }}>
-                  <div className="eyebrow" style={{ marginBottom: 4 }}>Today's events</div>
-                  <div className="num-md" style={{ fontSize: 32, fontWeight: 300 }}>{tenantData?.todaysCalendar?.length ?? 0}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>
-                    {tenantData?.todaysCalendar?.length
-                      ? `next: ${tenantData.todaysCalendar[0]?.title?.slice(0, 24) ?? ''}`
-                      : 'no events'}
-                  </div>
-                </div>
-                <div className="glass" style={{ padding: '1rem' }}>
-                  <div className="eyebrow" style={{ marginBottom: 4 }}>Drafts pending</div>
-                  <div className="num-md" style={{ fontSize: 32, fontWeight: 300 }}>{tenantData?.pendingEmailDrafts?.length ?? 0}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>
-                    {tenantData?.pendingEmailDrafts?.length ? 'awaiting your review' : 'inbox clear'}
-                  </div>
-                </div>
-                <div className="glass" style={{ padding: '1rem' }}>
-                  <div className="eyebrow" style={{ marginBottom: 4 }}>Messages with Iris</div>
-                  <div className="num-md" style={{ fontSize: 32, fontWeight: 300 }}>{tenantData?.messageCount ?? 0}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>conversations exchanged</div>
+                <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>
+                  Chat with Iris on the right. Open <span style={{ color: 'var(--accent-deep)', fontWeight: 500 }}>Team</span> to dive into any agent.
                 </div>
               </div>
-
-              {/* Today's schedule preview */}
-              {tenantData?.todaysCalendar?.length > 0 && (
-                <div className="glass" style={{ padding: '1rem', flex: 1, minHeight: 0, overflow: 'auto' }}>
-                  <div className="eyebrow" style={{ marginBottom: 8 }}>Today's schedule</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {tenantData.todaysCalendar.map((e: any) => {
-                      const start = new Date(e.start);
-                      const time = start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-                      return (
-                        <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--glass-border)' }}>
-                          <span className="mono" style={{ fontSize: 11, color: 'var(--accent-deep)', minWidth: 60 }}>{time}</span>
-                          <span style={{ flex: 1, fontWeight: 500 }}>{e.title}</span>
-                          {e.location && <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>{e.location}</span>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Connected services detail */}
-              {tenantData?.connections?.length > 0 && (
-                <div className="glass" style={{ padding: '1rem' }}>
-                  <div className="eyebrow" style={{ marginBottom: 8 }}>Connected services</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {tenantData.connections.map((c: any, i: number) => (
-                      <span key={i} className="pill ok" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        ✓ {c.provider} {c.service}
-                        {c.accountEmail && <span style={{ opacity: 0.6 }}>· {c.accountEmail}</span>}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Empty state if no real data */}
-              {!tenantData && !loadingTenant && (
-                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8 }}>
-                  <WisdomMark size={64} accent="var(--accent)" />
-                  <div className="num-md" style={{ fontWeight: 300, marginTop: 12 }}>No tenant data loaded</div>
-                  <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>
-                    Add ?phone=+yourphone to the URL or finish onboarding.
-                  </div>
-                </div>
-              )}
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Hierarchy
+                  width={940}
+                  height={460}
+                  team={team}
+                  principal={{
+                    initials: (tenantData?.user?.businessName ?? 'You').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase(),
+                    first: tenantData?.user?.businessName?.split(' ')[0] ?? 'You',
+                    role: 'Owner',
+                  }}
+                  showExternals={false}
+                  showArcs
+                  accent="var(--accent)"
+                />
+              </div>
             </div>
           )}
 
@@ -524,8 +471,8 @@ export default function CommandDeck() {
             </div>
           )}
 
-          {/* Bottom row of real cards — visible on team & overview tabs */}
-          {view !== 'activity' && (
+          {/* Bottom row of real cards — Team tab only (Overview stays clean) */}
+          {view === 'team' && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               {/* Today's schedule */}
               <div className="glass-strong" style={{ padding: 16, minHeight: 160 }}>
