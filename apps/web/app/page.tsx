@@ -333,6 +333,8 @@ export default function CommandDeck() {
 
       <main
         style={{
+          position: 'relative',
+          zIndex: 1,
           display: 'grid',
           gridTemplateColumns: '1fr 380px',
           gap: 16,
