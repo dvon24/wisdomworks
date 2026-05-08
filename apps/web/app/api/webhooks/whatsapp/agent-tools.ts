@@ -179,6 +179,23 @@ const TOOL_ADD_AGENT: AnthropicTool = {
   },
 };
 
+const TOOL_CONSULT_MANAGER: AnthropicTool = {
+  name: 'consult_manager',
+  description:
+    "Get an existing top-level agent/manager's opinion on a proposed change (e.g. adding a new agent, changing scope). Use this BEFORE adding a new agent so the relevant managers can weigh in on whether it makes sense, whether it overlaps with their existing scope, or whether it should report to them. Call once per manager whose domain could plausibly overlap. Their reply is treated as advisory — Iris/Sophia still makes the final call.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      managerName: { type: 'string', description: 'The exact name of the existing top-level agent to consult.' },
+      proposal: {
+        type: 'string',
+        description: "Plain-English description of the change being proposed (e.g. 'User wants to add a recruiter named Riley to handle hiring for both businesses').",
+      },
+    },
+    required: ['managerName', 'proposal'],
+  },
+};
+
 const TOOL_CONNECT_SERVICE: AnthropicTool = {
   name: 'connect_service',
   description:
@@ -221,6 +238,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
   tools.push(TOOL_UPDATE_AGENT);
+  tools.push(TOOL_CONSULT_MANAGER);
   tools.push(TOOL_CONNECT_SERVICE);
 
   return tools;
@@ -440,6 +458,64 @@ export async function executeTool(
         user.profile.team = team;
         await saveUserContext(user);
         return { content: `Updated ${agent.name}: ${changes.join('; ')}.`, success: true };
+      }
+
+      case 'consult_manager': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const team = user.profile?.team ?? [];
+        const target = call.input.managerName?.toString().toLowerCase();
+        const manager = team.find((a) => a.name?.toLowerCase() === target || a.id?.toLowerCase() === target);
+        if (!manager) {
+          return { content: `No manager named "${call.input.managerName}" on the team. Top-level: ${team.map((a) => a.name).join(', ')}.`, success: false };
+        }
+        const proposal = call.input.proposal?.toString().trim();
+        if (!proposal) return { content: 'Missing proposal.', success: false };
+
+        const apiKey = process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) {
+          return { content: `${manager.name} is offline (no API key). Skipping consultation.`, success: false };
+        }
+
+        // Build a brief persona prompt from the manager's profile
+        const personaLines = [
+          `You are ${manager.name}, ${manager.role}.`,
+          manager.description ? `Your remit: ${manager.description}` : '',
+          manager.tools?.length ? `Your current tools: ${manager.tools.join(', ')}.` : '',
+          manager.subTeam?.count ? `You manage ${manager.subTeam.count} ${manager.subTeam.label || 'specialists'}.` : '',
+          `Business context: ${user.businessName ?? 'this business'} — ${user.businessType ?? 'unknown industry'}.`,
+          '',
+          'A teammate is asking your opinion on a proposed change to the team. Give a short, direct take (under 80 words):',
+          '- Does it overlap with your scope? Should it report to you?',
+          '- Is it actually needed, or is it solving a problem the existing team can already solve?',
+          '- Any risk you see (budget, scope creep, redundancy)?',
+          'Speak in first person. Be honest — push back if it doesn\'t make sense.',
+        ].filter(Boolean).join('\n');
+
+        try {
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 200,
+              system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
+              messages: [{ role: 'user', content: `Proposal: ${proposal}\n\nYour take?` }],
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            return { content: `${manager.name} consultation failed: ${JSON.stringify(err)}`, success: false };
+          }
+          const data = await res.json();
+          const reply = data.content?.find((b: any) => b.type === 'text')?.text ?? '(no response)';
+          return { content: `${manager.name} (${manager.role}) says:\n${reply}`, success: true };
+        } catch (err) {
+          return { content: `${manager.name} consultation error: ${err}`, success: false };
+        }
       }
 
       case 'connect_service': {
