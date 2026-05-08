@@ -19,7 +19,7 @@ import {
 import { buildSystemPrompt } from './system-prompt';
 import { buildToolList, executeTool, type ToolCall } from './agent-tools';
 
-const MAX_ITERATIONS = 5;
+const MAX_ITERATIONS = 8;
 
 async function callAnthropic(
   apiKey: string,
@@ -97,6 +97,18 @@ export async function generateIrisReply(
       }
       messages.push({ role: 'user', content: toolResults });
       response = await callAnthropic(apiKey, systemPrompt, messages, tools);
+    }
+
+    // If the loop exited while still in tool_use (hit cap, or model wanted to keep going),
+    // make one more call WITHOUT tools so it's forced to produce a text reply.
+    if (response.stop_reason === 'tool_use') {
+      console.warn(`[iris-${surface}] Tool loop hit cap at iteration ${iteration} — forcing final text.`);
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({
+        role: 'user',
+        content: 'Summarize what you just did in one or two short sentences for the user. No more tool calls.',
+      });
+      response = await callAnthropic(apiKey, systemPrompt, messages, []);
     }
 
     const textBlock = response.content.find((b: any) => b.type === 'text');
