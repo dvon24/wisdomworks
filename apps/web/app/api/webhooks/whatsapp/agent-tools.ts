@@ -157,6 +157,28 @@ const TOOL_UPDATE_AGENT: AnthropicTool = {
   },
 };
 
+const TOOL_ADD_AGENT: AnthropicTool = {
+  name: 'add_agent_to_team',
+  description:
+    "Add a brand-new agent to the user's team. Before calling, think about hierarchy fit: does this role belong under an existing manager (e.g. a recruiter under an Ops/People manager) or is it independent? If it fits under someone, pass parentAgentName so it goes into that person's sub-team. If not, leave parentAgentName blank for a top-level slot. Always pick a sensible tier (Haiku for routine, Sonnet for general work, Opus for critical reasoning).",
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'A friendly first-name for the agent (e.g. Riley, Atlas).' },
+      role: { type: 'string', description: 'Their role/title (e.g. Recruiter, Bookkeeper).' },
+      description: { type: 'string', description: 'One-sentence description of what they do.' },
+      parentAgentName: {
+        type: 'string',
+        description: 'Optional. Name of the existing top-level agent this new agent should report to. Leave blank for top-level.',
+      },
+      tier: { type: 'string', enum: ['Haiku', 'Sonnet', 'Opus'] },
+      tools: { type: 'array', items: { type: 'string' } },
+      channels: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['name', 'role'],
+  },
+};
+
 const TOOL_CONNECT_SERVICE: AnthropicTool = {
   name: 'connect_service',
   description:
@@ -196,6 +218,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   }
   // Website + team-mutation + connect tools are always available
   tools.push(TOOL_ANALYZE_WEBSITE);
+  tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
   tools.push(TOOL_UPDATE_AGENT);
   tools.push(TOOL_CONNECT_SERVICE);
@@ -323,6 +346,46 @@ export async function executeTool(
           `Signals: ${s.signals.join('; ')}`,
         ].filter(Boolean);
         return { content: lines.join('\n'), success: true };
+      }
+
+      case 'add_agent_to_team': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const team = user.profile?.team ?? [];
+        const name = call.input.name?.toString().trim();
+        const role = call.input.role?.toString().trim();
+        if (!name || !role) return { content: 'Missing name or role.', success: false };
+
+        const id = name.toLowerCase().replace(/\s+/g, '-');
+        const tier = (['Haiku', 'Sonnet', 'Opus'].includes(call.input.tier) ? call.input.tier : 'Sonnet') as string;
+        const newAgent = {
+          id,
+          name,
+          role,
+          tier,
+          description: call.input.description?.toString(),
+          tools: Array.isArray(call.input.tools) ? call.input.tools : [],
+          channels: Array.isArray(call.input.channels) ? call.input.channels : [],
+        };
+
+        const parent = call.input.parentAgentName?.toString().toLowerCase();
+        if (parent) {
+          const manager = team.find((a) => a.name?.toLowerCase() === parent || a.id?.toLowerCase() === parent);
+          if (!manager) {
+            return { content: `Couldn't find a manager named "${call.input.parentAgentName}". Top-level agents: ${team.map((a) => a.name).join(', ')}.`, success: false };
+          }
+          const sub = manager.subTeam ?? { count: 0, label: `${manager.name}'s team`, agents: [] };
+          sub.agents.push({ id: `${manager.id ?? manager.name?.toLowerCase()}-${id}`, name, role, tier });
+          sub.count = sub.agents.length;
+          manager.subTeam = sub;
+          user.profile.team = team;
+          await saveUserContext(user);
+          return { content: `Added ${name} (${role}) under ${manager.name}. ${manager.name}'s team is now ${sub.count}.`, success: true };
+        }
+
+        team.push(newAgent as any);
+        user.profile.team = team;
+        await saveUserContext(user);
+        return { content: `Added ${name} (${role}) as a top-level agent on the team.`, success: true };
       }
 
       case 'add_tool_to_agent': {
