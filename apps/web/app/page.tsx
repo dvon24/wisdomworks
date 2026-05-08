@@ -192,7 +192,9 @@ export default function CommandDeck() {
     setMessages((m) => [...m, { from: 'user' as const, text: userText }]);
     setChatInput('');
 
-    // Local intent parsing for catalog add/remove/rename — keeps the action cards UX
+    // Local intent parsing only for structural mutations the AI shouldn't deliberate on:
+    // rename + tier changes are deterministic. add/remove route to the AI so the
+    // manager-consultation flow can run.
     const activeTeam: ActiveAgent[] = team.map((a) => ({
       id: a.id,
       label: a.label,
@@ -202,7 +204,8 @@ export default function CommandDeck() {
     }));
     const intent = parseIntent(userText, activeTeam);
 
-    if (intent && intent.kind !== 'question') {
+    const SKIP_LOCAL_KINDS = new Set(['add', 'remove']);
+    if (intent && intent.kind !== 'question' && !SKIP_LOCAL_KINDS.has(intent.kind)) {
       const reply = generateIntentReply(intent) ?? 'Got it.';
       setTimeout(() => setMessages((m) => [...m, { from: 'iris' as const, text: reply }]), 300);
 
