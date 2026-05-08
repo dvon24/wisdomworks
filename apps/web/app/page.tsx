@@ -184,13 +184,15 @@ export default function CommandDeck() {
 
   const totalPrice = calculateTotalPrice(team);
 
-  const sendMessage = () => {
-    if (!chatInput.trim()) return;
+  const [chatBusy, setChatBusy] = useState(false);
+
+  const sendMessage = async () => {
+    if (!chatInput.trim() || chatBusy) return;
     const userText = chatInput.trim();
-    setMessages([...messages, { from: 'user' as const, text: userText }]);
+    setMessages((m) => [...m, { from: 'user' as const, text: userText }]);
     setChatInput('');
 
-    // Try local intent parsing first
+    // Local intent parsing for catalog add/remove/rename — keeps the action cards UX
     const activeTeam: ActiveAgent[] = team.map((a) => ({
       id: a.id,
       label: a.label,
@@ -202,7 +204,7 @@ export default function CommandDeck() {
 
     if (intent && intent.kind !== 'question') {
       const reply = generateIntentReply(intent) ?? 'Got it.';
-      setTimeout(() => setMessages((m) => [...m, { from: 'iris' as const, text: reply }]), 400);
+      setTimeout(() => setMessages((m) => [...m, { from: 'iris' as const, text: reply }]), 300);
 
       const delta = intentPriceDelta(intent);
       const action: ActionCardData = {
@@ -227,10 +229,51 @@ export default function CommandDeck() {
       return;
     }
 
-    // Free-form response (placeholder for now)
-    setTimeout(() => {
-      setMessages((m) => [...m, { from: 'iris' as const, text: 'Got it. Working on that now.' }]);
-    }, 600);
+    // Free-form: hand it to the real Iris brain
+    if (!phoneNumber) {
+      setMessages((m) => [...m, { from: 'iris' as const, text: "I don't know who you are yet — open the deck via the website's Open-Command-Deck button so I can load your context." }]);
+      return;
+    }
+    setChatBusy(true);
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: phoneNumber, message: userText, name: tenantData?.user?.name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'chat failed');
+      setMessages((m) => [...m, { from: 'iris' as const, text: data.reply || '...' }]);
+      // If the brain mutated the team, re-render the hierarchy from the fresh team
+      if (Array.isArray(data.team) && data.team.length > 0) {
+        const meta: Record<string, any> = {};
+        const fresh: HierarchyAgent[] = data.team.map((a: any, i: number) => {
+          const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
+          meta[id] = {
+            emoji: a.emoji,
+            description: a.description,
+            channels: a.channels ?? [],
+            tools: a.tools ?? [],
+            strengths: a.strengths ?? [],
+            limitations: a.limitations ?? [],
+            aiModel: a.aiModel,
+          };
+          if (i === 0) meta['iris'] = meta[id];
+          const model = (a.aiModel || a.tier || '').toString().toLowerCase();
+          const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
+          return i === 0
+            ? { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus' as const, status: 'ok' as const, required: true }
+            : { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
+        });
+        setTeam(fresh);
+        setTeamMeta(meta);
+      }
+    } catch (err) {
+      console.error('[deck-chat] Error:', err);
+      setMessages((m) => [...m, { from: 'iris' as const, text: "I hit a snag answering that. Try again?" }]);
+    } finally {
+      setChatBusy(false);
+    }
   };
 
   const acceptAction = (actionId: string) => {

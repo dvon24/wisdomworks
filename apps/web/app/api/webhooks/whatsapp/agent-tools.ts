@@ -17,6 +17,20 @@ import {
   analyzeWebsite,
   type OAuthConnection,
 } from '@wisdomworks/shared';
+import { saveUserContext, type UserContext } from './context-store';
+
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const APP_BASE_URL = process.env.NEXT_PUBLIC_APP_BASE_URL || process.env.NEXT_PUBLIC_WEBSITE_URL || 'http://localhost:3001';
+
+// Provider list used by connect_service — mirrors the OAuth routes that exist
+// under apps/website/app/api/oauth/.
+const SUPPORTED_PROVIDERS: Record<string, { services: string[]; route: string }> = {
+  google: { services: ['email', 'calendar'], route: '/api/oauth/google' },
+  microsoft: { services: ['email', 'calendar'], route: '/api/oauth/microsoft' },
+  apple: { services: ['calendar'], route: '/api/oauth/apple' },
+  meta: { services: ['whatsapp'], route: '/api/oauth/meta' },
+};
 
 // ─── Tool Definitions (Anthropic format) ───
 
@@ -113,6 +127,57 @@ const TOOL_ANALYZE_WEBSITE: AnthropicTool = {
   },
 };
 
+const TOOL_ADD_TOOL_TO_AGENT: AnthropicTool = {
+  name: 'add_tool_to_agent',
+  description:
+    "Add a tool/integration to an agent on the user's team. Use when they say things like \"give Marcus access to GitHub\" or \"Luna needs Instagram\". The tool name is stored on the agent's profile and surfaced in their card.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentName: { type: 'string', description: 'The name of the agent (e.g. Marcus, Luna).' },
+      tool: { type: 'string', description: 'The tool to add (e.g. GitHub, Slack, VS Code, Notion).' },
+    },
+    required: ['agentName', 'tool'],
+  },
+};
+
+const TOOL_UPDATE_AGENT: AnthropicTool = {
+  name: 'update_agent',
+  description:
+    "Update an agent's role, description, or channels. Use when the user wants to refocus an agent's responsibilities (e.g. \"Marcus should also handle au7o billing\").",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentName: { type: 'string' },
+      role: { type: 'string', description: 'Optional new role/title.' },
+      description: { type: 'string', description: 'Optional new short description.' },
+      addChannels: { type: 'array', items: { type: 'string' }, description: 'Channels to add (e.g. Slack, Email).' },
+    },
+    required: ['agentName'],
+  },
+};
+
+const TOOL_CONNECT_SERVICE: AnthropicTool = {
+  name: 'connect_service',
+  description:
+    'Hand the user a clickable OAuth link to connect a service (Gmail, Google Calendar, Microsoft 365, Apple Calendar). Returns the URL the user should open. Use when they want to connect email/calendar/etc.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      provider: {
+        type: 'string',
+        enum: ['google', 'microsoft', 'apple', 'meta'],
+        description: 'OAuth provider.',
+      },
+      service: {
+        type: 'string',
+        description: 'What to connect — email, calendar, whatsapp.',
+      },
+    },
+    required: ['provider'],
+  },
+};
+
 // ─── Tool Selection — gate by what the user has connected ───
 
 export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
@@ -129,8 +194,11 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
     tools.push(TOOL_LIST_CALENDAR);
     tools.push(TOOL_CREATE_CALENDAR_EVENT);
   }
-  // Website tool is always available (no auth needed for read-only crawl)
+  // Website + team-mutation + connect tools are always available
   tools.push(TOOL_ANALYZE_WEBSITE);
+  tools.push(TOOL_ADD_TOOL_TO_AGENT);
+  tools.push(TOOL_UPDATE_AGENT);
+  tools.push(TOOL_CONNECT_SERVICE);
 
   return tools;
 }
@@ -152,6 +220,7 @@ export interface ToolResult {
 export async function executeTool(
   call: ToolCall,
   connections: OAuthConnection[],
+  user?: UserContext,
 ): Promise<ToolResult> {
   try {
     switch (call.name) {
@@ -254,6 +323,78 @@ export async function executeTool(
           `Signals: ${s.signals.join('; ')}`,
         ].filter(Boolean);
         return { content: lines.join('\n'), success: true };
+      }
+
+      case 'add_tool_to_agent': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const team = user.profile?.team ?? [];
+        const target = call.input.agentName?.toString().toLowerCase();
+        const agent = team.find((a) => a.name?.toLowerCase() === target || a.id?.toLowerCase() === target);
+        if (!agent) {
+          return { content: `Couldn't find an agent named "${call.input.agentName}". Team members: ${team.map((a) => a.name).join(', ')}.`, success: false };
+        }
+        const tool = call.input.tool?.toString().trim();
+        if (!tool) return { content: 'Missing tool name.', success: false };
+        const existing = agent.tools ?? [];
+        if (existing.some((t) => t.toLowerCase() === tool.toLowerCase())) {
+          return { content: `${agent.name} already has ${tool}.`, success: true };
+        }
+        agent.tools = [...existing, tool];
+        user.profile.team = team;
+        await saveUserContext(user);
+        return { content: `Added ${tool} to ${agent.name}'s toolset.`, success: true };
+      }
+
+      case 'update_agent': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const team = user.profile?.team ?? [];
+        const target = call.input.agentName?.toString().toLowerCase();
+        const agent = team.find((a) => a.name?.toLowerCase() === target || a.id?.toLowerCase() === target);
+        if (!agent) {
+          return { content: `Couldn't find "${call.input.agentName}".`, success: false };
+        }
+        const changes: string[] = [];
+        if (call.input.role) {
+          agent.role = call.input.role;
+          changes.push(`role → "${call.input.role}"`);
+        }
+        if (call.input.description) {
+          agent.description = call.input.description;
+          changes.push('description updated');
+        }
+        if (Array.isArray(call.input.addChannels) && call.input.addChannels.length > 0) {
+          const existing = agent.channels ?? [];
+          const merged = [...existing];
+          for (const c of call.input.addChannels) {
+            if (!merged.some((x) => x.toLowerCase() === c.toLowerCase())) merged.push(c);
+          }
+          agent.channels = merged;
+          changes.push(`channels: ${merged.join(', ')}`);
+        }
+        if (changes.length === 0) {
+          return { content: 'Nothing to update — pass role, description, or addChannels.', success: false };
+        }
+        user.profile.team = team;
+        await saveUserContext(user);
+        return { content: `Updated ${agent.name}: ${changes.join('; ')}.`, success: true };
+      }
+
+      case 'connect_service': {
+        const provider = call.input.provider?.toString().toLowerCase();
+        const service = call.input.service?.toString().toLowerCase();
+        const cfg = SUPPORTED_PROVIDERS[provider];
+        if (!cfg) {
+          return {
+            content: `Provider "${provider}" isn't wired up yet. Supported: ${Object.keys(SUPPORTED_PROVIDERS).join(', ')}.`,
+            success: false,
+          };
+        }
+        const phone = user?.phoneNumber ?? '';
+        const url = `${APP_BASE_URL}${cfg.route}?phone=${encodeURIComponent(phone)}${service ? `&service=${encodeURIComponent(service)}` : ''}`;
+        return {
+          content: `Connect ${provider}${service ? ` (${service})` : ''} here: ${url}\nThe link opens the OAuth flow for the user's account.`,
+          success: true,
+        };
       }
 
       default:
