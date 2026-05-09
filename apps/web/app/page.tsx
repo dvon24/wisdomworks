@@ -199,6 +199,7 @@ export default function CommandDeck() {
   const [connError, setConnError] = useState('');
   const [connBusy, setConnBusy] = useState(false);
   const [connSuccess, setConnSuccess] = useState<string | null>(null);
+  const [connDebug, setConnDebug] = useState<{ url: string; status: number | string; body: string } | null>(null);
   const connFormRef = useRef<HTMLDivElement>(null);
 
   // Scroll the form into view + focus the email input the moment a provider is picked
@@ -241,21 +242,30 @@ export default function CommandDeck() {
   };
 
   const submitConnection = async (provider: 'yahoo' | 'apple') => {
+    const url = `/api/connections/${provider}`;
     if (!phoneNumber) {
       setConnError('No phone identified — open the deck via the website button or add ?phone=... to the URL.');
+      setConnDebug({ url, status: 'not sent', body: 'phoneNumber state is empty' });
       return;
     }
     setConnError('');
+    setConnDebug(null);
     setConnBusy(true);
+    let status: number | string = 'no response';
+    let bodyText = '';
     try {
-      const res = await fetch(`/api/connections/${provider}`, {
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: phoneNumber, email: connEmail, appPassword: connPassword }),
       });
-      const data = await res.json();
+      status = res.status;
+      bodyText = await res.text();
+      let data: any;
+      try { data = JSON.parse(bodyText); } catch { data = { error: bodyText }; }
+      setConnDebug({ url, status, body: bodyText.slice(0, 800) });
       if (!res.ok || !data.success) {
-        setConnError(data.error || 'Connection failed');
+        setConnError(data.error || `Connection failed (HTTP ${status})`);
         return;
       }
       // Re-fetch dashboard so the new connection appears in tenantData.connections
@@ -269,6 +279,7 @@ export default function CommandDeck() {
       setTimeout(() => setConnSuccess(null), 3500);
     } catch (err) {
       setConnError(String(err));
+      setConnDebug({ url, status, body: String(err) });
     } finally {
       setConnBusy(false);
     }
@@ -739,7 +750,15 @@ export default function CommandDeck() {
                     onChange={(e) => setConnPassword(e.target.value)}
                     style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--glass-border-strong)', background: 'rgba(255,255,255,0.65)', fontSize: 13, fontFamily: 'monospace', marginBottom: 8 }}
                   />
-                  {connError && <div style={{ fontSize: 11.5, color: 'var(--bad-text, #c2410c)', marginBottom: 8 }}>{connError}</div>}
+                  {connError && <div style={{ fontSize: 13, color: '#c2410c', fontWeight: 500, padding: '8px 10px', background: 'rgba(194, 65, 12, 0.08)', borderRadius: 8, marginBottom: 8, lineHeight: 1.4 }}>⚠ {connError}</div>}
+                  {connDebug && (
+                    <div style={{ fontSize: 11, fontFamily: 'monospace', padding: 10, background: 'rgba(0,0,0,0.06)', border: '1px dashed var(--glass-border-strong)', borderRadius: 8, marginBottom: 8, lineHeight: 1.5 }}>
+                      <div><strong>POST</strong> {connDebug.url}</div>
+                      <div><strong>Status:</strong> {connDebug.status}</div>
+                      <div><strong>Phone sent:</strong> {phoneNumber || '(none)'}</div>
+                      <div style={{ marginTop: 6, wordBreak: 'break-word', maxHeight: 120, overflow: 'auto' }}><strong>Response:</strong> {connDebug.body || '(empty)'}</div>
+                    </div>
+                  )}
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => submitConnection(connForm)} disabled={connBusy} className="btn primary" style={{ flex: 1, fontSize: 12, justifyContent: 'center' }}>
                       {connBusy ? 'Connecting…' : 'Connect'}
