@@ -205,6 +205,8 @@ export default function HomePage() {
   const [agentsDeployed, setAgentsDeployed] = useState(false);
   const [businessName, setBusinessName] = useState('');
   const [structuredData, setStructuredData] = useState<any>(null);
+  // Story 1.7/1.8 — formal AxisDeploymentSpec preview
+  const [deploymentPreview, setDeploymentPreview] = useState<any>(null);
   const [inputPlaceholder, setInputPlaceholder] = useState('Describe your business...');
   const [showExample, setShowExample] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string>('iris');
@@ -330,6 +332,8 @@ export default function HomePage() {
           setTimeout(() => setShowPreview(true), 800);
         }
       }
+      // Story 1.7/1.8 — formal spec preview from generateDeploymentSpec
+      if (data.preview) setDeploymentPreview(data.preview);
     } catch (err) {
       console.error('Onboarding error:', err);
       setMessages([...newMessages, { role: 'assistant', content: 'Hmm, I had a moment. Could you try again?' }]);
@@ -972,6 +976,38 @@ export default function HomePage() {
                 })()}
               </div>
             </div>
+
+            {/* Deployment summary — Story 1.8: blueprint, template, surfaces, integrations, trial terms */}
+            {deploymentPreview && (
+              <div className="glass-strong" style={{ padding: '1rem 1.25rem', marginTop: '1rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14 }}>
+                <div>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Plan</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, textTransform: 'capitalize' }}>{deploymentPreview.blueprint?.replace(/_/g, ' ')}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2, textTransform: 'capitalize' }}>{deploymentPreview.template?.replace(/_/g, ' ')} template</div>
+                </div>
+                <div>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Surfaces</div>
+                  <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    {(deploymentPreview.surfaces ?? []).map((s: string) => s.replace(/([A-Z])/g, ' $1').trim()).join(' · ') || '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Integrations</div>
+                  <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    {(deploymentPreview.integrations ?? []).join(' · ') || 'Connect during setup'}
+                  </div>
+                </div>
+                <div>
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>Trial</div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>
+                    {currencySymbol}{deploymentPreview.costBreakdown?.deposit ?? 0} deposit
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                    {deploymentPreview.costBreakdown?.trialDays ?? 30}-day trial · applied to first invoice
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: '1.5rem' }}>
               <button onClick={handleStartTrial} className="btn primary" style={{ padding: '12px 28px', fontSize: 14 }}>
