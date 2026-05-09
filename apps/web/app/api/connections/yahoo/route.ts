@@ -8,6 +8,8 @@
  */
 
 import { saveConnection } from '../_lib/save';
+// Side-effect import so Vercel's NFT ships imapflow into this lambda.
+import 'imapflow';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
