@@ -38,15 +38,15 @@ export async function listUnreadMessages(
   limit = 10,
 ): Promise<IntegrationResult<EmailMessage[]>> {
   // imapflow uses Node-only modules (dns/net/tls). The eval('require') trick
-  // hides the dependency from Turbopack/webpack static analysis so it isn't
-  // pulled into the bundle. This file is only ever called from server-side
-  // routes (cron, webhook, deck chat) — the runtime is always Node.
+  // hides the dependency from Turbopack so it doesn't try to bundle dns/net/tls
+  // into the build. Vercel ships imapflow via outputFileTracingIncludes in
+  // next.config.js — see the comment there.
   let ImapFlow: any;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     ImapFlow = (eval('require'))('imapflow').ImapFlow;
   } catch (err) {
-    return { success: false, error: `imapflow not installed: ${err}` };
+    return { success: false, error: `imapflow load failed: ${err}` };
   }
 
   const host = ctx.metadata?.imap_host || YAHOO_HOST;
@@ -123,7 +123,7 @@ export async function verifyImapLogin(
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     ImapFlow = (eval('require'))('imapflow').ImapFlow;
   } catch (err) {
-    return { ok: false, error: `imapflow not installed: ${err}` };
+    return { ok: false, error: `imapflow load failed: ${err}` };
   }
 
   const client = new ImapFlow({

@@ -19,9 +19,6 @@ const YAHOO_IMAP_HOST = 'imap.mail.yahoo.com';
 const YAHOO_IMAP_PORT = 993;
 
 async function verifyImapLogin(host: string, port: number, username: string, password: string): Promise<{ ok: boolean; error?: string }> {
-  // Hide the import from Turbopack's static analysis — imapflow uses Node-only
-  // modules (dns/net/tls) that shouldn't be bundled. The eval keeps the require
-  // out of the build graph; this file is server-only (runtime = 'nodejs').
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { ImapFlow } = (eval('require'))('imapflow') as any;
   const client = new ImapFlow({
