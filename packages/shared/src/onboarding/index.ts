@@ -9,3 +9,12 @@ export type { OnboardingState, OnboardingData, ConversationMessage } from './onb
 
 export { generateDeploymentSpec, generatePreview } from './spec-generator';
 export type { DeploymentPreview } from './spec-generator';
+
+export { extractOntology } from './ontology-extractor';
+export type {
+  OntologyEntity,
+  OntologyRelationship,
+  ExtractedOntology,
+  EntityType,
+  RelationshipType,
+} from './ontology-extractor';

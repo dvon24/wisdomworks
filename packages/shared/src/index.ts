@@ -97,8 +97,19 @@ export {
   createOnboardingState,
   generateDeploymentSpec,
   generatePreview,
+  extractOntology,
 } from './onboarding';
-export type { OnboardingState, OnboardingData, ConversationMessage, DeploymentPreview } from './onboarding';
+export type {
+  OnboardingState,
+  OnboardingData,
+  ConversationMessage,
+  DeploymentPreview,
+  OntologyEntity,
+  OntologyRelationship,
+  ExtractedOntology,
+  EntityType,
+  RelationshipType,
+} from './onboarding';
 
 // Agent Operating Protocol
 export {

@@ -2,11 +2,13 @@ import {
   getOnboardingSystemPrompt,
   generateDeploymentSpec,
   generatePreview,
+  extractOntology,
 } from '@wisdomworks/shared';
 import type {
   OnboardingData,
   ConversationMessage,
   AxisDeploymentSpec,
+  ExtractedOntology,
 } from '@wisdomworks/shared';
 
 /**
@@ -197,6 +199,45 @@ function structuredToOnboardingData(structured: any, collected: OnboardingData =
  * configured. Failures are logged but never block the onboarding response —
  * the conversation should keep flowing even if the persistence layer is down.
  */
+/**
+ * Story 1.10 — write entities + relationships atomically via the
+ * upsert_ontology Postgres function. All-or-nothing per FR-NFR36.
+ */
+async function saveOntology(
+  tenantPhone: string,
+  ontology: ExtractedOntology,
+): Promise<void> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !tenantPhone) return;
+  if (!ontology.entities.length && !ontology.relationships.length) return;
+
+  try {
+    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+    const res = await fetch(`${url}/rest/v1/rpc/upsert_ontology`, {
+      method: 'POST',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        p_tenant_phone: cleanPhone,
+        p_entities: ontology.entities,
+        p_relationships: ontology.relationships,
+      }),
+    });
+    if (!res.ok) {
+      console.warn('[onboarding] saveOntology failed:', res.status, await res.text());
+    } else {
+      const result = await res.json();
+      console.log(`[onboarding-ontology] wrote entities=${result?.[0]?.entities_written ?? '?'} rels=${result?.[0]?.relationships_written ?? '?'}`);
+    }
+  } catch (err) {
+    console.warn('[onboarding] saveOntology error:', err);
+  }
+}
+
 async function saveDeploymentSpec(
   tenantPhone: string,
   spec: AxisDeploymentSpec,
@@ -316,15 +357,22 @@ export async function POST(request: Request) {
     let spec: AxisDeploymentSpec | null = null;
     let preview: ReturnType<typeof generatePreview> | null = null;
     let specError: string | null = null;
+    let ontologyCounts: { entities: number; relationships: number } | null = null;
     if (structured?.businessType || structured?.businessName) {
       try {
         const onboardingData = structuredToOnboardingData(structured, collectedData ?? {});
         spec = generateDeploymentSpec(onboardingData);
         preview = generatePreview(spec);
-        // Persist if the conversation has a phone we can key on (caller sets
-        // collectedData.contactPhone or stashes the WhatsApp number client-side).
         const phone = (collectedData as any)?.contactPhone || (body as any)?.phoneNumber;
         if (phone) await saveDeploymentSpec(phone, spec);
+
+        // Story 1.10 — extract + persist ontology alongside the spec.
+        const ontology = extractOntology(structured, spec);
+        ontologyCounts = {
+          entities: ontology.entities.length,
+          relationships: ontology.relationships.length,
+        };
+        if (phone) await saveOntology(phone, ontology);
       } catch (err) {
         specError = err instanceof Error ? err.message : String(err);
         console.log('[onboarding-spec] not yet generatable:', specError);
@@ -336,6 +384,7 @@ export async function POST(request: Request) {
       messageCount: validatedMessages.length,
       phase: structured.phase ?? 'unknown',
       specGenerated: spec !== null,
+      ontology: ontologyCounts,
       tokens: { in: total, cached, out: mainResult.usage.output_tokens, cacheHitPct },
     }));
 
@@ -345,6 +394,7 @@ export async function POST(request: Request) {
       spec,
       preview,
       specError,
+      ontology: ontologyCounts,
       usage: {
         input: total,
         output: mainResult.usage.output_tokens,
