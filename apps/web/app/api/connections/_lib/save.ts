@@ -27,10 +27,16 @@ export interface ConnectionInput {
   metadata?: Record<string, unknown>;
 }
 
-export async function saveConnection(conn: ConnectionInput): Promise<boolean> {
+export interface SaveResult {
+  ok: boolean;
+  error?: string;
+}
+
+export async function saveConnection(conn: ConnectionInput): Promise<SaveResult> {
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    console.warn('[connections] Supabase not configured');
-    return false;
+    const msg = 'Supabase URL or service role key not set in env';
+    console.warn(`[connections] ${msg}`);
+    return { ok: false, error: msg };
   }
   const encrypted = {
     ...conn,
@@ -50,9 +56,11 @@ export async function saveConnection(conn: ConnectionInput): Promise<boolean> {
     body: JSON.stringify(encrypted),
   });
   if (!res.ok) {
-    console.error('[connections] Save failed:', res.status, await res.text());
-    return false;
+    const body = await res.text();
+    const msg = `Supabase ${res.status}: ${body.slice(0, 300)}`;
+    console.error(`[connections] Save failed: ${msg}`);
+    return { ok: false, error: msg };
   }
   console.log(`[connections] Saved ${conn.provider}/${conn.service} for ${conn.phone_number}`);
-  return true;
+  return { ok: true };
 }

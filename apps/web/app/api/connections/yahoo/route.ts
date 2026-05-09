@@ -49,7 +49,7 @@ export async function POST(request: Request) {
     }
 
     const cleanPhone = phone.replace(/[\s\-+()]/g, '');
-    await saveConnection({
+    const saved = await saveConnection({
       phone_number: cleanPhone,
       provider: 'yahoo',
       service: 'email',
@@ -58,6 +58,12 @@ export async function POST(request: Request) {
       access_token: cleanPassword,
       metadata: { imap_host: YAHOO_IMAP_HOST, imap_port: YAHOO_IMAP_PORT, imap_secure: true },
     });
+    if (!saved.ok) {
+      return Response.json(
+        { error: `IMAP login worked but the database write failed. ${saved.error ?? ''}`.trim() },
+        { status: 500 },
+      );
+    }
     return Response.json({ success: true, accountEmail: email });
   } catch (err) {
     console.error('[connections/yahoo]', err);

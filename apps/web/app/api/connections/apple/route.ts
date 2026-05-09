@@ -49,7 +49,7 @@ export async function POST(request: Request) {
     }
 
     const cleanPhone = phone.replace(/[\s\-+()]/g, '');
-    await saveConnection({
+    const saved = await saveConnection({
       phone_number: cleanPhone,
       provider: 'apple',
       service: 'calendar',
@@ -58,6 +58,12 @@ export async function POST(request: Request) {
       access_token: cleanPassword,
       metadata: { caldav_url: CALDAV_URL },
     });
+    if (!saved.ok) {
+      return Response.json(
+        { error: `CalDAV login worked but the database write failed. ${saved.error ?? ''}`.trim() },
+        { status: 500 },
+      );
+    }
     return Response.json({ success: true, accountEmail: email });
   } catch (err) {
     console.error('[connections/apple]', err);
