@@ -98,6 +98,29 @@ export async function GET(request: Request) {
       });
     }
 
+    // Recent WhatsApp turns — surface under the personal-assistant slot.
+    // conversation_history alternates user/assistant; pair them up so each
+    // entry represents one exchange.
+    const history = (ctx.conversation_history ?? []) as Array<{ role: string; content: string; timestamp?: string }>;
+    const irisName = profile.team?.[0]?.name ?? 'Sophia';
+    // Walk from newest backward, take up to 5 most recent user→assistant pairs
+    let pairs = 0;
+    for (let i = history.length - 1; i > 0 && pairs < 5; i--) {
+      const assistantTurn = history[i];
+      const userTurn = history[i - 1];
+      if (assistantTurn?.role !== 'assistant' || userTurn?.role !== 'user') continue;
+      const ts = assistantTurn.timestamp ? new Date(assistantTurn.timestamp).getTime() : Date.now();
+      const userPreview = userTurn.content.slice(0, 60).replace(/\s+/g, ' ').trim();
+      activity.push({
+        agent: irisName,
+        action: `Replied to "${userPreview}${userTurn.content.length > 60 ? '…' : ''}" via WhatsApp`,
+        time: timeAgo(new Date(ts)),
+        ts,
+      });
+      pairs++;
+      i--; // skip the user turn we just consumed
+    }
+
     // Sort by recency
     activity.sort((a, b) => b.ts - a.ts);
 
