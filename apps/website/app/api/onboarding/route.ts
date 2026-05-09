@@ -1,5 +1,13 @@
-import { getOnboardingSystemPrompt } from '@wisdomworks/shared';
-import type { OnboardingData, ConversationMessage } from '@wisdomworks/shared';
+import {
+  getOnboardingSystemPrompt,
+  generateDeploymentSpec,
+  generatePreview,
+} from '@wisdomworks/shared';
+import type {
+  OnboardingData,
+  ConversationMessage,
+  AxisDeploymentSpec,
+} from '@wisdomworks/shared';
 
 /**
  * Onboarding API — uses Anthropic API directly (not Vercel AI SDK) so we get
@@ -164,6 +172,63 @@ Return this JSON structure (include ALL fields, use null if unknown):
 
 Return ONLY the JSON object.`;
 
+/**
+ * Map the AI-extracted structured payload into the OnboardingData shape that
+ * generateDeploymentSpec expects. Only fields the spec generator actually
+ * reads are populated — everything else stays optional.
+ */
+function structuredToOnboardingData(structured: any, collected: OnboardingData = {}): OnboardingData {
+  return {
+    ...collected,
+    organizationName: structured?.businessName ?? collected.organizationName,
+    businessType: structured?.businessType ?? collected.businessType,
+    industry: structured?.businessType ?? collected.industry,
+    employeeCount: structured?.employeeCount ?? collected.employeeCount,
+    clientVolumeMonthly: structured?.clientVolumeMonthly ?? collected.clientVolumeMonthly,
+    communicationChannels: structured?.communicationChannels ?? collected.communicationChannels,
+    websiteUrl: structured?.websiteUrl ?? collected.websiteUrl,
+    painPoints: structured?.painPoints ?? collected.painPoints,
+    existingTools: structured?.detectedIntegrations ?? collected.existingTools,
+  };
+}
+
+/**
+ * Save the spec to tenant_configs.config_type='deployment_spec' if Supabase is
+ * configured. Failures are logged but never block the onboarding response —
+ * the conversation should keep flowing even if the persistence layer is down.
+ */
+async function saveDeploymentSpec(
+  tenantPhone: string,
+  spec: AxisDeploymentSpec,
+): Promise<void> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !tenantPhone) return;
+
+  try {
+    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+    const res = await fetch(`${url}/rest/v1/tenant_configs`, {
+      method: 'POST',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify({
+        tenant_phone: cleanPhone,
+        config_type: 'deployment_spec',
+        config: spec,
+      }),
+    });
+    if (!res.ok) {
+      console.warn('[onboarding] saveDeploymentSpec failed:', res.status, await res.text());
+    }
+  } catch (err) {
+    console.warn('[onboarding] saveDeploymentSpec error:', err);
+  }
+}
+
 async function extractStructuredData(
   apiKey: string,
   conversationText: string,
@@ -244,16 +309,42 @@ export async function POST(request: Request) {
     const total = mainResult.usage.input_tokens;
     const cacheHitPct = total > 0 ? Math.round((cached / total) * 100) : 0;
 
+    // Story 1.7: generate the formal AxisDeploymentSpec once we have enough
+    // signal. We try every turn — generateDeploymentSpec is pure compute
+    // (no LLM call), and Zod validation will throw early if the data is
+    // too thin. Both outcomes are non-fatal for the conversation.
+    let spec: AxisDeploymentSpec | null = null;
+    let preview: ReturnType<typeof generatePreview> | null = null;
+    let specError: string | null = null;
+    if (structured?.businessType || structured?.businessName) {
+      try {
+        const onboardingData = structuredToOnboardingData(structured, collectedData ?? {});
+        spec = generateDeploymentSpec(onboardingData);
+        preview = generatePreview(spec);
+        // Persist if the conversation has a phone we can key on (caller sets
+        // collectedData.contactPhone or stashes the WhatsApp number client-side).
+        const phone = (collectedData as any)?.contactPhone || (body as any)?.phoneNumber;
+        if (phone) await saveDeploymentSpec(phone, spec);
+      } catch (err) {
+        specError = err instanceof Error ? err.message : String(err);
+        console.log('[onboarding-spec] not yet generatable:', specError);
+      }
+    }
+
     console.log('[onboarding-log]', JSON.stringify({
       timestamp: new Date().toISOString(),
       messageCount: validatedMessages.length,
       phase: structured.phase ?? 'unknown',
+      specGenerated: spec !== null,
       tokens: { in: total, cached, out: mainResult.usage.output_tokens, cacheHitPct },
     }));
 
     return Response.json({
       text: aiText,
       structured,
+      spec,
+      preview,
+      specError,
       usage: {
         input: total,
         output: mainResult.usage.output_tokens,
