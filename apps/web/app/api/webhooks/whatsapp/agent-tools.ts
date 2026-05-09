@@ -17,6 +17,7 @@ import {
   analyzeWebsite,
   type OAuthConnection,
 } from '@wisdomworks/shared';
+import { listImapUnread } from '../../_lib/imap-runtime';
 import { saveUserContext, type UserContext } from './context-store';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -297,7 +298,12 @@ export async function executeTool(
       case 'list_unread_emails': {
         const conn = connections.find((c) => c.service === 'email');
         if (!conn) return { content: 'No email account connected.', success: false };
-        const result = await listEmails(conn, call.input.limit ?? 10);
+        // For IMAP-based providers (yahoo, generic imap), call the local apps/web
+        // runtime so imapflow can be loaded without going through the transpiled
+        // shared package (which can't bundle Node modules cleanly).
+        const result = (conn.provider === 'yahoo' || conn.provider === 'imap')
+          ? await listImapUnread(conn as any, call.input.limit ?? 10)
+          : await listEmails(conn, call.input.limit ?? 10);
         if (!result.success || !result.data) {
           return { content: `Could not fetch emails: ${result.error}`, success: false };
         }

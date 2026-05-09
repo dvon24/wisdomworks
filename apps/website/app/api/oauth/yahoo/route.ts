@@ -10,9 +10,6 @@
  */
 
 import { saveConnection } from '../_lib/store';
-// Force-include imapflow — see apps/web webhooks/whatsapp/route.ts for rationale.
-import * as _imapflow from 'imapflow';
-void _imapflow;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,8 +19,11 @@ const YAHOO_IMAP_HOST = 'imap.mail.yahoo.com';
 const YAHOO_IMAP_PORT = 993;
 
 async function verifyImapLogin(host: string, port: number, username: string, password: string): Promise<{ ok: boolean; error?: string }> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { ImapFlow } = (eval('require'))('imapflow') as any;
+  // Plain dynamic import — route lives in apps/website (not in the transpiled
+  // shared package) so serverExternalPackages externalises imapflow correctly
+  // and Vercel's NFT ships it.
+  const mod: any = await import('imapflow');
+  const ImapFlow = mod.ImapFlow ?? mod.default?.ImapFlow ?? mod.default;
   const client = new ImapFlow({
     host,
     port,

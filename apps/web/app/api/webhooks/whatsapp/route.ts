@@ -13,12 +13,6 @@
 import { NextResponse } from 'next/server';
 import { loadUserContext, type UserContext } from './context-store';
 import { generateIrisReply } from './iris-brain';
-// Force-include imapflow in this lambda — the actual loader uses eval('require')
-// to dodge Turbopack, which hides the dep from Vercel's NFT. A bare side-effect
-// import gets tree-shaken; a namespace import that's referenced at module scope
-// can't be dropped, so NFT will see it and ship the package.
-import * as _imapflow from 'imapflow';
-void _imapflow;
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;

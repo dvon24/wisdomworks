@@ -13,9 +13,6 @@
 
 import { NextResponse } from 'next/server';
 import { listEmails, decryptToken, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
-// Force-include imapflow — see whatsapp/route.ts for rationale.
-import * as _imapflow from 'imapflow';
-void _imapflow;
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;

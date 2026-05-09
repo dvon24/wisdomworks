@@ -10,7 +10,6 @@ import * as gmail from './gmail';
 import * as gcal from './google-calendar';
 import * as ms from './microsoft';
 import * as apple from './apple-caldav';
-import * as imap from './imap';
 import type {
   EmailMessage,
   SendEmailRequest,
@@ -39,8 +38,11 @@ export async function listEmails(
   if (conn.provider === 'google') return gmail.listUnreadMessages(ctx, limit);
   if (conn.provider === 'microsoft') return ms.listUnreadMessages(ctx, limit);
   if (conn.provider === 'yahoo' || conn.provider === 'imap') {
-    if (!conn.account_email) return { success: false, error: 'IMAP connection missing account email' };
-    return imap.listUnreadMessages({ ...ctx, username: conn.account_email } as any, limit);
+    // IMAP runtime lives in apps/web (apps/web/app/api/_lib/imap-runtime.ts).
+    // Reason: imapflow uses Node-only modules that Turbopack can't bundle out
+    // of the transpiled shared package. Callers should detect IMAP providers
+    // and route to the local runtime directly instead of going through here.
+    return { success: false, error: 'IMAP listing must be invoked from the app-local runtime, not through the shared router.' };
   }
   return { success: false, error: `Email not supported for provider: ${conn.provider}` };
 }
