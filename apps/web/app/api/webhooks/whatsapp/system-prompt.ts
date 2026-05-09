@@ -28,16 +28,26 @@ export function buildSystemPrompt(user: UserContext, connections: ConnectionLite
       const account = c.account_email ? ` (${c.account_email})` : '';
       return `   - ${providerLabel} ${c.service}${account}`;
     });
+    const hasEmail = connections.some((c) => c.service === 'email');
+    const hasCalendar = connections.some((c) => c.service === 'calendar');
+    const toolMap: string[] = [];
+    if (hasEmail) toolMap.push('   → For ANY inbox/email question, USE list_unread_emails (it routes to whichever email provider is connected — Yahoo, Gmail, Outlook).');
+    if (hasCalendar) toolMap.push('   → For ANY schedule/calendar question, USE list_calendar_events (routes to Google Cal / Outlook / Apple CalDAV).');
+
     connectionsSection = `
 
 CONNECTED SERVICES (the user has authorised these — verify by USING them):
 ${lines.join('\n')}
 
-When the user asks about email, inbox, calendar, or schedule:
-1. The matching tool IS the verification step — call it (list_unread_emails / list_calendar_events / etc).
-2. If the tool returns data, the connection is live. Confirm to the user with the actual data.
-3. If the tool returns an error (login failed, expired token, etc), tell the user the exact failure and suggest reconnecting via the Connections tab.
-4. NEVER say "I'm not connected to X" without first calling the tool to check. The list above is the source of truth for what was authorised; the tool result is the source of truth for what's working RIGHT NOW.`;
+WHICH TOOL TO CALL:
+${toolMap.join('\n')}
+
+VERIFICATION RULES:
+1. The tool call IS the verification — call it first.
+2. If the tool returns data → connection is live. Reply with the actual data.
+3. If the tool returns an error → tell the user the exact failure and suggest reconnecting in the Command Deck's Connections tab.
+4. NEVER say "I'm not connected to X" without calling the tool first. The list above is the source of truth for what was authorised; the tool result is the source of truth for what's working right now.
+5. If the user names a specific provider ("check my Yahoo inbox"), the tool will route to that provider automatically — you don't need a separate "yahoo" tool. list_unread_emails IS your Yahoo tool when Yahoo is what's connected.`;
   } else {
     connectionsSection = `
 

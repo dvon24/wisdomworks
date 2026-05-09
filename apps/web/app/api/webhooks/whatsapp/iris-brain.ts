@@ -70,6 +70,7 @@ export async function generateIrisReply(
   });
 
   const connections = await loadConnectionsForPhone(user.phoneNumber);
+  console.log(`[iris-${surface}] Loaded ${connections.length} connection(s) for ${user.phoneNumber}: ${connections.map((c) => `${c.provider}/${c.service}`).join(', ') || 'none'}`);
   const tools = buildToolList(connections);
   const messages: any[] = buildContextMessages(user);
   const systemPrompt = buildSystemPrompt(user, connections);
