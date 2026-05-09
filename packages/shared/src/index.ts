@@ -100,6 +100,10 @@ export {
   extractOntology,
   deriveAgentConfigs,
   planProvisioning,
+  runAxisDiscovery,
+  discoverIntegrations,
+  recommendChannelsForRoles,
+  documentOrganization,
 } from './onboarding';
 export type {
   OnboardingState,
@@ -115,6 +119,7 @@ export type {
   AgentTier,
   InstancePayload,
   SignalConnection,
+  DiscoveryResult,
 } from './onboarding';
 
 // Agent Operating Protocol

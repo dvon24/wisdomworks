@@ -24,3 +24,11 @@ export type { DerivedAgentConfig, AgentTier } from './agent-deriver';
 
 export { planProvisioning } from './agent-provisioner';
 export type { InstancePayload, SignalConnection } from './agent-provisioner';
+
+export {
+  runAxisDiscovery,
+  discoverIntegrations,
+  recommendChannelsForRoles,
+  documentOrganization,
+} from './axis-discovery';
+export type { DiscoveryResult } from './axis-discovery';

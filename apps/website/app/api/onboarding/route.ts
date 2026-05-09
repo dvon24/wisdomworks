@@ -5,6 +5,7 @@ import {
   extractOntology,
   deriveAgentConfigs,
   planProvisioning,
+  runAxisDiscovery,
 } from '@wisdomworks/shared';
 import type {
   OnboardingData,
@@ -13,6 +14,7 @@ import type {
   ExtractedOntology,
   DerivedAgentConfig,
   InstancePayload,
+  DiscoveryResult,
 } from '@wisdomworks/shared';
 
 /**
@@ -203,6 +205,28 @@ function structuredToOnboardingData(structured: any, collected: OnboardingData =
  * configured. Failures are logged but never block the onboarding response —
  * the conversation should keep flowing even if the persistence layer is down.
  */
+/**
+ * Story 1.13 — fetch the customer's actual oauth_connections so Axis
+ * discovery can ground the integrations array in real authorisations.
+ */
+async function fetchConnections(tenantPhone: string): Promise<Array<{ provider: string; service: string; account_email?: string; status?: string }>> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !tenantPhone) return [];
+  try {
+    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+    const res = await fetch(
+      `${url}/rest/v1/oauth_connections?phone_number=eq.${cleanPhone}&status=eq.active&select=provider,service,account_email,status`,
+      { headers: { apikey: key, Authorization: `Bearer ${key}` } },
+    );
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (err) {
+    console.warn('[onboarding] fetchConnections error:', err);
+    return [];
+  }
+}
+
 /**
  * Story 1.10 — write entities + relationships atomically via the
  * upsert_ontology Postgres function. All-or-nothing per FR-NFR36.
@@ -476,6 +500,7 @@ export async function POST(request: Request) {
     let specError: string | null = null;
     let ontologyCounts: { entities: number; relationships: number } | null = null;
     let agentConfigCount: number | null = null;
+    let discovery: DiscoveryResult | null = null;
     if (structured?.businessType || structured?.businessName) {
       try {
         const onboardingData = structuredToOnboardingData(structured, collectedData ?? {});
@@ -508,6 +533,31 @@ export async function POST(request: Request) {
           await provisionAgents(phone, instances);
           await markTenantActive(phone);
         }
+
+        // Story 1.13 — Axis discovery: enrich integrations from real
+        // oauth_connections, recommend per-role channels, write a
+        // documentation entity. Runs whenever a phone is available so the
+        // doc keeps refreshing as the conversation evolves; cheap, no LLM.
+        if (phone) {
+          const realConnections = await fetchConnections(phone);
+          discovery = runAxisDiscovery(spec, structured, realConnections, derivedAgents);
+          // Merge enriched integrations back into the spec + persist
+          spec.integrations = discovery.integrations;
+          await saveDeploymentSpec(phone, spec);
+          // Persist the documentation entity into the ontology graph
+          await saveOntology(phone, {
+            entities: [discovery.documentation],
+            relationships: spec.organization?.name
+              ? [{
+                  from_type: 'department',
+                  from_name: spec.organization.name,
+                  to_type: 'documentation',
+                  to_name: discovery.documentation.name,
+                  relationship_type: 'owns',
+                }]
+              : [],
+          });
+        }
       } catch (err) {
         specError = err instanceof Error ? err.message : String(err);
         console.log('[onboarding-spec] not yet generatable:', specError);
@@ -532,6 +582,7 @@ export async function POST(request: Request) {
       specError,
       ontology: ontologyCounts,
       agentConfigs: agentConfigCount,
+      discovery,
       usage: {
         input: total,
         output: mainResult.usage.output_tokens,

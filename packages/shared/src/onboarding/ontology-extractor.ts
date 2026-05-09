@@ -20,7 +20,9 @@ export type EntityType =
   | 'risk'
   | 'decision'
   | 'task'
-  | 'innovation';
+  | 'innovation'
+  | 'documentation'
+  | 'integration';
 
 export type RelationshipType =
   | 'reports_to'
