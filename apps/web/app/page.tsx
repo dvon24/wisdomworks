@@ -66,7 +66,7 @@ const INITIAL_MESSAGES = [
 ];
 
 type SidebarMode = 'briefing' | 'approvals' | 'activity' | 'agent';
-type ViewMode = 'overview' | 'team' | 'activity';
+type ViewMode = 'overview' | 'team' | 'activity' | 'connections';
 
 export default function CommandDeck() {
   const [team, setTeam] = useState<HierarchyAgent[]>(DEMO_TEAM);
@@ -192,6 +192,43 @@ export default function CommandDeck() {
   const totalPrice = calculateTotalPrice(team);
 
   const [chatBusy, setChatBusy] = useState(false);
+  // Connection form state
+  const [connForm, setConnForm] = useState<null | 'yahoo' | 'apple'>(null);
+  const [connEmail, setConnEmail] = useState('');
+  const [connPassword, setConnPassword] = useState('');
+  const [connError, setConnError] = useState('');
+  const [connBusy, setConnBusy] = useState(false);
+
+  const submitConnection = async (provider: 'yahoo' | 'apple') => {
+    if (!phoneNumber) {
+      setConnError('No phone identified — open the deck via the website button or add ?phone=... to the URL.');
+      return;
+    }
+    setConnError('');
+    setConnBusy(true);
+    try {
+      const res = await fetch(`/api/connections/${provider}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: phoneNumber, email: connEmail, appPassword: connPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setConnError(data.error || 'Connection failed');
+        return;
+      }
+      // Re-fetch dashboard so the new connection appears in tenantData.connections
+      const refreshed = await fetch(`/api/dashboard?phone=${encodeURIComponent(phoneNumber)}`).then((r) => r.json());
+      if (!refreshed.error) setTenantData(refreshed);
+      setConnForm(null);
+      setConnEmail('');
+      setConnPassword('');
+    } catch (err) {
+      setConnError(String(err));
+    } finally {
+      setConnBusy(false);
+    }
+  };
 
   const sendMessage = async () => {
     if (!chatInput.trim() || chatBusy) return;
@@ -329,7 +366,7 @@ export default function CommandDeck() {
 
         {/* View tabs */}
         <nav style={{ display: 'flex', gap: 4, marginLeft: 32 }}>
-          {(['overview', 'team', 'activity'] as ViewMode[]).map((v) => (
+          {(['overview', 'team', 'activity', 'connections'] as ViewMode[]).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -506,6 +543,131 @@ export default function CommandDeck() {
                   <div style={{ fontSize: 14, color: 'var(--text-dim)' }}>No activity yet</div>
                   <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>
                     Once your agents start working — sending emails, drafting replies, syncing calendar — you'll see it here.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {view === 'connections' && (
+            <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540, display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div>
+                <div className="eyebrow" style={{ marginBottom: 4 }}>Connected services</div>
+                <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
+                  Add or reconnect a service. Your agents pick up new connections immediately — no need to revisit onboarding.
+                </div>
+              </div>
+
+              {/* Already-connected list */}
+              {tenantData?.connections?.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {tenantData.connections.map((c: any, i: number) => (
+                    <div key={i} className="glass" style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <span style={{ fontSize: 18 }}>✓</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>
+                          {c.provider === 'google' ? 'Google' : c.provider === 'microsoft' ? 'Microsoft' : c.provider === 'apple' ? 'Apple iCloud' : c.provider === 'yahoo' ? 'Yahoo Mail' : c.provider}
+                          <span style={{ color: 'var(--text-faint)', fontWeight: 400 }}> · {c.service}</span>
+                        </div>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{c.accountEmail}</div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (c.provider === 'yahoo' || c.provider === 'apple') {
+                            setConnForm(c.provider);
+                            setConnEmail(c.accountEmail || '');
+                            setConnPassword('');
+                            setConnError('');
+                          }
+                        }}
+                        className="btn ghost"
+                        style={{ fontSize: 11 }}
+                      >
+                        Reconnect
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Add new — provider grid */}
+              <div className="eyebrow">Add a service</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                <button
+                  onClick={() => { setConnForm('yahoo'); setConnEmail(''); setConnPassword(''); setConnError(''); }}
+                  className="glass"
+                  style={{ padding: 14, textAlign: 'left', cursor: 'pointer', border: '1px solid var(--glass-border)' }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>🟣 Yahoo Mail</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>IMAP read access via app password.</div>
+                </button>
+                <button
+                  onClick={() => { setConnForm('apple'); setConnEmail(''); setConnPassword(''); setConnError(''); }}
+                  className="glass"
+                  style={{ padding: 14, textAlign: 'left', cursor: 'pointer', border: '1px solid var(--glass-border)' }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>⚫ Apple iCloud</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>CalDAV calendar via app password.</div>
+                </button>
+                <a
+                  href={phoneNumber ? `http://localhost:3001/api/oauth/google?phone=${encodeURIComponent(phoneNumber)}` : '#'}
+                  className="glass"
+                  style={{ padding: 14, textAlign: 'left', textDecoration: 'none', color: 'inherit', border: '1px solid var(--glass-border)', display: 'block' }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>🟦 Google</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Gmail + Calendar via OAuth (one click).</div>
+                </a>
+                <a
+                  href={phoneNumber ? `http://localhost:3001/api/oauth/microsoft?phone=${encodeURIComponent(phoneNumber)}` : '#'}
+                  className="glass"
+                  style={{ padding: 14, textAlign: 'left', textDecoration: 'none', color: 'inherit', border: '1px solid var(--glass-border)', display: 'block' }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>🟧 Microsoft</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Outlook + Calendar via OAuth.</div>
+                </a>
+              </div>
+
+              {/* Inline form */}
+              {connForm && (
+                <div className="glass" style={{ padding: 16, marginTop: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                    {connForm === 'yahoo' ? 'Connect Yahoo Mail' : 'Connect Apple iCloud'}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginBottom: 12, lineHeight: 1.5 }}>
+                    {connForm === 'yahoo' ? (
+                      <>
+                        1. Open <a href="https://login.yahoo.com/account/security" target="_blank" rel="noopener" style={{ color: 'var(--accent-deep)', textDecoration: 'underline' }}>login.yahoo.com → Account Security</a><br/>
+                        2. Generate app password → name it "WisdomWorks"<br/>
+                        3. Paste the 16-character password below
+                      </>
+                    ) : (
+                      <>
+                        1. Open <a href="https://appleid.apple.com" target="_blank" rel="noopener" style={{ color: 'var(--accent-deep)', textDecoration: 'underline' }}>appleid.apple.com</a> → Account Security<br/>
+                        2. Generate app-specific password → name it "WisdomWorks"<br/>
+                        3. Paste the 16-character password (xxxx-xxxx-xxxx-xxxx)
+                      </>
+                    )}
+                  </div>
+                  <input
+                    type="email"
+                    placeholder={connForm === 'yahoo' ? 'your@yahoo.com' : 'your@icloud.com'}
+                    value={connEmail}
+                    onChange={(e) => setConnEmail(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--glass-border-strong)', background: 'rgba(255,255,255,0.65)', fontSize: 13, marginBottom: 8, fontFamily: 'inherit' }}
+                  />
+                  <input
+                    type="password"
+                    placeholder={connForm === 'yahoo' ? 'xxxxxxxxxxxxxxxx' : 'xxxx-xxxx-xxxx-xxxx'}
+                    value={connPassword}
+                    onChange={(e) => setConnPassword(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--glass-border-strong)', background: 'rgba(255,255,255,0.65)', fontSize: 13, fontFamily: 'monospace', marginBottom: 8 }}
+                  />
+                  {connError && <div style={{ fontSize: 11.5, color: 'var(--bad-text, #c2410c)', marginBottom: 8 }}>{connError}</div>}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => submitConnection(connForm)} disabled={connBusy} className="btn primary" style={{ flex: 1, fontSize: 12, justifyContent: 'center' }}>
+                      {connBusy ? 'Connecting…' : 'Connect'}
+                    </button>
+                    <button onClick={() => { setConnForm(null); setConnError(''); }} className="btn ghost" style={{ fontSize: 12 }}>Cancel</button>
                   </div>
                 </div>
               )}
