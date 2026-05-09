@@ -434,10 +434,16 @@ export default function CommandDeck() {
                 onSelect={(agent) => {
                   setSelectedAgent(agent);
                   setSidebar('agent');
-                  // If the agent has a sub-team, also zoom/focus into it.
-                  // Clicking again on the same agent (when already focused) zooms back out.
                   if (agent.subTeam) {
+                    // Top-level manager: toggle zoom into their sub-team
                     setFocusedSubTeam((current) => (current === agent.id ? null : agent.id));
+                  } else if (focusedSubTeam) {
+                    // Already zoomed into a sub-team — clicking a member should NOT zoom out.
+                    // Detect: is the clicked agent part of the focused sub-team's roster?
+                    const focusedManager = team.find((m) => m.id === focusedSubTeam);
+                    const isSubMember = focusedManager?.subTeam?.agents.some((s) => s.id === agent.id);
+                    if (!isSubMember) setFocusedSubTeam(null);
+                    // else: leave focus alone, just show the sub-agent in the sidebar
                   } else {
                     setFocusedSubTeam(null);
                   }
