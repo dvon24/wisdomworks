@@ -13,6 +13,8 @@
 
 import { NextResponse } from 'next/server';
 import { listEmails, decryptToken, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
+// Side-effect import so Vercel's NFT ships imapflow into this lambda.
+import 'imapflow';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;

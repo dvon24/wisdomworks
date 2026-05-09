@@ -13,6 +13,10 @@
 import { NextResponse } from 'next/server';
 import { loadUserContext, type UserContext } from './context-store';
 import { generateIrisReply } from './iris-brain';
+// Side-effect import so Vercel's NFT ships imapflow into this lambda — Sophia
+// reaches IMAP transitively when an inbox question hits the brain. The actual
+// loader uses eval('require') to dodge Turbopack, which hides the dep from NFT.
+import 'imapflow';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;

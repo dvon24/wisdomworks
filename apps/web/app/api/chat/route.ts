@@ -13,6 +13,8 @@
 import { NextResponse } from 'next/server';
 import { loadUserContext } from '../webhooks/whatsapp/context-store';
 import { generateIrisReply } from '../webhooks/whatsapp/iris-brain';
+// Side-effect import so Vercel's NFT ships imapflow into this lambda.
+import 'imapflow';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
