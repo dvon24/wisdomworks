@@ -88,6 +88,47 @@ export default function CommandDeck() {
   // Map of id → rich AI metadata (description, channels, tools, strengths, limitations, emoji)
   const [teamMeta, setTeamMeta] = useState<Record<string, any>>({});
 
+  // Convert raw profile.team[] from /api/dashboard or /api/chat into hierarchy + meta
+  function convertTeam(rawTeam: any[]): { team: HierarchyAgent[]; meta: Record<string, any> } {
+    const meta: Record<string, any> = {};
+    const team: HierarchyAgent[] = rawTeam.map((a: any, i: number) => {
+      const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
+      meta[id] = {
+        emoji: a.emoji,
+        description: a.description,
+        channels: a.channels ?? [],
+        tools: a.tools ?? [],
+        strengths: a.strengths ?? [],
+        limitations: a.limitations ?? [],
+        aiModel: a.aiModel,
+      };
+      if (i === 0) meta['iris'] = meta[id];
+      const model = (a.aiModel || a.tier || '').toString().toLowerCase();
+      const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
+      const base: HierarchyAgent = i === 0
+        ? { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus' as const, status: 'ok', required: true }
+        : { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
+
+      const subAgents = a.subTeam?.agents ?? [];
+      const subCount = a.subTeam?.count ?? subAgents.length;
+      if (subCount > 0) {
+        base.subTeam = {
+          count: subCount,
+          label: a.subTeam?.label || `${a.name}'s team`,
+          agents: subAgents.map((sub: any, j: number) => ({
+            id: sub.id || `${id}-sub-${j}`,
+            label: sub.name || `Specialist ${j + 1}`,
+            role: sub.role || 'Specialist',
+            tier: ((sub.tier || sub.aiModel || '').toString().toLowerCase().includes('opus') ? 'Opus' :
+                  (sub.tier || sub.aiModel || '').toString().toLowerCase().includes('haiku') ? 'Haiku' : 'Sonnet') as any,
+          })),
+        };
+      }
+      return base;
+    });
+    return { team, meta };
+  }
+
   // Load tenant data on mount — phone from URL param or localStorage
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -112,42 +153,8 @@ export default function CommandDeck() {
 
         // Convert saved AI team into HierarchyAgent shape and capture rich metadata
         if (data.team && Array.isArray(data.team) && data.team.length > 0) {
-          const meta: Record<string, any> = {};
-          const realTeam: HierarchyAgent[] = data.team.map((a: any, i: number) => {
-            const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
-            meta[id] = {
-              emoji: a.emoji,
-              description: a.description,
-              channels: a.channels ?? [],
-              tools: a.tools ?? [],
-              strengths: a.strengths ?? [],
-              limitations: a.limitations ?? [],
-              aiModel: a.aiModel,
-            };
-            // First agent maps to "iris" id (preserves the assistant slot in hierarchy)
-            if (i === 0) meta['iris'] = meta[id];
-            const model = (a.aiModel || a.tier || '').toString().toLowerCase();
-            const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
-            const base: HierarchyAgent = i === 0
-              ? { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus' as const, status: 'ok', required: true }
-              : { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
-
-            if (a.subTeam && a.subTeam.count > 0) {
-              base.subTeam = {
-                count: a.subTeam.count,
-                label: a.subTeam.label || 'Specialists',
-                agents: (a.subTeam.agents ?? []).map((sub: any, j: number) => ({
-                  id: `${id}-sub-${j}`,
-                  label: sub.name || `Specialist ${j + 1}`,
-                  role: sub.role || 'Specialist',
-                  tier: ((sub.tier || sub.aiModel || '').toString().toLowerCase().includes('opus') ? 'Opus' :
-                        (sub.tier || sub.aiModel || '').toString().toLowerCase().includes('haiku') ? 'Haiku' : 'Sonnet') as any,
-                })),
-              };
-            }
-            return base;
-          });
-          setTeam(realTeam);
+          const { team, meta } = convertTeam(data.team);
+          setTeam(team);
           setTeamMeta(meta);
         }
 
@@ -249,25 +256,7 @@ export default function CommandDeck() {
       setMessages((m) => [...m, { from: 'iris' as const, text: data.reply || '...' }]);
       // If the brain mutated the team, re-render the hierarchy from the fresh team
       if (Array.isArray(data.team) && data.team.length > 0) {
-        const meta: Record<string, any> = {};
-        const fresh: HierarchyAgent[] = data.team.map((a: any, i: number) => {
-          const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
-          meta[id] = {
-            emoji: a.emoji,
-            description: a.description,
-            channels: a.channels ?? [],
-            tools: a.tools ?? [],
-            strengths: a.strengths ?? [],
-            limitations: a.limitations ?? [],
-            aiModel: a.aiModel,
-          };
-          if (i === 0) meta['iris'] = meta[id];
-          const model = (a.aiModel || a.tier || '').toString().toLowerCase();
-          const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
-          return i === 0
-            ? { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus' as const, status: 'ok' as const, required: true }
-            : { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
-        });
+        const { team: fresh, meta } = convertTeam(data.team);
         setTeam(fresh);
         setTeamMeta(meta);
       }
