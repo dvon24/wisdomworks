@@ -18,3 +18,6 @@ export type {
   EntityType,
   RelationshipType,
 } from './ontology-extractor';
+
+export { deriveAgentConfigs } from './agent-deriver';
+export type { DerivedAgentConfig, AgentTier } from './agent-deriver';

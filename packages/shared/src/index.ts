@@ -98,6 +98,7 @@ export {
   generateDeploymentSpec,
   generatePreview,
   extractOntology,
+  deriveAgentConfigs,
 } from './onboarding';
 export type {
   OnboardingState,
@@ -109,6 +110,8 @@ export type {
   ExtractedOntology,
   EntityType,
   RelationshipType,
+  DerivedAgentConfig,
+  AgentTier,
 } from './onboarding';
 
 // Agent Operating Protocol

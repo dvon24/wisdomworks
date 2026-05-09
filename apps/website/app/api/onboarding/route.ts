@@ -3,12 +3,14 @@ import {
   generateDeploymentSpec,
   generatePreview,
   extractOntology,
+  deriveAgentConfigs,
 } from '@wisdomworks/shared';
 import type {
   OnboardingData,
   ConversationMessage,
   AxisDeploymentSpec,
   ExtractedOntology,
+  DerivedAgentConfig,
 } from '@wisdomworks/shared';
 
 /**
@@ -238,6 +240,44 @@ async function saveOntology(
   }
 }
 
+/**
+ * Story 1.11 — write derived agent_configs atomically via the
+ * upsert_agent_configs Postgres function. Looks up entity_id by name from
+ * ontology_entities so the link to the org graph is automatic.
+ */
+async function saveAgentConfigs(
+  tenantPhone: string,
+  agents: DerivedAgentConfig[],
+): Promise<void> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !tenantPhone || agents.length === 0) return;
+
+  try {
+    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+    const res = await fetch(`${url}/rest/v1/rpc/upsert_agent_configs`, {
+      method: 'POST',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        p_tenant_phone: cleanPhone,
+        p_agents: agents,
+      }),
+    });
+    if (!res.ok) {
+      console.warn('[onboarding] saveAgentConfigs failed:', res.status, await res.text());
+    } else {
+      const result = await res.json();
+      console.log(`[onboarding-agent-configs] wrote ${result?.[0]?.agents_written ?? '?'} configs`);
+    }
+  } catch (err) {
+    console.warn('[onboarding] saveAgentConfigs error:', err);
+  }
+}
+
 async function saveDeploymentSpec(
   tenantPhone: string,
   spec: AxisDeploymentSpec,
@@ -358,6 +398,7 @@ export async function POST(request: Request) {
     let preview: ReturnType<typeof generatePreview> | null = null;
     let specError: string | null = null;
     let ontologyCounts: { entities: number; relationships: number } | null = null;
+    let agentConfigCount: number | null = null;
     if (structured?.businessType || structured?.businessName) {
       try {
         const onboardingData = structuredToOnboardingData(structured, collectedData ?? {});
@@ -373,6 +414,12 @@ export async function POST(request: Request) {
           relationships: ontology.relationships.length,
         };
         if (phone) await saveOntology(phone, ontology);
+
+        // Story 1.11 — derive agent_configs from spec + persist. Run AFTER
+        // the ontology write so the upsert can resolve entity_id by name.
+        const derivedAgents = deriveAgentConfigs(spec, structured);
+        agentConfigCount = derivedAgents.length;
+        if (phone) await saveAgentConfigs(phone, derivedAgents);
       } catch (err) {
         specError = err instanceof Error ? err.message : String(err);
         console.log('[onboarding-spec] not yet generatable:', specError);
@@ -385,6 +432,7 @@ export async function POST(request: Request) {
       phase: structured.phase ?? 'unknown',
       specGenerated: spec !== null,
       ontology: ontologyCounts,
+      agentConfigs: agentConfigCount,
       tokens: { in: total, cached, out: mainResult.usage.output_tokens, cacheHitPct },
     }));
 
@@ -395,6 +443,7 @@ export async function POST(request: Request) {
       preview,
       specError,
       ontology: ontologyCounts,
+      agentConfigs: agentConfigCount,
       usage: {
         input: total,
         output: mainResult.usage.output_tokens,
