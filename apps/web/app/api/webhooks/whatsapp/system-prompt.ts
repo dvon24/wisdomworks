@@ -30,10 +30,14 @@ export function buildSystemPrompt(user: UserContext, connections: ConnectionLite
     });
     connectionsSection = `
 
-CONNECTED SERVICES (real accounts the user has authorised — DO use them):
+CONNECTED SERVICES (the user has authorised these — verify by USING them):
 ${lines.join('\n')}
 
-When the user asks about email, inbox, calendar, or schedule, ASSUME these connections are live and call the matching tool (list_unread_emails / list_calendar_events / etc). Don't say "I'm not connected to X" if X is in this list — you ARE connected. If the tool fails at runtime, then surface the failure honestly.`;
+When the user asks about email, inbox, calendar, or schedule:
+1. The matching tool IS the verification step — call it (list_unread_emails / list_calendar_events / etc).
+2. If the tool returns data, the connection is live. Confirm to the user with the actual data.
+3. If the tool returns an error (login failed, expired token, etc), tell the user the exact failure and suggest reconnecting via the Connections tab.
+4. NEVER say "I'm not connected to X" without first calling the tool to check. The list above is the source of truth for what was authorised; the tool result is the source of truth for what's working RIGHT NOW.`;
   } else {
     connectionsSection = `
 
