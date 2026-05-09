@@ -17,7 +17,7 @@ import {
   analyzeWebsite,
   type OAuthConnection,
 } from '@wisdomworks/shared';
-import { listImapUnread } from '../../_lib/imap-runtime';
+import { listImapUnread, sendImap } from '../../_lib/imap-runtime';
 import { saveUserContext, type UserContext } from './context-store';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -320,12 +320,19 @@ export async function executeTool(
       case 'send_email': {
         const conn = connections.find((c) => c.service === 'email');
         if (!conn) return { content: 'No email account connected.', success: false };
-        const result = await sendEmail(conn, {
+        const req = {
           to: call.input.to,
+          cc: call.input.cc,
+          bcc: call.input.bcc,
           subject: call.input.subject,
           body: call.input.body,
           inReplyToMessageId: call.input.inReplyToMessageId,
-        });
+        };
+        // Yahoo + generic IMAP go through SMTP via the local runtime; everything
+        // else uses the shared router (Gmail API / Microsoft Graph).
+        const result = (conn.provider === 'yahoo' || conn.provider === 'imap')
+          ? await sendImap(conn as any, req)
+          : await sendEmail(conn, req);
         if (!result.success) {
           return { content: `Send failed: ${result.error}`, success: false };
         }

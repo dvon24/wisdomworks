@@ -17,10 +17,18 @@ interface ImapConnection {
   service: string;
   account_email?: string;
   access_token: string;
-  metadata?: { imap_host?: string; imap_port?: number; imap_secure?: boolean };
+  metadata?: {
+    imap_host?: string;
+    imap_port?: number;
+    imap_secure?: boolean;
+    smtp_host?: string;
+    smtp_port?: number;
+  };
 }
 
 const YAHOO_HOST = 'imap.mail.yahoo.com';
+const YAHOO_SMTP_HOST = 'smtp.mail.yahoo.com';
+const YAHOO_SMTP_PORT = 465;
 
 export async function listImapUnread(conn: ImapConnection, limit = 10): Promise<{ success: boolean; data?: EmailMessage[]; error?: string }> {
   if (!conn.account_email) return { success: false, error: 'IMAP connection missing account email' };
@@ -79,5 +87,55 @@ export async function listImapUnread(conn: ImapConnection, limit = 10): Promise<
     return { success: false, error: `IMAP error: ${err?.message ?? err}` };
   } finally {
     try { await client.logout(); } catch {}
+  }
+}
+
+interface SendRequest {
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  body: string;
+  inReplyToMessageId?: string;
+}
+
+/**
+ * Send an email via SMTP. Uses the user's stored app password (same one as IMAP).
+ * Yahoo SMTP: smtp.mail.yahoo.com:465 (SSL).
+ */
+export async function sendImap(conn: ImapConnection, req: SendRequest): Promise<{ success: boolean; data?: { messageId: string }; error?: string }> {
+  if (!conn.account_email) return { success: false, error: 'IMAP connection missing account email' };
+  if (!req.to?.length) return { success: false, error: 'No recipients' };
+
+  let nodemailer: any;
+  try {
+    nodemailer = (await import('nodemailer')).default ?? (await import('nodemailer'));
+  } catch (err: any) {
+    return { success: false, error: `nodemailer load failed: ${err?.message ?? err}` };
+  }
+
+  const host = conn.metadata?.smtp_host || YAHOO_SMTP_HOST;
+  const port = conn.metadata?.smtp_port || YAHOO_SMTP_PORT;
+  const secure = port === 465;
+
+  const transporter = nodemailer.createTransport({
+    host, port, secure,
+    auth: { user: conn.account_email, pass: conn.access_token },
+  });
+
+  try {
+    const info = await transporter.sendMail({
+      from: conn.account_email,
+      to: req.to.join(', '),
+      cc: req.cc?.join(', '),
+      bcc: req.bcc?.join(', '),
+      subject: req.subject,
+      text: req.body,
+      inReplyTo: req.inReplyToMessageId,
+      references: req.inReplyToMessageId,
+    });
+    return { success: true, data: { messageId: info.messageId } };
+  } catch (err: any) {
+    return { success: false, error: `SMTP error: ${err?.message ?? err}` };
   }
 }
