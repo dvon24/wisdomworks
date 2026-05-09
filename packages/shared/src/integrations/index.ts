@@ -28,6 +28,10 @@ export * as gmail from './gmail';
 export * as googleCalendar from './google-calendar';
 export * as microsoft from './microsoft';
 export * as apple from './apple-caldav';
+// IMAP module is server-only (Node net/dns/tls). Don't re-export the
+// namespace here — that pulls imapflow into client bundles. The router
+// imports it directly when needed; routes that need verifyImapLogin
+// inline a small helper.
 
 // Website analyzer (read-only crawler + platform detection)
 export { analyzeWebsite } from './website';

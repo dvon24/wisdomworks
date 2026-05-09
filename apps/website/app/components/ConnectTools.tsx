@@ -21,6 +21,7 @@ type Provider = 'google' | 'microsoft' | 'apple';
 
 interface ConnectionState {
   emailCalendar: { provider?: Provider; email?: string; status: 'disconnected' | 'connecting' | 'connected' };
+  yahoo: { email?: string; status: 'disconnected' | 'connecting' | 'connected' };
   instagram: { username?: string; status: 'disconnected' | 'connecting' | 'connected' };
 }
 
@@ -29,6 +30,7 @@ export default function ConnectTools({ onComplete, businessName, businessType }:
   const [phoneSaved, setPhoneSaved] = useState(false);
   const [state, setState] = useState<ConnectionState>({
     emailCalendar: { status: 'disconnected' },
+    yahoo: { status: 'disconnected' },
     instagram: { status: 'disconnected' },
   });
   const [showAppleForm, setShowAppleForm] = useState(false);
@@ -39,6 +41,10 @@ export default function ConnectTools({ onComplete, businessName, businessType }:
   const [websitePlatform, setWebsitePlatform] = useState<string | null>(null);
   const [applePassword, setApplePassword] = useState('');
   const [appleError, setAppleError] = useState('');
+  const [showYahooForm, setShowYahooForm] = useState(false);
+  const [yahooEmail, setYahooEmail] = useState('');
+  const [yahooPassword, setYahooPassword] = useState('');
+  const [yahooError, setYahooError] = useState('');
 
   // Check URL for OAuth callback success/error
   useEffect(() => {
@@ -109,6 +115,29 @@ export default function ConnectTools({ onComplete, businessName, businessType }:
       }
     } catch (e) {
       setAppleError(String(e));
+    }
+  };
+
+  const submitYahoo = async () => {
+    setYahooError('');
+    try {
+      const res = await fetch('/api/oauth/yahoo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phoneNumber, yahooEmail, appPassword: yahooPassword }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setState((s) => ({
+          ...s,
+          yahoo: { email: yahooEmail, status: 'connected' },
+        }));
+        setShowYahooForm(false);
+      } else {
+        setYahooError(data.error ?? 'Connection failed');
+      }
+    } catch (e) {
+      setYahooError(String(e));
     }
   };
 
@@ -245,6 +274,73 @@ export default function ConnectTools({ onComplete, businessName, businessType }:
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={submitApple} className="btn primary" style={{ flex: 1, fontSize: 12, justifyContent: 'center' }}>Connect</button>
             <button onClick={() => { setShowAppleForm(false); setAppleError(''); }} className="btn ghost" style={{ fontSize: 12 }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Yahoo Mail (separate from Email+Calendar — Yahoo is email-only via IMAP) */}
+      <div className="eyebrow" style={{ marginBottom: 10, paddingLeft: 4 }}>Yahoo Mail (optional)</div>
+      <div
+        style={{
+          padding: '1rem',
+          borderRadius: 12,
+          marginBottom: '1rem',
+          background: state.yahoo.status === 'connected' ? 'rgba(44, 176, 112, 0.08)' : 'rgba(255,255,255,0.5)',
+          border: `1px solid ${state.yahoo.status === 'connected' ? 'rgba(44, 176, 112, 0.3)' : 'var(--glass-border)'}`,
+        }}
+      >
+        {state.yahoo.status === 'connected' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: '1.25rem' }}>✓</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Yahoo Mail connected</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{state.yahoo.email}</div>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 12 }}>
+              Connect a Yahoo inbox so your assistant can read mail and draft replies. Uses an app password — no main-password sharing.
+            </div>
+            <button
+              onClick={() => phoneSaved && setShowYahooForm(true)}
+              disabled={!phoneSaved}
+              className="btn"
+              style={{ fontSize: 12 }}
+            >
+              <span style={{ marginRight: 6 }}>🟣</span> Connect Yahoo
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Yahoo form (modal) */}
+      {showYahooForm && (
+        <div className="glass" style={{ padding: '1.25rem', borderRadius: 12, marginBottom: '1rem' }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Connect Yahoo Mail</div>
+          <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginBottom: 12, lineHeight: 1.5 }}>
+            1. Go to <a href="https://login.yahoo.com/account/security" target="_blank" rel="noopener" style={{ color: 'var(--accent-deep)', textDecoration: 'underline' }}>login.yahoo.com → Account Security</a><br/>
+            2. Click <strong>Generate app password</strong> → name it "WisdomWorks"<br/>
+            3. Paste the 16-character password below (Yahoo shows it once)
+          </div>
+          <input
+            type="email"
+            placeholder="your@yahoo.com"
+            value={yahooEmail}
+            onChange={(e) => setYahooEmail(e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--glass-border-strong)', background: 'rgba(255,255,255,0.65)', fontSize: 13, marginBottom: 8, fontFamily: 'inherit' }}
+          />
+          <input
+            type="password"
+            placeholder="xxxxxxxxxxxxxxxx"
+            value={yahooPassword}
+            onChange={(e) => setYahooPassword(e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--glass-border-strong)', background: 'rgba(255,255,255,0.65)', fontSize: 13, fontFamily: 'monospace', marginBottom: 8 }}
+          />
+          {yahooError && <div style={{ fontSize: 11.5, color: 'var(--bad-text)', marginBottom: 8 }}>{yahooError}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={submitYahoo} className="btn primary" style={{ flex: 1, fontSize: 12, justifyContent: 'center' }}>Connect</button>
+            <button onClick={() => { setShowYahooForm(false); setYahooError(''); }} className="btn ghost" style={{ fontSize: 12 }}>Cancel</button>
           </div>
         </div>
       )}

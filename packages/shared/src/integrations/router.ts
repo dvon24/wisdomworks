@@ -10,6 +10,7 @@ import * as gmail from './gmail';
 import * as gcal from './google-calendar';
 import * as ms from './microsoft';
 import * as apple from './apple-caldav';
+import * as imap from './imap';
 import type {
   EmailMessage,
   SendEmailRequest,
@@ -20,7 +21,7 @@ import type {
 
 /** Connection shape — matches oauth_connections table */
 export interface OAuthConnection {
-  provider: 'google' | 'microsoft' | 'meta' | 'apple';
+  provider: 'google' | 'microsoft' | 'meta' | 'apple' | 'yahoo' | 'imap';
   service: 'email' | 'calendar' | 'instagram';
   account_email?: string;
   access_token: string;
@@ -37,6 +38,10 @@ export async function listEmails(
   const ctx = { accessToken: conn.access_token, metadata: conn.metadata };
   if (conn.provider === 'google') return gmail.listUnreadMessages(ctx, limit);
   if (conn.provider === 'microsoft') return ms.listUnreadMessages(ctx, limit);
+  if (conn.provider === 'yahoo' || conn.provider === 'imap') {
+    if (!conn.account_email) return { success: false, error: 'IMAP connection missing account email' };
+    return imap.listUnreadMessages({ ...ctx, username: conn.account_email } as any, limit);
+  }
   return { success: false, error: `Email not supported for provider: ${conn.provider}` };
 }
 
