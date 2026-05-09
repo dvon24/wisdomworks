@@ -198,6 +198,37 @@ export default function CommandDeck() {
   const [connPassword, setConnPassword] = useState('');
   const [connError, setConnError] = useState('');
   const [connBusy, setConnBusy] = useState(false);
+  const [connSuccess, setConnSuccess] = useState<string | null>(null);
+
+  // Find which team member owns a given service (email/calendar/instagram).
+  // Looks at each agent's channels/tools/role metadata; falls back to the personal assistant.
+  function findOwnerAgent(service: string): { name: string; role: string } | null {
+    const team = tenantData?.team ?? [];
+    if (team.length === 0) return null;
+    const svc = service.toLowerCase();
+    const match = (a: any) => {
+      const haystack = [
+        ...(a.channels ?? []),
+        ...(a.tools ?? []),
+        a.role ?? '',
+        a.description ?? '',
+      ].join(' ').toLowerCase();
+      if (svc === 'email') return haystack.includes('email') || haystack.includes('mail');
+      if (svc === 'calendar') return haystack.includes('calendar') || haystack.includes('schedul');
+      if (svc === 'instagram') return haystack.includes('instagram') || haystack.includes('social') || haystack.includes('content');
+      return false;
+    };
+    // Skip the personal assistant (index 0) when searching — they're the fallback
+    const owner = team.slice(1).find(match);
+    if (owner) return { name: owner.name, role: owner.role };
+    return { name: team[0]?.name ?? 'Sophia', role: team[0]?.role ?? 'Personal Assistant' };
+  }
+
+  const isProviderConnected = (provider: string, service?: string): boolean => {
+    return (tenantData?.connections ?? []).some(
+      (c: any) => c.provider === provider && (!service || c.service === service),
+    );
+  };
 
   const submitConnection = async (provider: 'yahoo' | 'apple') => {
     if (!phoneNumber) {
@@ -223,6 +254,9 @@ export default function CommandDeck() {
       setConnForm(null);
       setConnEmail('');
       setConnPassword('');
+      // Show a 3-second success banner so the user knows it landed
+      setConnSuccess(`${provider === 'yahoo' ? 'Yahoo Mail' : 'Apple iCloud'} connected — ${data.accountEmail}`);
+      setTimeout(() => setConnSuccess(null), 3500);
     } catch (err) {
       setConnError(String(err));
     } finally {
@@ -554,77 +588,110 @@ export default function CommandDeck() {
               <div>
                 <div className="eyebrow" style={{ marginBottom: 4 }}>Connected services</div>
                 <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
-                  Add or reconnect a service. Your agents pick up new connections immediately — no need to revisit onboarding.
+                  Each connection is owned by the agent whose role fits it. Email goes to whoever handles your inbox; calendar to whoever handles scheduling.
                 </div>
               </div>
+
+              {/* Success banner */}
+              {connSuccess && (
+                <div className="glass" style={{ padding: '10px 14px', background: 'rgba(44, 176, 112, 0.12)', border: '1px solid rgba(44, 176, 112, 0.4)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 18, color: '#15803d' }}>✓</span>
+                  <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{connSuccess}</span>
+                </div>
+              )}
 
               {/* Already-connected list */}
               {tenantData?.connections?.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {tenantData.connections.map((c: any, i: number) => (
-                    <div key={i} className="glass" style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
-                      <span style={{ fontSize: 18 }}>✓</span>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>
-                          {c.provider === 'google' ? 'Google' : c.provider === 'microsoft' ? 'Microsoft' : c.provider === 'apple' ? 'Apple iCloud' : c.provider === 'yahoo' ? 'Yahoo Mail' : c.provider}
-                          <span style={{ color: 'var(--text-faint)', fontWeight: 400 }}> · {c.service}</span>
+                  {tenantData.connections.map((c: any, i: number) => {
+                    const owner = findOwnerAgent(c.service);
+                    return (
+                      <div key={i} className="glass" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, background: 'rgba(44, 176, 112, 0.06)', border: '1px solid rgba(44, 176, 112, 0.25)' }}>
+                        <span style={{ fontSize: 18, color: '#15803d' }}>✓</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>
+                            {c.provider === 'google' ? 'Google' : c.provider === 'microsoft' ? 'Microsoft' : c.provider === 'apple' ? 'Apple iCloud' : c.provider === 'yahoo' ? 'Yahoo Mail' : c.provider}
+                            <span style={{ color: 'var(--text-faint)', fontWeight: 400 }}> · {c.service}</span>
+                          </div>
+                          <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{c.accountEmail}</div>
+                          {owner && (
+                            <div style={{ fontSize: 10.5, color: 'var(--accent-deep)', marginTop: 3, fontWeight: 500 }}>
+                              Owned by {owner.name} · {owner.role}
+                            </div>
+                          )}
                         </div>
-                        <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{c.accountEmail}</div>
+                        <button
+                          onClick={() => {
+                            if (c.provider === 'yahoo' || c.provider === 'apple') {
+                              setConnForm(c.provider);
+                              setConnEmail(c.accountEmail || '');
+                              setConnPassword('');
+                              setConnError('');
+                            }
+                          }}
+                          className="btn ghost"
+                          style={{ fontSize: 11 }}
+                        >
+                          Reconnect
+                        </button>
                       </div>
-                      <button
-                        onClick={() => {
-                          if (c.provider === 'yahoo' || c.provider === 'apple') {
-                            setConnForm(c.provider);
-                            setConnEmail(c.accountEmail || '');
-                            setConnPassword('');
-                            setConnError('');
-                          }
-                        }}
-                        className="btn ghost"
-                        style={{ fontSize: 11 }}
-                      >
-                        Reconnect
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
               {/* Add new — provider grid */}
               <div className="eyebrow">Add a service</div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-                <button
-                  onClick={() => { setConnForm('yahoo'); setConnEmail(''); setConnPassword(''); setConnError(''); }}
-                  className="glass"
-                  style={{ padding: 14, textAlign: 'left', cursor: 'pointer', border: '1px solid var(--glass-border)' }}
-                >
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>🟣 Yahoo Mail</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>IMAP read access via app password.</div>
-                </button>
-                <button
-                  onClick={() => { setConnForm('apple'); setConnEmail(''); setConnPassword(''); setConnError(''); }}
-                  className="glass"
-                  style={{ padding: 14, textAlign: 'left', cursor: 'pointer', border: '1px solid var(--glass-border)' }}
-                >
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>⚫ Apple iCloud</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>CalDAV calendar via app password.</div>
-                </button>
-                <a
-                  href={phoneNumber ? `http://localhost:3001/api/oauth/google?phone=${encodeURIComponent(phoneNumber)}` : '#'}
-                  className="glass"
-                  style={{ padding: 14, textAlign: 'left', textDecoration: 'none', color: 'inherit', border: '1px solid var(--glass-border)', display: 'block' }}
-                >
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>🟦 Google</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Gmail + Calendar via OAuth (one click).</div>
-                </a>
-                <a
-                  href={phoneNumber ? `http://localhost:3001/api/oauth/microsoft?phone=${encodeURIComponent(phoneNumber)}` : '#'}
-                  className="glass"
-                  style={{ padding: 14, textAlign: 'left', textDecoration: 'none', color: 'inherit', border: '1px solid var(--glass-border)', display: 'block' }}
-                >
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>🟧 Microsoft</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Outlook + Calendar via OAuth.</div>
-                </a>
+                {(() => {
+                  const renderProviderCard = (
+                    provider: 'yahoo' | 'apple' | 'google' | 'microsoft',
+                    label: string,
+                    icon: string,
+                    sub: string,
+                    service: 'email' | 'calendar',
+                    onClick: () => void,
+                    isLink?: string,
+                  ) => {
+                    const connected = isProviderConnected(provider, service);
+                    const baseStyle: any = {
+                      padding: 14,
+                      textAlign: 'left',
+                      cursor: connected ? 'default' : 'pointer',
+                      border: connected ? '1px solid rgba(44, 176, 112, 0.4)' : '1px solid var(--glass-border)',
+                      background: connected ? 'rgba(44, 176, 112, 0.08)' : undefined,
+                      opacity: connected ? 0.85 : 1,
+                      display: 'block',
+                      textDecoration: 'none',
+                      color: 'inherit',
+                    };
+                    const inner = (
+                      <>
+                        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {icon} {label}
+                          {connected && <span style={{ marginLeft: 'auto', fontSize: 11, color: '#15803d', fontWeight: 600 }}>✓ Connected</span>}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{connected ? 'Already connected — use Reconnect above to update.' : sub}</div>
+                      </>
+                    );
+                    if (isLink && !connected) {
+                      return <a href={isLink} className="glass" style={baseStyle}>{inner}</a>;
+                    }
+                    return (
+                      <button onClick={connected ? undefined : onClick} disabled={connected} className="glass" style={baseStyle}>
+                        {inner}
+                      </button>
+                    );
+                  };
+                  return (
+                    <>
+                      {renderProviderCard('yahoo', 'Yahoo Mail', '🟣', 'IMAP read access via app password.', 'email', () => { setConnForm('yahoo'); setConnEmail(''); setConnPassword(''); setConnError(''); })}
+                      {renderProviderCard('apple', 'Apple iCloud', '⚫', 'CalDAV calendar via app password.', 'calendar', () => { setConnForm('apple'); setConnEmail(''); setConnPassword(''); setConnError(''); })}
+                      {renderProviderCard('google', 'Google', '🟦', 'Gmail + Calendar via OAuth (one click).', 'email', () => {}, phoneNumber ? `http://localhost:3001/api/oauth/google?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                      {renderProviderCard('microsoft', 'Microsoft', '🟧', 'Outlook + Calendar via OAuth.', 'email', () => {}, phoneNumber ? `http://localhost:3001/api/oauth/microsoft?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                    </>
+                  );
+                })()}
               </div>
 
               {/* Inline form */}
