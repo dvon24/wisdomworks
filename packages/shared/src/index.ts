@@ -99,6 +99,7 @@ export {
   generatePreview,
   extractOntology,
   deriveAgentConfigs,
+  planProvisioning,
 } from './onboarding';
 export type {
   OnboardingState,
@@ -112,6 +113,8 @@ export type {
   RelationshipType,
   DerivedAgentConfig,
   AgentTier,
+  InstancePayload,
+  SignalConnection,
 } from './onboarding';
 
 // Agent Operating Protocol

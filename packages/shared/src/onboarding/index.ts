@@ -21,3 +21,6 @@ export type {
 
 export { deriveAgentConfigs } from './agent-deriver';
 export type { DerivedAgentConfig, AgentTier } from './agent-deriver';
+
+export { planProvisioning } from './agent-provisioner';
+export type { InstancePayload, SignalConnection } from './agent-provisioner';

@@ -4,6 +4,7 @@ import {
   generatePreview,
   extractOntology,
   deriveAgentConfigs,
+  planProvisioning,
 } from '@wisdomworks/shared';
 import type {
   OnboardingData,
@@ -11,6 +12,7 @@ import type {
   AxisDeploymentSpec,
   ExtractedOntology,
   DerivedAgentConfig,
+  InstancePayload,
 } from '@wisdomworks/shared';
 
 /**
@@ -245,6 +247,81 @@ async function saveOntology(
  * upsert_agent_configs Postgres function. Looks up entity_id by name from
  * ontology_entities so the link to the org graph is automatic.
  */
+/**
+ * Story 1.12 — provision agent instances by calling provision_agents.
+ * Returns counts; the Postgres function flips agent_configs.status to 'ready'
+ * for each agent it provisions and creates/updates the matching agent_instance
+ * with the planned NATS subjects + signal connections.
+ */
+async function provisionAgents(
+  tenantPhone: string,
+  instances: InstancePayload[],
+): Promise<void> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !tenantPhone || instances.length === 0) return;
+
+  try {
+    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+    const res = await fetch(`${url}/rest/v1/rpc/provision_agents`, {
+      method: 'POST',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ p_tenant_phone: cleanPhone, p_instances: instances }),
+    });
+    if (!res.ok) {
+      console.warn('[onboarding] provisionAgents failed:', res.status, await res.text());
+    } else {
+      const result = await res.json();
+      const row = result?.[0] ?? {};
+      console.log(`[onboarding-provision] provisioned=${row.provisioned ?? '?'} skipped=${row.skipped ?? '?'}`);
+    }
+  } catch (err) {
+    console.warn('[onboarding] provisionAgents error:', err);
+  }
+}
+
+/**
+ * Mark the tenant as 'active' in whatsapp_contexts.profile once provisioning
+ * is complete. We don't have a real tenants table yet, so the profile flag
+ * is the canonical signal for "deployment is live".
+ */
+async function markTenantActive(tenantPhone: string): Promise<void> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !tenantPhone) return;
+  try {
+    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+    // Read-modify-write the profile.tenantStatus field (PostgREST has no
+    // patch-jsonb-key in REST; use a small RPC-style update).
+    const ctxRes = await fetch(
+      `${url}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile`,
+      { headers: { apikey: key, Authorization: `Bearer ${key}` } },
+    );
+    if (!ctxRes.ok) return;
+    const rows = await ctxRes.json();
+    const profile = rows[0]?.profile ?? {};
+    if (profile.tenantStatus === 'active') return;
+    profile.tenantStatus = 'active';
+    profile.activatedAt = new Date().toISOString();
+    await fetch(`${url}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
+      method: 'PATCH',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({ profile }),
+    });
+  } catch (err) {
+    console.warn('[onboarding] markTenantActive error:', err);
+  }
+}
+
 async function saveAgentConfigs(
   tenantPhone: string,
   agents: DerivedAgentConfig[],
@@ -420,6 +497,17 @@ export async function POST(request: Request) {
         const derivedAgents = deriveAgentConfigs(spec, structured);
         agentConfigCount = derivedAgents.length;
         if (phone) await saveAgentConfigs(phone, derivedAgents);
+
+        // Story 1.12 — provision agent_instances + mark tenant active.
+        // Provision only on the turn the user signals readiness so we don't
+        // thrash agent_instances on every chat message. Heuristic for now:
+        // 'recommending' or later phase + at least 2 agents derived.
+        const phaseReady = ['recommending', 'discussing'].includes(structured?.phase ?? '');
+        if (phone && phaseReady && derivedAgents.length >= 2) {
+          const instances = planProvisioning(phone, spec, derivedAgents);
+          await provisionAgents(phone, instances);
+          await markTenantActive(phone);
+        }
       } catch (err) {
         specError = err instanceof Error ? err.message : String(err);
         console.log('[onboarding-spec] not yet generatable:', specError);
