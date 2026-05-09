@@ -13,6 +13,12 @@
 import type { AxisDeploymentSpec, BlueprintDefinition } from '../types/deployment-spec';
 import { BLUEPRINTS } from '../types/deployment-spec';
 import type { DerivedAgentConfig } from './agent-deriver';
+import {
+  createAgentProtocol,
+  getDefaultAutonomyForRole,
+  mergeTenantProtocol,
+  type AgentOperatingProtocol,
+} from '../protocols';
 
 export interface InstancePayload {
   agent_name: string;
@@ -35,11 +41,16 @@ const baseSubject = (tenantPhone: string, agentName: string) =>
  * Plan provisioning for every derived config based on the spec's blueprint
  * topology. Returns the InstancePayload[] you can pass straight to
  * provision_agents Postgres function.
+ *
+ * Story 1.14: each instance now also carries a resolved AgentOperatingProtocol
+ * in metadata.operating_protocol — base protocol + per-role autonomy default
+ * + tenant-level tightening override (if any).
  */
 export function planProvisioning(
   tenantPhone: string,
   spec: AxisDeploymentSpec,
   configs: DerivedAgentConfig[],
+  tenantProtocolOverride?: any,
 ): InstancePayload[] {
   const blueprint: BlueprintDefinition = BLUEPRINTS[spec.blueprint] ?? BLUEPRINTS.solo;
   const topology = blueprint.signalComplexity;
@@ -118,6 +129,12 @@ export function planProvisioning(
       }
     }
 
+    // Resolve the per-agent operating protocol (Story 1.14):
+    // base + role-default autonomy + tenant tightening
+    const baseAutonomy = getDefaultAutonomyForRole(cfg.agent_role, cfg.agent_name);
+    const baseProtocol = createAgentProtocol(baseAutonomy);
+    const resolvedProtocol: AgentOperatingProtocol = mergeTenantProtocol(baseProtocol, tenantProtocolOverride);
+
     return {
       agent_name: cfg.agent_name,
       nats_subjects: subjects,
@@ -127,6 +144,7 @@ export function planProvisioning(
         topology,
         tier: (cfg.config as any)?.tier ?? 'Sonnet',
         is_hub: hub?.agent_name === cfg.agent_name,
+        operating_protocol: resolvedProtocol,
       },
     };
   });

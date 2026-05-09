@@ -206,6 +206,30 @@ function structuredToOnboardingData(structured: any, collected: OnboardingData =
  * the conversation should keep flowing even if the persistence layer is down.
  */
 /**
+ * Story 1.14 — load this tenant's operating-protocol override (if any) so
+ * provisioning can apply tightening rules. Returns the JSON config blob
+ * stored at tenant_configs.config_type='operating_protocol' or null.
+ */
+async function loadProtocolOverride(tenantPhone: string): Promise<any | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !tenantPhone) return null;
+  try {
+    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+    const res = await fetch(
+      `${url}/rest/v1/tenant_configs?tenant_phone=eq.${cleanPhone}&config_type=eq.operating_protocol&select=config`,
+      { headers: { apikey: key, Authorization: `Bearer ${key}` } },
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows[0]?.config ?? null;
+  } catch (err) {
+    console.warn('[onboarding] loadProtocolOverride error:', err);
+    return null;
+  }
+}
+
+/**
  * Story 1.13 — fetch the customer's actual oauth_connections so Axis
  * discovery can ground the integrations array in real authorisations.
  */
@@ -529,7 +553,10 @@ export async function POST(request: Request) {
         // 'recommending' or later phase + at least 2 agents derived.
         const phaseReady = ['recommending', 'discussing'].includes(structured?.phase ?? '');
         if (phone && phaseReady && derivedAgents.length >= 2) {
-          const instances = planProvisioning(phone, spec, derivedAgents);
+          // Story 1.14 — pull tenant-level operating protocol override and let
+          // planProvisioning bake it into each instance's metadata.
+          const protocolOverride = await loadProtocolOverride(phone);
+          const instances = planProvisioning(phone, spec, derivedAgents, protocolOverride);
           await provisionAgents(phone, instances);
           await markTenantActive(phone);
         }

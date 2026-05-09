@@ -128,6 +128,8 @@ export {
   AUTONOMY_DEFINITIONS,
   BASE_AGENT_PROTOCOL,
   createAgentProtocol,
+  getDefaultAutonomyForRole,
+  mergeTenantProtocol,
 } from './protocols';
 export type { AutonomyLevel, AutonomyLevelDefinition, AgentOperatingProtocol } from './protocols';
 

@@ -142,3 +142,76 @@ export function createAgentProtocol(
     ],
   };
 }
+
+/**
+ * Story 1.14 — pick a sensible default autonomy level per agent based on its
+ * role. Coordinator/orchestrator agents start at L2 (notify-and-act) because
+ * they're the user's mouthpiece. Specialist worker agents (sales, marketing,
+ * finance) start at L1 (approval-required) because their actions have
+ * external impact. Owner can promote per-agent later.
+ */
+export function getDefaultAutonomyForRole(role: string, name: string): AutonomyLevel {
+  const haystack = `${role} ${name}`.toLowerCase();
+  if (/orchestrat|coordinator|personal assistant|chief of staff/.test(haystack)) return 'L2';
+  if (/research|insights|analytics|intelligence/.test(haystack)) return 'L3';
+  // Anything externally-acting (email, sales, marketing, finance) defaults to L1
+  return 'L1';
+}
+
+interface TenantProtocolOverride {
+  autonomyLevel?: AutonomyLevel;
+  additionalEscalationTriggers?: string[];
+  // Tenants can ADD strict requirements but can't disable any of these
+  // (the function drops any false values silently).
+  dataRules?: Partial<AgentOperatingProtocol['dataRules']>;
+  signalRules?: Partial<AgentOperatingProtocol['signalRules']>;
+}
+
+const AUTONOMY_RANK: Record<AutonomyLevel, number> = { L1: 0, L2: 1, L3: 2, L4: 3 };
+
+/**
+ * Merge a per-agent default protocol with a tenant-level override. Enforces
+ * the "tighten not loosen" rule — operators can ONLY make things stricter:
+ *
+ *   - autonomyLevel can only DECREASE (more approval, not less)
+ *   - escalation triggers can only be ADDED, never removed
+ *   - data/signal rule flags can only be set TRUE (enabled), never FALSE
+ *
+ * Audit + BMAD mandates are baked into BASE_AGENT_PROTOCOL and never moved.
+ */
+export function mergeTenantProtocol(
+  base: AgentOperatingProtocol,
+  override: TenantProtocolOverride | null | undefined,
+): AgentOperatingProtocol {
+  if (!override) return base;
+
+  // Autonomy: take the more conservative (lower-rank) of the two
+  let resolvedAutonomy = base.autonomyLevel;
+  if (override.autonomyLevel && AUTONOMY_RANK[override.autonomyLevel] < AUTONOMY_RANK[resolvedAutonomy]) {
+    resolvedAutonomy = override.autonomyLevel;
+  }
+
+  // Escalation triggers: union (add only)
+  const escalationTriggers = Array.from(new Set([
+    ...base.escalationTriggers,
+    ...(override.additionalEscalationTriggers ?? []),
+  ]));
+
+  // Data/signal rules: only allow TRUE flags (loosening to false ignored)
+  const dataRules = { ...base.dataRules };
+  for (const [k, v] of Object.entries(override.dataRules ?? {})) {
+    if (v === true) (dataRules as any)[k] = true;
+  }
+  const signalRules = { ...base.signalRules };
+  for (const [k, v] of Object.entries(override.signalRules ?? {})) {
+    if (v === true) (signalRules as any)[k] = true;
+  }
+
+  return {
+    ...base,
+    autonomyLevel: resolvedAutonomy,
+    escalationTriggers,
+    dataRules,
+    signalRules,
+  };
+}
