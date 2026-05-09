@@ -179,6 +179,33 @@ const TOOL_ADD_AGENT: AnthropicTool = {
   },
 };
 
+const TOOL_MOVE_AGENT: AnthropicTool = {
+  name: 'move_agent_under_manager',
+  description:
+    "Re-parent an existing agent so they report to a different manager. Use when the user says 'move Riley under Marcus' or 'put the recruiter on Marcus's team'. The agent is removed from their current location (top-level OR another manager's sub-team) and added to the target manager's sub-team.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentName: { type: 'string', description: 'The agent being moved.' },
+      parentAgentName: { type: 'string', description: "The manager who will become the agent's new parent." },
+    },
+    required: ['agentName', 'parentAgentName'],
+  },
+};
+
+const TOOL_REMOVE_AGENT: AnthropicTool = {
+  name: 'remove_agent_from_team',
+  description:
+    "Remove an agent from the team entirely. Use when the user says 'remove Riley' or 'fire the recruiter'. Searches both top-level and all sub-teams. CONFIRM with the user first if there's any ambiguity.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentName: { type: 'string' },
+    },
+    required: ['agentName'],
+  },
+};
+
 const TOOL_CONSULT_MANAGER: AnthropicTool = {
   name: 'consult_manager',
   description:
@@ -238,6 +265,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
   tools.push(TOOL_UPDATE_AGENT);
+  tools.push(TOOL_MOVE_AGENT);
+  tools.push(TOOL_REMOVE_AGENT);
   tools.push(TOOL_CONSULT_MANAGER);
   tools.push(TOOL_CONNECT_SERVICE);
 
@@ -458,6 +487,87 @@ export async function executeTool(
         user.profile.team = team;
         await saveUserContext(user);
         return { content: `Updated ${agent.name}: ${changes.join('; ')}.`, success: true };
+      }
+
+      case 'move_agent_under_manager': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const team = user.profile?.team ?? [];
+        const targetName = call.input.agentName?.toString().toLowerCase();
+        const parentName = call.input.parentAgentName?.toString().toLowerCase();
+        if (!targetName || !parentName) return { content: 'Missing agentName or parentAgentName.', success: false };
+
+        const newParent = team.find((a) => a.name?.toLowerCase() === parentName || a.id?.toLowerCase() === parentName);
+        if (!newParent) {
+          return { content: `Couldn't find a manager named "${call.input.parentAgentName}". Top-level: ${team.map((a) => a.name).join(', ')}.`, success: false };
+        }
+        if (newParent.name?.toLowerCase() === targetName) {
+          return { content: `${newParent.name} can't be moved under themselves.`, success: false };
+        }
+
+        // Find and detach the target — first check top-level, then every sub-team
+        let movedAgent: any = null;
+        const topIdx = team.findIndex((a) => a.name?.toLowerCase() === targetName || a.id?.toLowerCase() === targetName);
+        if (topIdx >= 0) {
+          movedAgent = team.splice(topIdx, 1)[0];
+        } else {
+          for (const a of team) {
+            if (!a.subTeam?.agents) continue;
+            const subIdx = a.subTeam.agents.findIndex((s) => s.name?.toLowerCase() === targetName || s.id?.toLowerCase() === targetName);
+            if (subIdx >= 0) {
+              movedAgent = a.subTeam.agents.splice(subIdx, 1)[0];
+              a.subTeam.count = a.subTeam.agents.length;
+              break;
+            }
+          }
+        }
+        if (!movedAgent) {
+          return { content: `Couldn't find an agent named "${call.input.agentName}" anywhere on the team.`, success: false };
+        }
+
+        // Attach to new parent's sub-team (preserve as much as we can)
+        const sub = newParent.subTeam ?? { count: 0, label: `${newParent.name}'s team`, agents: [] };
+        sub.agents.push({
+          id: movedAgent.id ?? targetName,
+          name: movedAgent.name,
+          role: movedAgent.role,
+          tier: movedAgent.tier,
+        });
+        sub.count = sub.agents.length;
+        newParent.subTeam = sub;
+
+        user.profile.team = team;
+        await saveUserContext(user);
+        return { content: `Moved ${movedAgent.name} under ${newParent.name}. ${newParent.name}'s team is now ${sub.count}.`, success: true };
+      }
+
+      case 'remove_agent_from_team': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const team = user.profile?.team ?? [];
+        const target = call.input.agentName?.toString().toLowerCase();
+        if (!target) return { content: 'Missing agentName.', success: false };
+
+        const topIdx = team.findIndex((a) => a.name?.toLowerCase() === target || a.id?.toLowerCase() === target);
+        if (topIdx >= 0) {
+          if (team[topIdx]?.required) {
+            return { content: `${team[topIdx].name} is your required personal assistant — can't remove.`, success: false };
+          }
+          const removed = team.splice(topIdx, 1)[0];
+          user.profile.team = team;
+          await saveUserContext(user);
+          return { content: `Removed ${removed?.name} from the team.`, success: true };
+        }
+        for (const a of team) {
+          if (!a.subTeam?.agents) continue;
+          const subIdx = a.subTeam.agents.findIndex((s) => s.name?.toLowerCase() === target || s.id?.toLowerCase() === target);
+          if (subIdx >= 0) {
+            const removed = a.subTeam.agents.splice(subIdx, 1)[0];
+            a.subTeam.count = a.subTeam.agents.length;
+            user.profile.team = team;
+            await saveUserContext(user);
+            return { content: `Removed ${removed?.name} from ${a.name}'s sub-team.`, success: true };
+          }
+        }
+        return { content: `Couldn't find an agent named "${call.input.agentName}" on the team.`, success: false };
       }
 
       case 'consult_manager': {
