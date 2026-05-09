@@ -72,7 +72,7 @@ export async function generateIrisReply(
   const connections = await loadConnectionsForPhone(user.phoneNumber);
   const tools = buildToolList(connections);
   const messages: any[] = buildContextMessages(user);
-  const systemPrompt = buildSystemPrompt(user);
+  const systemPrompt = buildSystemPrompt(user, connections);
 
   try {
     let iteration = 0;

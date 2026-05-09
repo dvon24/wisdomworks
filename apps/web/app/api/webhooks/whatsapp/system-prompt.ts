@@ -4,12 +4,42 @@
 
 import type { UserContext } from './context-store';
 
-export function buildSystemPrompt(user: UserContext): string {
+interface ConnectionLite {
+  provider: string;
+  service: string;
+  account_email?: string;
+}
+
+export function buildSystemPrompt(user: UserContext, connections: ConnectionLite[] = []): string {
   const isDevon = user.phoneNumber === '491703604562';
 
   // Build team roster the user picked during onboarding so Iris knows her team
   const team = user.profile?.team ?? [];
   const irisName = team[0]?.name ?? 'Iris';
+  // Build connected-services section so Iris knows what real accounts are available
+  let connectionsSection = '';
+  if (connections.length > 0) {
+    const lines = connections.map((c) => {
+      const providerLabel = c.provider === 'google' ? 'Google'
+        : c.provider === 'microsoft' ? 'Microsoft'
+        : c.provider === 'apple' ? 'Apple iCloud'
+        : c.provider === 'yahoo' ? 'Yahoo Mail'
+        : c.provider;
+      const account = c.account_email ? ` (${c.account_email})` : '';
+      return `   - ${providerLabel} ${c.service}${account}`;
+    });
+    connectionsSection = `
+
+CONNECTED SERVICES (real accounts the user has authorised — DO use them):
+${lines.join('\n')}
+
+When the user asks about email, inbox, calendar, or schedule, ASSUME these connections are live and call the matching tool (list_unread_emails / list_calendar_events / etc). Don't say "I'm not connected to X" if X is in this list — you ARE connected. If the tool fails at runtime, then surface the failure honestly.`;
+  } else {
+    connectionsSection = `
+
+CONNECTED SERVICES: none yet. If the user asks for email/calendar work, tell them they need to connect a service first and offer connect_service to give them an OAuth link, or point them at the Connections tab on the Command Deck.`;
+  }
+
   let teamSection = '';
   if (team.length > 0) {
     const lines = team.map((a, i) => {
@@ -57,7 +87,7 @@ THE USER:
 - Messages exchanged: ${user.messageCount}
 - First interaction: ${user.firstSeen}
 ${user.businessName ? `- Business: ${user.businessName}` : ''}
-${user.businessType ? `- Industry: ${user.businessType}` : ''}${teamSection}
+${user.businessType ? `- Industry: ${user.businessType}` : ''}${connectionsSection}${teamSection}
 
 HONESTY RULE — NEVER FABRICATE WORK:
 If you didn't call a tool, you didn't do anything. Never claim work was done unless a tool returned success in this turn. If no tool exists for what the user asked, say so honestly: "I don't have a way to do that yet" — and suggest the closest tool you DO have, or ask whether they want it added. Saying "Done — I moved Riley" when no move tool was called is a serious failure. Read your available tools carefully before promising action.
