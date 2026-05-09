@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Background,
   WisdomLockup,
@@ -199,6 +199,16 @@ export default function CommandDeck() {
   const [connError, setConnError] = useState('');
   const [connBusy, setConnBusy] = useState(false);
   const [connSuccess, setConnSuccess] = useState<string | null>(null);
+  const connFormRef = useRef<HTMLDivElement>(null);
+
+  // Scroll the form into view + focus the email input the moment a provider is picked
+  useEffect(() => {
+    if (connForm && connFormRef.current) {
+      connFormRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const emailInput = connFormRef.current.querySelector('input[type="email"]') as HTMLInputElement | null;
+      setTimeout(() => emailInput?.focus(), 300);
+    }
+  }, [connForm]);
 
   // Find which team member owns a given service (email/calendar/instagram).
   // Looks at each agent's channels/tools/role metadata; falls back to the personal assistant.
@@ -694,11 +704,11 @@ export default function CommandDeck() {
                 })()}
               </div>
 
-              {/* Inline form */}
+              {/* Inline form — auto-scrolls into view when opened */}
               {connForm && (
-                <div className="glass" style={{ padding: 16, marginTop: 8 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
-                    {connForm === 'yahoo' ? 'Connect Yahoo Mail' : 'Connect Apple iCloud'}
+                <div ref={connFormRef} className="glass-strong" style={{ padding: 18, marginTop: 12, border: '2px solid var(--accent)', boxShadow: '0 8px 24px rgba(124, 58, 237, 0.15)', scrollMarginTop: 100 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--accent-deep)' }}>
+                    {connForm === 'yahoo' ? '🟣 Connect Yahoo Mail' : '⚫ Connect Apple iCloud'} — Step 2 of 2
                   </div>
                   <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginBottom: 12, lineHeight: 1.5 }}>
                     {connForm === 'yahoo' ? (
