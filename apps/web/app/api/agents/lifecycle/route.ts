@@ -10,7 +10,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { startTenantAgents, stopTenantAgents, tickAgent } from '../../_lib/agent-runtime';
+import { startTenantAgents, stopTenantAgents, tickAgent, maybeSendTeamDigest, computeCadence } from '../../_lib/agent-runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -63,7 +63,10 @@ export async function POST(request: Request) {
         if (!cfg) { failed++; return; }
         try { await tickAgent(inst, cfg); ticked++; } catch { failed++; }
       }));
-      return NextResponse.json({ ok: true, ticked, failed });
+      // After manual tick, also try a digest — useful for testing the flow.
+      const cadence = await computeCadence(cleanPhone);
+      const digest = await maybeSendTeamDigest(cleanPhone, cadence);
+      return NextResponse.json({ ok: true, ticked, failed, digest });
     }
     if (action === 'status') {
       if (!SUPABASE_URL || !SUPABASE_KEY) return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });

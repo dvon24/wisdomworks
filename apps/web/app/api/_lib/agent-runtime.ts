@@ -549,6 +549,163 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
   }
 }
 
+// ─── Story 2.1d — Sophia team digest ─────────────────────────────────────
+// After a tick batch, Sophia/orchestrator synthesizes what the team has
+// been up to and sends ONE WhatsApp message — but only if there's actually
+// signal worth surfacing. Silent when nothing meaningful happened.
+
+/** Min minutes between digests, by activity band. Quiet/asleep rely on the morning briefing. */
+const DIGEST_THROTTLE_MIN: Record<TickCadence['band'], number | null> = {
+  active: 60,
+  recent: 120,
+  normal: 240,
+  quiet: null,
+  asleep: null,
+};
+
+async function loadOrchestratorName(tenantPhone: string): Promise<string> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return 'Sophia';
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=agent_name,config&order=created_at.asc`,
+    { headers: headers() },
+  );
+  if (!res.ok) return 'Sophia';
+  const rows = await res.json();
+  // Prefer the agent whose category=orchestrator
+  const orch = rows.find((r: any) => r.config?.category === 'orchestrator');
+  return orch?.agent_name ?? rows[0]?.agent_name ?? 'Sophia';
+}
+
+interface DigestResult {
+  hasSignal: boolean;
+  message: string;
+}
+
+async function synthesizeDigest(orchestratorName: string, runs: any[]): Promise<DigestResult> {
+  if (!ANTHROPIC_API_KEY) return { hasSignal: false, message: '' };
+  if (runs.length === 0) return { hasSignal: false, message: '' };
+
+  const lines = runs.slice(0, 30).map((r) =>
+    `- ${r.agent_name} (${r.outcome}${r.delegated_to_lane ? ` → ${r.delegated_to_lane}` : ''}): ${(r.output_summary || '').slice(0, 140)}`,
+  ).join('\n');
+
+  const system = `You are ${orchestratorName}, the user's personal orchestrator. Your team just finished a round of work. Synthesize what's worth telling the user — keep it tight, no fluff.
+
+Rules:
+- If there's nothing meaningful (only routine observations, no escalations or proposals or delegations), respond with EXACTLY: NO_SIGNAL
+- Otherwise: write a 1-3 line WhatsApp message in your voice. Lead with the most important thing. Mention agents by name. No emoji unless the situation warrants. No greeting/sign-off.
+- Don't list every routine tick. Group + summarize.
+- If escalations exist, lead with them.`;
+
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 220,
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: `Recent team runs:\n${lines}` }],
+      }),
+    });
+    if (!res.ok) return { hasSignal: false, message: '' };
+    const data = await res.json();
+    const text = (data.content?.[0]?.text ?? '').trim();
+    if (!text || /^NO_SIGNAL\b/i.test(text)) return { hasSignal: false, message: '' };
+    return { hasSignal: true, message: text };
+  } catch {
+    return { hasSignal: false, message: '' };
+  }
+}
+
+async function pushDigestToOwner(tenantPhone: string, message: string): Promise<void> {
+  if (!WHATSAPP_PHONE_ID || !WHATSAPP_TOKEN) return;
+  try {
+    await fetch(`${GRAPH_API}/${WHATSAPP_PHONE_ID}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: tenantPhone,
+        type: 'text',
+        text: { body: message },
+      }),
+    });
+  } catch (err) {
+    console.warn('[digest] push failed:', err);
+  }
+}
+
+/**
+ * Maybe send a Sophia-led digest of recent team activity to the owner.
+ * Throttled per cadence band; silent if nothing meaningful happened.
+ */
+export async function maybeSendTeamDigest(tenantPhone: string, cadence: TickCadence): Promise<{ sent: boolean; reason?: string }> {
+  const throttle = DIGEST_THROTTLE_MIN[cadence.band];
+  if (throttle === null) return { sent: false, reason: 'band_disabled' };
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { sent: false, reason: 'no_supabase' };
+
+  // Throttle: skip if last digest was too recent
+  const profileRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${tenantPhone}&select=profile`,
+    { headers: headers() },
+  );
+  const profileRows = profileRes.ok ? await profileRes.json() : [];
+  const profile = profileRows[0]?.profile ?? {};
+  const lastDigestAt = profile.lastDigestAt ? new Date(profile.lastDigestAt).getTime() : 0;
+  const minSinceDigest = (Date.now() - lastDigestAt) / 60_000;
+  if (minSinceDigest < throttle) return { sent: false, reason: 'throttled' };
+
+  // Pull meaningful runs since last digest. Skip no_op rows (cost-guard noise).
+  const sinceIso = new Date(Math.max(lastDigestAt, Date.now() - throttle * 60_000)).toISOString();
+  const runsRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${tenantPhone}&started_at=gte.${sinceIso}&outcome=neq.no_op&order=started_at.desc&limit=30&select=outcome,output_summary,delegated_to_lane,agent_instance_id,started_at`,
+    { headers: headers() },
+  );
+  const runs = runsRes.ok ? await runsRes.json() : [];
+  if (runs.length === 0) return { sent: false, reason: 'no_signal' };
+
+  // Hydrate agent names from instance → config join
+  const instIds = Array.from(new Set(runs.map((r: any) => r.agent_instance_id).filter(Boolean))) as string[];
+  let nameByInstance = new Map<string, string>();
+  if (instIds.length > 0) {
+    const instRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/agent_instances?id=in.(${instIds.join(',')})&select=id,agent_config_id`,
+      { headers: headers() },
+    );
+    const instRows = instRes.ok ? await instRes.json() : [];
+    const cfgIds = Array.from(new Set(instRows.map((i: any) => i.agent_config_id))) as string[];
+    if (cfgIds.length > 0) {
+      const cfgRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/agent_configs?id=in.(${cfgIds.join(',')})&select=id,agent_name`,
+        { headers: headers() },
+      );
+      const cfgRows = cfgRes.ok ? await cfgRes.json() : [];
+      const nameByCfg = new Map<string, string>();
+      for (const c of cfgRows) nameByCfg.set(c.id as string, c.agent_name as string);
+      for (const i of instRows) nameByInstance.set(i.id as string, nameByCfg.get(i.agent_config_id) ?? '?');
+    }
+  }
+  const enriched = runs.map((r: any) => ({ ...r, agent_name: nameByInstance.get(r.agent_instance_id) ?? '?' }));
+
+  const orchestratorName = await loadOrchestratorName(tenantPhone);
+  const digest = await synthesizeDigest(orchestratorName, enriched);
+  if (!digest.hasSignal) return { sent: false, reason: 'no_signal_per_orchestrator' };
+
+  await pushDigestToOwner(tenantPhone, digest.message);
+
+  // Mark lastDigestAt
+  profile.lastDigestAt = new Date().toISOString();
+  await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${tenantPhone}`, {
+    method: 'PATCH',
+    headers: { ...headers(), Prefer: 'return=minimal' },
+    body: JSON.stringify({ profile }),
+  });
+
+  console.log(`[digest] Sent for ${tenantPhone} (band=${cadence.band}, ${runs.length} runs)`);
+  return { sent: true };
+}
+
 /** Cron entry point — tick every running agent across every tenant */
 export async function tickRunningAgents(): Promise<{ tenants: number; ticked: number; failed: number; skipped: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { tenants: 0, ticked: 0, failed: 0, skipped: 0 };
@@ -590,6 +747,8 @@ export async function tickRunningAgents(): Promise<{ tenants: number; ticked: nu
   let ticked = 0;
   let failed = 0;
   let skipped = 0;
+  // Track which tenants got at least one tick so we know who to digest
+  const tickedTenants = new Set<string>();
   for (const inst of instances) {
     if (!dueTenants.has(inst.tenant_phone)) {
       skipped++;
@@ -603,9 +762,20 @@ export async function tickRunningAgents(): Promise<{ tenants: number; ticked: nu
     try {
       await tickAgent(inst, cfg);
       ticked++;
+      tickedTenants.add(inst.tenant_phone);
     } catch {
       failed++;
     }
   }
-  return { tenants: tenants.length, ticked, failed, skipped };
+
+  // After the tick batch: maybe send Sophia's team digest. Throttled per
+  // band; silent if nothing meaningful happened.
+  let digestsSent = 0;
+  for (const t of tickedTenants) {
+    const cadence = await computeCadence(t);
+    const result = await maybeSendTeamDigest(t, cadence);
+    if (result.sent) digestsSent++;
+  }
+
+  return { tenants: tenants.length, ticked, failed, skipped, digestsSent } as any;
 }
