@@ -22,6 +22,7 @@ import { queryKnowledge } from '../../_lib/knowledge-base';
 import { logCorrection } from '../../_lib/classification-learning';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
 import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
+import { getVoiceProfile, getTopContacts, renderVoiceForDraft } from '../../_lib/email-intelligence';
 import {
   generateWordDoc,
   generatePowerPoint,
@@ -908,11 +909,21 @@ export async function executeTool(
       case 'draft_email': {
         const apiKey = process.env.ANTHROPIC_API_KEY;
         if (!apiKey) return { content: 'No AI key configured.', success: false };
-        const { intent, tone = 'professional', subject, to, contextSnippets } = call.input;
+        const { intent, tone, subject, to, contextSnippets } = call.input;
         const ctxBlock = contextSnippets?.length
           ? `\n\nContext (original email being replied to):\n${(contextSnippets as string[]).slice(0, 3).join('\n---\n')}`
           : '';
-        const prompt = `Draft an email${to?.length ? ` to ${(to as string[]).join(', ')}` : ''}${subject ? ` with subject "${subject}"` : ''}. Intent: ${intent}. Tone: ${tone}.${ctxBlock}\n\nReturn ONLY the email body — no greeting/sign-off scaffolding unless the intent requires them, no "Subject:" prefix.`;
+
+        // Pull the owner's voice profile so the draft sounds like them.
+        // If no profile exists yet, fall back to the requested tone.
+        const cleanPhone = user?.phoneNumber.replace(/[\s\-+()]/g, '');
+        const profile = cleanPhone ? await getVoiceProfile(cleanPhone) : null;
+        const voiceBlock = renderVoiceForDraft(profile);
+        const toneInstruction = profile
+          ? `Match the OWNER VOICE PROFILE below. ${tone ? `User asked for tone override: ${tone}.` : ''}`
+          : `Tone: ${tone ?? 'professional'}.`;
+
+        const prompt = `Draft an email${to?.length ? ` to ${(to as string[]).join(', ')}` : ''}${subject ? ` with subject "${subject}"` : ''}. Intent: ${intent}. ${toneInstruction}${voiceBlock}${ctxBlock}\n\nReturn ONLY the email body — no greeting/sign-off scaffolding unless the intent requires them, no "Subject:" prefix.`;
         try {
           const res = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -920,7 +931,7 @@ export async function executeTool(
             body: JSON.stringify({
               model: 'claude-sonnet-4-20250514',
               max_tokens: 600,
-              system: [{ type: 'text', text: 'You draft email bodies for human review. Concise, on-tone, no fluff.', cache_control: { type: 'ephemeral' } }],
+              system: [{ type: 'text', text: 'You draft email bodies for human review. When a voice profile is provided, match it precisely — that is more important than generic professionalism. Concise, on-tone, no fluff.', cache_control: { type: 'ephemeral' } }],
               messages: [{ role: 'user', content: prompt }],
             }),
           });
@@ -928,8 +939,9 @@ export async function executeTool(
           const data = await res.json();
           const draft = data.content?.[0]?.text ?? '';
           const recipient = to?.length ? `to ${(to as string[]).join(', ')}` : '(recipient TBD)';
+          const voiceTag = profile ? ` · matched to your voice (${profile.sample_size ?? 0} sent samples)` : '';
           return {
-            content: `Draft ${recipient}${subject ? ` · subject: "${subject}"` : ''}:\n\n${draft}\n\n— Reply 'send' to send, 'edit' to revise, or paste your version.`,
+            content: `Draft ${recipient}${subject ? ` · subject: "${subject}"` : ''}${voiceTag}:\n\n${draft}\n\n— Reply 'send' to send, 'edit' to revise, or paste your version.`,
             success: true,
           };
         } catch (err) {

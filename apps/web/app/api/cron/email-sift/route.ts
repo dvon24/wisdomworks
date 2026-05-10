@@ -15,6 +15,7 @@ import { NextResponse } from 'next/server';
 import { listEmails, decryptToken, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
 import { listImapUnread } from '../../_lib/imap-runtime';
 import { logSample, buildFewShotExamples } from '../../_lib/classification-learning';
+import { getTopContacts, renderTrustedContactsForClassifier } from '../../_lib/email-intelligence';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -295,6 +296,10 @@ async function classifyAndDraft(emails: EmailMessage[], tenantPhone?: string): P
   // Story 2.13 — pull recent corrections as few-shot examples so the
   // classifier learns from the user's corrections over time.
   const fewShot = tenantPhone ? await buildFewShotExamples(tenantPhone) : '';
+  // Email intelligence — trusted senders bias classification toward business
+  // and away from spam, even when subject lines look promotional.
+  const trustedContacts = tenantPhone ? await getTopContacts(tenantPhone, 30) : [];
+  const trustBlock = renderTrustedContactsForClassifier(trustedContacts);
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return emails.map((e) => ({
@@ -358,7 +363,7 @@ ACTION RULES (only when privacyClass is "business"):
 EXTRACTION (Story 2.5 — structured signal, business mail only):
 - For privacyClass "business" only, populate extracted with names of people mentioned, projects/initiatives referenced, dates that matter (deadlines, meetings), and action items.
 - For "personal" or "uncertain", set extracted to null. NEVER extract names or other identifying info from personal mail (privacy boundary).
-- Keep arrays short — 5 items max each.`,
+- Keep arrays short — 5 items max each.${trustBlock}`,
             cache_control: { type: 'ephemeral' },
           },
         ],
