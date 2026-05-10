@@ -558,7 +558,7 @@ export default function CommandDeck() {
                   Chat with Iris on the right. Open <span style={{ color: 'var(--accent-deep)', fontWeight: 500 }}>Team</span> to dive into any agent.
                 </div>
               </div>
-              <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ flex: tenantData?.documentation ? 'none' : 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Hierarchy
                   width={940}
                   height={460}
@@ -573,6 +573,16 @@ export default function CommandDeck() {
                   accent="var(--accent)"
                 />
               </div>
+
+              {/* Story 1.13 — Org documentation card from the Axis discovery */}
+              {tenantData?.documentation?.text && (
+                <div className="glass" style={{ padding: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
+                  <div className="eyebrow" style={{ marginBottom: 8 }}>Org documentation</div>
+                  <div style={{ fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-dim)', whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
+                    {tenantData.documentation.text}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -958,6 +968,14 @@ export default function CommandDeck() {
 
           {sidebar === 'agent' && selectedAgent && (() => {
             const meta = teamMeta[selectedAgent.id] ?? {};
+            const detail = tenantData?.agentDetails?.[selectedAgent.id];
+            const AUTONOMY_LABEL: Record<string, { label: string; tone: 'warn' | 'info' | 'ok'; desc: string }> = {
+              L1: { label: 'L1 · Approval Required', tone: 'warn', desc: 'Every action awaits your approval before it runs.' },
+              L2: { label: 'L2 · Notify and Act', tone: 'info', desc: 'Acts immediately, then tells you what was done.' },
+              L3: { label: 'L3 · Autonomous, Weekly Reports', tone: 'info', desc: 'Operates on its own and sends a weekly summary.' },
+              L4: { label: 'L4 · Fully Autonomous', tone: 'ok', desc: 'Only escalates on errors or novel situations.' },
+            };
+            const autonomy = detail?.autonomyLevel ? AUTONOMY_LABEL[detail.autonomyLevel] : null;
             return (
             <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
               {/* Header */}
@@ -996,6 +1014,26 @@ export default function CommandDeck() {
               {meta.description && (
                 <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.5 }}>
                   {meta.description}
+                </div>
+              )}
+
+              {/* Story 1.14 — Autonomy badge + escalation triggers */}
+              {autonomy && (
+                <div style={{ padding: 10, background: 'var(--accent-soft)', border: '1px solid var(--accent-line)', borderRadius: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span className={`pill ${autonomy.tone}`} style={{ fontSize: 10 }}>{autonomy.label}</span>
+                    {detail?.instanceStatus && (
+                      <span className="mono" style={{ fontSize: 9, color: 'var(--text-faint)', textTransform: 'uppercase' }}>
+                        instance: {detail.instanceStatus}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.45 }}>{autonomy.desc}</div>
+                  {detail?.escalationTriggers?.length > 0 && (
+                    <div style={{ fontSize: 10.5, color: 'var(--text-faint)', marginTop: 6 }}>
+                      Escalates on: {detail.escalationTriggers.slice(0, 3).join(' · ')}
+                    </div>
+                  )}
                 </div>
               )}
 

@@ -30,27 +30,44 @@ export async function GET(request: Request) {
   const cleanPhone = phone.replace(/[\s\-+()]/g, '');
 
   try {
-    // Fetch in parallel
-    const [contextRes, connectionsRes] = await Promise.all([
-      fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=*`, {
-        headers: {
-          apikey: SUPABASE_KEY,
-          Authorization: `Bearer ${SUPABASE_KEY}`,
-        },
-      }),
+    const headers = {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+    };
+
+    // Fetch everything in parallel — the new Epic 1 tables sit alongside
+    // whatsapp_contexts so the deck can render real structural data.
+    const [
+      contextRes,
+      connectionsRes,
+      docRes,
+      configsRes,
+      instancesRes,
+    ] = await Promise.all([
+      fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=*`, { headers }),
       fetch(
         `${SUPABASE_URL}/rest/v1/oauth_connections?phone_number=eq.${cleanPhone}&status=eq.active&select=provider,service,account_email,account_name,scopes,created_at`,
-        {
-          headers: {
-            apikey: SUPABASE_KEY,
-            Authorization: `Bearer ${SUPABASE_KEY}`,
-          },
-        },
+        { headers },
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/ontology_entities?tenant_phone=eq.${cleanPhone}&entity_type=eq.documentation&select=name,metadata,updated_at&order=updated_at.desc&limit=1`,
+        { headers },
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&select=id,agent_name,agent_role,status,output_channels,model_routing,config`,
+        { headers },
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&select=agent_config_id,status,nats_subjects,signal_connections,metadata`,
+        { headers },
       ),
     ]);
 
     const contextRows = contextRes.ok ? await contextRes.json() : [];
     const connections = connectionsRes.ok ? await connectionsRes.json() : [];
+    const docRows = docRes.ok ? await docRes.json() : [];
+    const agentConfigs = configsRes.ok ? await configsRes.json() : [];
+    const agentInstances = instancesRes.ok ? await instancesRes.json() : [];
     const ctx = contextRows[0] ?? null;
 
     if (!ctx) {
@@ -127,6 +144,41 @@ export async function GET(request: Request) {
     // Build agent team summary from saved AI structured data (if available)
     const team = profile.team ?? null;
 
+    // Story 1.13/1.14 surfacing — documentation entity + per-agent operating
+    // protocol from the new Epic 1 tables.
+    const documentation = docRows[0] ? {
+      name: docRows[0].name,
+      text: docRows[0].metadata?.text ?? '',
+      generatedAt: docRows[0].metadata?.generated_at ?? docRows[0].updated_at,
+    } : null;
+
+    // Per-agent details keyed by hierarchy id (lowercased name with hyphens)
+    // so the deck can look them up by selectedAgent.id without caring which
+    // table holds what. Joins agent_configs to agent_instances by id.
+    const instanceByConfigId = new Map<string, any>();
+    for (const inst of agentInstances) instanceByConfigId.set(inst.agent_config_id, inst);
+
+    const agentDetails: Record<string, any> = {};
+    for (const cfg of agentConfigs) {
+      const key = (cfg.agent_name || '').toLowerCase().replace(/\s+/g, '-');
+      const inst = instanceByConfigId.get(cfg.id);
+      const proto = inst?.metadata?.operating_protocol ?? {};
+      agentDetails[key] = {
+        agentName: cfg.agent_name,
+        agentRole: cfg.agent_role,
+        configStatus: cfg.status,
+        outputChannels: cfg.output_channels,
+        modelRouting: cfg.model_routing,
+        tier: cfg.config?.tier,
+        instanceStatus: inst?.status ?? null,
+        autonomyLevel: proto.autonomyLevel ?? null,
+        topology: inst?.metadata?.topology ?? null,
+        natsSubjects: inst?.nats_subjects ?? [],
+        signalConnections: inst?.signal_connections ?? [],
+        escalationTriggers: proto.escalationTriggers ?? [],
+      };
+    }
+
     return NextResponse.json({
       user: {
         phone: cleanPhone,
@@ -150,6 +202,8 @@ export async function GET(request: Request) {
       })),
       activity: activity.slice(0, 20),
       team,
+      documentation,
+      agentDetails,
       messageCount: ctx.message_count ?? 0,
       lastSeen: ctx.last_seen,
     });
