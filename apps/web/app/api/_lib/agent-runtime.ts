@@ -229,6 +229,9 @@ interface TickContext {
   pendingDelegations: PendingDelegation[];
 }
 
+// Story 2.10 — periodic snapshots after each successful tick.
+import { saveSnapshot } from './state-recovery';
+
 // ─── Story 2.4 — Signal layer (delegation pickup) ─────────────────────────
 // Agents read pending delegations targeting their lane on each tick and
 // claim them. Postgres serves as the bus — no NATS required for now.
@@ -575,6 +578,11 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
     if (ctx.pendingDelegations.length > 0) {
       await markDelegationsDone(ctx.pendingDelegations.map((d) => d.id));
     }
+
+    // Story 2.10 — periodic snapshot after a successful tick. Stores the
+    // current state_data + protocol + wiring so a recovery has a known
+    // good point to restore from.
+    await saveSnapshot(instance as any, 'periodic');
 
     // Orchestrator multi-fan-out: write one extra delegation row per lane.
     // Specialists get this filtered out — only orchestrator's prompt was

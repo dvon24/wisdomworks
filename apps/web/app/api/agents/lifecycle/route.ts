@@ -11,6 +11,7 @@
 
 import { NextResponse } from 'next/server';
 import { startTenantAgents, stopTenantAgents, tickAgent, maybeSendTeamDigest, computeCadence } from '../../_lib/agent-runtime';
+import { saveSnapshot, recoverFromSnapshot, recoveryTest } from '../../_lib/state-recovery';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -85,6 +86,47 @@ export async function POST(request: Request) {
       }, {});
       return NextResponse.json({ ok: true, total: rows.length, byStatus: summary, instances: rows });
     }
+    if (action === 'snapshot') {
+      // Manual snapshot of every running instance for the tenant
+      if (!SUPABASE_URL || !SUPABASE_KEY) return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
+      const instRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&select=id,tenant_phone,state_data,metadata,nats_subjects,signal_connections`,
+        { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+      );
+      const instances = instRes.ok ? await instRes.json() : [];
+      const ids: string[] = [];
+      for (const inst of instances) {
+        const id = await saveSnapshot(inst, 'manual');
+        if (id) ids.push(id);
+      }
+      return NextResponse.json({ ok: true, snapshots: ids.length, ids });
+    }
+
+    if (action === 'recover') {
+      // Recover a specific instance from its latest snapshot at-or-before
+      // the optional point_in_time. Body shape: { phone, action, instance_id, point_in_time? }
+      const { instance_id, point_in_time } = await (async () => {
+        try { return await request.clone().json(); } catch { return {}; }
+      })();
+      if (!instance_id) return NextResponse.json({ error: 'instance_id required' }, { status: 400 });
+      const result = await recoverFromSnapshot(instance_id, point_in_time ? new Date(point_in_time) : undefined);
+      return NextResponse.json(result);
+    }
+
+    if (action === 'recovery_test') {
+      // Pick the first running instance for the tenant and run the
+      // snapshot → corrupt → recover → verify cycle. Asserts NFR34 SLA.
+      if (!SUPABASE_URL || !SUPABASE_KEY) return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
+      const instRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&select=id&limit=1`,
+        { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+      );
+      const insts = instRes.ok ? await instRes.json() : [];
+      if (insts.length === 0) return NextResponse.json({ error: 'no agent_instances for this tenant' }, { status: 400 });
+      const result = await recoveryTest(insts[0].id);
+      return NextResponse.json(result);
+    }
+
     return NextResponse.json({ error: `unknown action: ${action}` }, { status: 400 });
   } catch (err) {
     console.error('[agents/lifecycle] error:', err);
