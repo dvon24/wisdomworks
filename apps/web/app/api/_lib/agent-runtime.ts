@@ -242,6 +242,8 @@ interface TickContext {
 
 // Story 2.10 — periodic snapshots after each successful tick.
 import { saveSnapshot } from './state-recovery';
+// DND / mute — proactive pushes are silenced when the user said "talk later"
+import { isMuted } from './mute-state';
 // Story 2.15 — skill formation + cross-agent learning.
 import {
   topSkillsForLane,
@@ -483,6 +485,12 @@ async function callAnthropicForTick(model: string, systemPrompt: string): Promis
 
 async function pushEscalationToOwner(tenantPhone: string, agentName: string, agentRole: string, observation: string, recommendation: string): Promise<void> {
   if (!WHATSAPP_PHONE_ID || !WHATSAPP_TOKEN) return;
+  // Honor DND — proactive escalations stay silent until the user is back
+  const mute = await isMuted(tenantPhone);
+  if (mute.muted) {
+    console.log(`[agent-runtime] escalation suppressed (muted${mute.reason ? `: ${mute.reason}` : ''})`);
+    return;
+  }
   const message = [
     `⚡ ${agentName} (${agentRole}) flagged something:`,
     ``,
@@ -793,6 +801,11 @@ Rules:
 
 async function pushDigestToOwner(tenantPhone: string, message: string): Promise<void> {
   if (!WHATSAPP_PHONE_ID || !WHATSAPP_TOKEN) return;
+  const mute = await isMuted(tenantPhone);
+  if (mute.muted) {
+    console.log(`[digest] suppressed (muted${mute.reason ? `: ${mute.reason}` : ''})`);
+    return;
+  }
   try {
     await fetch(`${GRAPH_API}/${WHATSAPP_PHONE_ID}/messages`, {
       method: 'POST',

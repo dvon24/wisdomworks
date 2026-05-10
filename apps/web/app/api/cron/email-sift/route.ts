@@ -498,6 +498,14 @@ async function sendWhatsApp(to: string, message: string): Promise<void> {
 
   const cleanTo = to.replace(/[\s\-\+\(\)]/g, '');
 
+  // Honor DND — email digests are proactive
+  const { isMuted } = await import('../../_lib/mute-state');
+  const mute = await isMuted(cleanTo);
+  if (mute.muted) {
+    console.log(`[email-sift] WhatsApp digest suppressed for ${cleanTo} (muted${mute.reason ? `: ${mute.reason}` : ''})`);
+    return;
+  }
+
   await fetch(`${GRAPH_API}/${phoneId}/messages`, {
     method: 'POST',
     headers: {

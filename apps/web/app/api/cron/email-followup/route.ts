@@ -24,6 +24,7 @@ import {
   persistProposal,
   expireStaleFollowups,
 } from '../../_lib/email-followup';
+import { isMuted } from '../../_lib/mute-state';
 
 import 'imapflow';
 import 'mailparser';
@@ -49,6 +50,14 @@ interface OauthConn {
 
 async function pushFollowupPrompt(tenantPhone: string, proposalId: string, recipientLabel: string, days: number, subject: string, body: string): Promise<void> {
   if (!WHATSAPP_PHONE_ID || !WHATSAPP_TOKEN) return;
+  // The proposal still gets persisted — we just hold the WhatsApp ping until
+  // the user is reachable. They can pull pending follow-ups whenever they
+  // come back via list_pending_followups.
+  const mute = await isMuted(tenantPhone);
+  if (mute.muted) {
+    console.log(`[email-followup] WhatsApp push suppressed (muted${mute.reason ? `: ${mute.reason}` : ''})`);
+    return;
+  }
   const idShort = proposalId.slice(0, 8);
   const message = [
     `Heads up — ${recipientLabel} hasn't replied to your email "${subject}" from ${days} days ago.`,

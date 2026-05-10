@@ -25,6 +25,7 @@ import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
 import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, type TopContact } from '../../_lib/email-intelligence';
 import { listPendingFollowups, markFollowupSent, markFollowupDeclined } from '../../_lib/email-followup';
 import { decryptToken } from '@wisdomworks/shared';
+import { setMute, clearMute, isMuted, formatMuteUntil } from '../../_lib/mute-state';
 import {
   generateWordDoc,
   generatePowerPoint,
@@ -350,6 +351,26 @@ const TOOL_DRAFT_EMAIL: AnthropicTool = {
   },
 };
 
+const TOOL_MUTE: AnthropicTool = {
+  name: 'mute_assistant',
+  description:
+    "Suppress proactive WhatsApp messages (digests, escalations, follow-up prompts, briefings) for a window of time. Use IMMEDIATELY when the user signals they're unavailable: 'going on a drive', 'in a meeting', 'talk later', 'gimme an hour', 'I'm busy', 'be quiet', 'stop texting me', 'shh'. Inbound user messages still work — Sophia still replies when texted. Default duration if user doesn't specify: 4 hours. ALWAYS call this rather than just acknowledging — silence is the action they want.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      duration_minutes: { type: 'number', description: 'How long to stay quiet, in minutes. Defaults to 240 (4 hours) if not specified. Use Infinity-equivalent (do not pass) for indefinite.' },
+      reason: { type: 'string', description: "1-2 word context, e.g. 'driving', 'meeting', 'busy'. Stored so logs are interpretable." },
+    },
+  },
+};
+
+const TOOL_UNMUTE: AnthropicTool = {
+  name: 'unmute_assistant',
+  description:
+    "Resume proactive WhatsApp pushes after a mute. Use when user says 'I'm back', 'you can text me again', 'all good', 'ready', 'unmute', or otherwise signals they're available again.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 const TOOL_LIST_FOLLOWUPS: AnthropicTool = {
   name: 'list_pending_followups',
   description:
@@ -560,6 +581,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_ANALYZE_WEBSITE);
   tools.push(TOOL_DRAFT_EMAIL);
   tools.push(TOOL_FIND_CONTACT);
+  tools.push(TOOL_MUTE);
+  tools.push(TOOL_UNMUTE);
   tools.push(TOOL_LIST_FOLLOWUPS);
   tools.push(TOOL_APPROVE_FOLLOWUP);
   tools.push(TOOL_DECLINE_FOLLOWUP);
@@ -1041,6 +1064,33 @@ export async function executeTool(
         } catch (err) {
           return { content: `Draft error: ${err}`, success: false };
         }
+      }
+
+      case 'mute_assistant': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const minutes = typeof call.input.duration_minutes === 'number' && call.input.duration_minutes > 0
+          ? call.input.duration_minutes
+          : 240; // 4h default
+        const reason = call.input.reason ? String(call.input.reason).slice(0, 80) : undefined;
+        const result = await setMute({ tenantPhone: cleanPhone, durationMinutes: minutes, reason });
+        if (!result.ok) return { content: 'Could not save mute state.', success: false };
+        const window = formatMuteUntil(result.until);
+        return {
+          content: `Got it — I'll hold all proactive notifications ${window}${reason ? ` (${reason})` : ''}. Text me anytime, I'll still respond. Say "I'm back" when you want pushes resumed.`,
+          success: true,
+        };
+      }
+
+      case 'unmute_assistant': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const before = await isMuted(cleanPhone);
+        if (!before.muted) return { content: 'Already unmuted — pushes are flowing normally.', success: true };
+        const ok = await clearMute(cleanPhone);
+        return ok
+          ? { content: `Welcome back. Resuming proactive pushes — anything held while you were quiet I'll surface in the next digest.`, success: true }
+          : { content: 'Could not clear mute state.', success: false };
       }
 
       case 'list_pending_followups': {

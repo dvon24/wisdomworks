@@ -189,6 +189,14 @@ async function sendWhatsApp(to: string, message: string): Promise<void> {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   if (!phoneId || !accessToken) return;
 
+  // Honor DND — briefings are proactive, so they wait until the user is back
+  const { isMuted } = await import('../../_lib/mute-state');
+  const mute = await isMuted(to);
+  if (mute.muted) {
+    console.log(`[daily-briefing] suppressed for ${to} (muted${mute.reason ? `: ${mute.reason}` : ''})`);
+    return;
+  }
+
   await fetch(`${GRAPH_API}/${phoneId}/messages`, {
     method: 'POST',
     headers: {
