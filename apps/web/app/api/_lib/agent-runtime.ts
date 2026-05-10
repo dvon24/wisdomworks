@@ -33,6 +33,14 @@ interface AgentConfigRow {
   agent_role: string;
   model_routing: any;
   output_channels: string[];
+  config?: {
+    category?: string;
+    category_label?: string;
+    category_emoji?: string;
+    category_domain?: string;
+    description?: string;
+    [key: string]: unknown;
+  };
 }
 
 const headers = () => ({
@@ -176,16 +184,25 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
   const recentRuns = ctx.recentRunsForAgent.length
     ? ctx.recentRunsForAgent.map((r) => `  - [${r.outcome}] ${r.output_summary?.slice(0, 100) ?? ''}`).join('\n')
     : '  (none)';
+  const cat = config.config ?? {};
+  const categoryHeader = cat.category_label
+    ? `${cat.category_emoji ?? ''} ${cat.category_label}`.trim()
+    : '';
+  const categoryDomain = cat.category_domain ? `Your category covers: ${cat.category_domain}.` : '';
 
   return `You are ${config.agent_name}, the ${config.agent_role} for ${ctx.orgName} (${ctx.orgIndustry}).
+${categoryHeader ? `Lane: ${categoryHeader}` : ''}
 
 YOUR DOMAIN
-${ctx.documentationText.slice(0, 1500)}
+${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0, 1500)}
 
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
 ${recentRuns}
+
+STAY IN YOUR LANE
+You only own work that fits the category above. If you observe something that belongs to a different lane (sales/marketing/operations/finance/support/technical/etc), name the lane in your recommendation and let the orchestrator route it. Do NOT claim other domains' work.
 
 YOUR AUTONOMY LEVEL: ${autonomy}
 ${autonomy === 'L1' ? '→ You may PROPOSE actions but NEVER act without owner approval.' : ''}

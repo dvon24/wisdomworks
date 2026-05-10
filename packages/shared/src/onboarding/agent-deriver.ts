@@ -16,6 +16,7 @@
  */
 
 import type { AxisDeploymentSpec, AgentSpec, ModelRoutingEntry } from '../types/deployment-spec';
+import { categorizeAgent, getCategoryDefinition } from './agent-categories';
 
 export type AgentTier = 'Opus' | 'Sonnet' | 'Haiku';
 
@@ -128,21 +129,37 @@ export function deriveAgentConfigs(
       ? templateMatch.modelRouting
       : DEFAULT_ROUTING[tier];
 
+    // Category is the agent's lane — modeled on BMAD's module concept.
+    // Drives the stay-in-lane prompt guidance and downstream UI grouping.
+    const category = categorizeAgent({
+      name: aiAgent.name,
+      role: aiAgent.role,
+      description: aiAgent.description,
+    });
+    const categoryDef = getCategoryDefinition(category);
+
     out.push({
       agent_role: aiAgent.role ?? templateMatch?.role ?? 'Specialist',
       agent_name: aiAgent.name,
       model_routing: routing,
+      // Prefer the AI's explicit channels, then category typicals, then template
       output_channels: aiAgent.channels?.length
         ? aiAgent.channels
-        : (templateMatch?.outputChannels ?? ['WhatsApp']),
+        : (categoryDef.typicalChannels.length
+          ? categoryDef.typicalChannels
+          : templateMatch?.outputChannels ?? ['WhatsApp']),
       governance_rules: templateMatch?.governanceRules ?? [],
       entity_lookup_name: aiAgent.name,
       entity_lookup_type: 'role',
       status: 'pending',
       config: {
         tier,
+        category,
+        category_label: categoryDef.label,
+        category_emoji: categoryDef.emoji,
+        category_domain: categoryDef.domain,
         description: aiAgent.description,
-        emoji: aiAgent.emoji,
+        emoji: aiAgent.emoji ?? categoryDef.emoji,
         tools: aiAgent.tools ?? [],
         strengths: aiAgent.strengths ?? [],
         limitations: aiAgent.limitations ?? [],

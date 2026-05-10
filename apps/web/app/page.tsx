@@ -1008,8 +1008,13 @@ export default function CommandDeck() {
                   {meta.emoji || (selectedAgent.id === 'iris' ? '✦' : selectedAgent.label[0])}
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     <div style={{ fontSize: 15, fontWeight: 600 }}>{selectedAgent.label}</div>
+                    {detail?.categoryLabel && (
+                      <span className="pill" style={{ fontSize: 9, background: 'var(--accent-soft)', color: 'var(--accent-deep)', border: '1px solid var(--accent-line)' }}>
+                        {detail.categoryEmoji} {detail.categoryLabel}
+                      </span>
+                    )}
                     {selectedAgent.subTeam && (
                       <span className="pill info" style={{ fontSize: 9 }}>Manages {selectedAgent.subTeam.count}</span>
                     )}

@@ -22,6 +22,9 @@ export type {
 export { deriveAgentConfigs } from './agent-deriver';
 export type { DerivedAgentConfig, AgentTier } from './agent-deriver';
 
+export { AGENT_CATEGORIES, categorizeAgent, getCategoryDefinition } from './agent-categories';
+export type { AgentCategory, CategoryDefinition } from './agent-categories';
+
 export { planProvisioning } from './agent-provisioner';
 export type { InstancePayload, SignalConnection } from './agent-provisioner';
 

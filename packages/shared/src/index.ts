@@ -104,6 +104,9 @@ export {
   discoverIntegrations,
   recommendChannelsForRoles,
   documentOrganization,
+  AGENT_CATEGORIES,
+  categorizeAgent,
+  getCategoryDefinition,
 } from './onboarding';
 export type {
   OnboardingState,
@@ -120,6 +123,8 @@ export type {
   InstancePayload,
   SignalConnection,
   DiscoveryResult,
+  AgentCategory,
+  CategoryDefinition,
 } from './onboarding';
 
 // Agent Operating Protocol
