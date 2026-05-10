@@ -36,9 +36,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, ...result });
     }
     if (action === 'tick') {
-      // Manual tick — fires every running agent for THIS tenant only.
-      // Used for testing without waiting for the 15-min cron.
+      // Manual tick — fires every agent for THIS tenant. Auto-starts any
+      // 'ready' agents so the user doesn't have to know to call 'start' first.
       if (!SUPABASE_URL || !SUPABASE_KEY) return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
+
+      // Auto-start: flip any ready agents to running before ticking.
+      const autoStart = await startTenantAgents(cleanPhone);
+
       const instRes = await fetch(
         `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&status=eq.running&select=id,tenant_phone,agent_config_id,status,metadata`,
         { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
@@ -46,7 +50,7 @@ export async function POST(request: Request) {
       if (!instRes.ok) return NextResponse.json({ error: 'failed to load instances' }, { status: 500 });
       const instances = await instRes.json();
       if (instances.length === 0) {
-        return NextResponse.json({ ok: true, ticked: 0, note: 'No running agents to tick. Call action=start first.' });
+        return NextResponse.json({ ok: true, ticked: 0, note: 'No agent_instances exist for this tenant. Re-run onboarding.' });
       }
       const cfgIds = Array.from(new Set(instances.map((i: any) => i.agent_config_id)));
       const cfgRes = await fetch(
@@ -66,7 +70,7 @@ export async function POST(request: Request) {
       // After manual tick, also try a digest — useful for testing the flow.
       const cadence = await computeCadence(cleanPhone);
       const digest = await maybeSendTeamDigest(cleanPhone, cadence);
-      return NextResponse.json({ ok: true, ticked, failed, digest });
+      return NextResponse.json({ ok: true, ticked, failed, autoStarted: autoStart.started, digest });
     }
     if (action === 'status') {
       if (!SUPABASE_URL || !SUPABASE_KEY) return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });

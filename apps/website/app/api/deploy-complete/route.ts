@@ -199,6 +199,24 @@ async function persistEpic1Pipeline(
     const instances = planProvisioning(cleanPhone, spec, derivedAgents, protocolOverride);
     await provisionAgents(supabaseUrl, supabaseKey, cleanPhone, instances);
 
+    // Auto-start: flip the freshly-provisioned 'ready' agents to 'running'
+    // so the cron (and the user's first manual tick) actually fires them.
+    // Otherwise users would have to know to call action='start' separately.
+    try {
+      await fetch(`${supabaseUrl}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&status=eq.ready`, {
+        method: 'PATCH',
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({ status: 'running' }),
+      });
+    } catch (err) {
+      console.warn('[deploy-complete] auto-start failed (agents will start on first manual tick):', err);
+    }
+
     return {
       spec,
       ontologyCount: ontology.entities.length,
