@@ -130,6 +130,86 @@ export async function stopTenantAgents(tenantPhone: string): Promise<{ stopped: 
   return { stopped: rows.length };
 }
 
+// ─── Adaptive tick cadence ────────────────────────────────────────────────
+// Cron fires every 5 min, but each tenant has its own target cadence based
+// on how recently the user has been engaging. Active users get fast ticks
+// so agents feel responsive; sleeping users get slow ticks so we don't burn
+// tokens on dead air.
+
+interface TickCadence {
+  minutes: number;
+  band: 'active' | 'recent' | 'normal' | 'quiet' | 'asleep';
+  lastUserActivityMinAgo: number;
+}
+
+/** Compute when the last meaningful user signal happened across all sources. */
+async function lastUserActivity(tenantPhone: string): Promise<Date | null> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  // Pull the freshest of: last_seen on whatsapp_contexts, profile.lastDeckVisit
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${tenantPhone}&select=last_seen,profile`,
+    { headers: headers() },
+  );
+  if (!res.ok) return null;
+  const rows = await res.json();
+  const r = rows[0];
+  if (!r) return null;
+  const candidates: number[] = [];
+  if (r.last_seen) candidates.push(new Date(r.last_seen).getTime());
+  if (r.profile?.lastDeckVisit) candidates.push(new Date(r.profile.lastDeckVisit).getTime());
+  if (r.profile?.lastWhatsAppActivity) candidates.push(new Date(r.profile.lastWhatsAppActivity).getTime());
+  if (candidates.length === 0) return null;
+  return new Date(Math.max(...candidates));
+}
+
+export async function computeCadence(tenantPhone: string): Promise<TickCadence> {
+  const last = await lastUserActivity(tenantPhone);
+  if (!last) return { minutes: 60, band: 'quiet', lastUserActivityMinAgo: -1 };
+  const minAgo = (Date.now() - last.getTime()) / 60_000;
+  if (minAgo < 30) return { minutes: 5, band: 'active', lastUserActivityMinAgo: minAgo };
+  if (minAgo < 120) return { minutes: 10, band: 'recent', lastUserActivityMinAgo: minAgo };
+  if (minAgo < 360) return { minutes: 15, band: 'normal', lastUserActivityMinAgo: minAgo };
+  if (minAgo < 1440) return { minutes: 60, band: 'quiet', lastUserActivityMinAgo: minAgo };
+  return { minutes: 240, band: 'asleep', lastUserActivityMinAgo: minAgo };
+}
+
+/**
+ * Has enough time passed since the last tick for this tenant to fire again,
+ * given their adaptive cadence?
+ */
+async function shouldTickTenant(tenantPhone: string): Promise<{ should: boolean; cadence: TickCadence; minSinceLastTick: number }> {
+  const cadence = await computeCadence(tenantPhone);
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { should: true, cadence, minSinceLastTick: 0 };
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${tenantPhone}&select=profile`,
+    { headers: headers() },
+  );
+  const rows = res.ok ? await res.json() : [];
+  const last = rows[0]?.profile?.lastTickAt;
+  const minSince = last ? (Date.now() - new Date(last).getTime()) / 60_000 : Infinity;
+  return { should: minSince >= cadence.minutes, cadence, minSinceLastTick: minSince };
+}
+
+async function recordTickAt(tenantPhone: string, cadence: TickCadence): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  // Read-modify-write profile so we don't clobber other keys
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${tenantPhone}&select=profile`,
+    { headers: headers() },
+  );
+  if (!res.ok) return;
+  const rows = await res.json();
+  const profile = rows[0]?.profile ?? {};
+  profile.lastTickAt = new Date().toISOString();
+  profile.tickCadenceMinutes = cadence.minutes;
+  profile.tickBand = cadence.band;
+  await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${tenantPhone}`, {
+    method: 'PATCH',
+    headers: { ...headers(), Prefer: 'return=minimal' },
+    body: JSON.stringify({ profile }),
+  });
+}
+
 // ─── Story 2.1b — real reasoning helpers ─────────────────────────────────
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -144,11 +224,13 @@ interface TickContext {
   documentationText: string;
   connections: { provider: string; service: string; account_email?: string }[];
   recentRunsForAgent: { outcome: string; output_summary?: string; started_at: string }[];
+  cadence: TickCadence;
 }
 
 async function loadTickContext(tenantPhone: string, instanceId: string): Promise<TickContext> {
+  const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [] };
+    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence };
   }
 
   // Three small queries in parallel — context tab kept tight on purpose.
@@ -170,6 +252,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string): Promise
     documentationText: docRows[0]?.metadata?.text ?? '',
     connections: connRows ?? [],
     recentRunsForAgent: runRows ?? [],
+    cadence,
   };
 }
 
@@ -206,6 +289,23 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
     ? `YOU ARE THE ORCHESTRATOR\nYou span all lanes by design. Your job is to spot work that needs multiple specialists and fan it out. When something needs multi-lane input, populate the "delegations" array (plural) with one entry per lane that should weigh in. When something is straightforward and belongs to a single lane, use "delegate_to_lane" (singular). When you can answer it yourself, do.`
     : `STAY IN YOUR LANE\nYou only own work that fits the category above. If you observe something that belongs to a different lane (sales/marketing/operations/finance/support/technical/etc), set "delegate_to_lane" to that lane and explain in "delegation_reason". Do NOT claim other domains' work. Do NOT use the "delegations" plural array — that's only for the orchestrator.`;
 
+  // Adaptive cadence guidance — agents change tone based on whether the
+  // user is engaged right now or sleeping.
+  const cadenceGuide = (() => {
+    switch (ctx.cadence.band) {
+      case 'active':
+        return `USER STATE: actively engaged right now. Be ready — they may text or visit the deck momentarily. Surface anything that needs their immediate attention.`;
+      case 'recent':
+        return `USER STATE: was active in the last 2 hours. They're around. Surface medium+ priority items.`;
+      case 'normal':
+        return `USER STATE: idle but awake. Default tone. Only surface items that are genuinely worth their time.`;
+      case 'quiet':
+        return `USER STATE: hasn't engaged in 6+ hours — likely heads-down on something else or sleeping. Only flag HIGH-priority items. Sit on routine observations.`;
+      case 'asleep':
+        return `USER STATE: silent for 24+ hours. Treat as off-hours. Only flag genuine emergencies. Otherwise observe and wait.`;
+    }
+  })();
+
   return `You are ${config.agent_name}, the ${config.agent_role} for ${ctx.orgName} (${ctx.orgIndustry}).
 ${categoryHeader ? `Lane: ${categoryHeader}` : ''}
 
@@ -216,6 +316,8 @@ YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
 ${recentRuns}
+
+${cadenceGuide}
 
 ${laneRule}
 
@@ -448,31 +550,51 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
 }
 
 /** Cron entry point — tick every running agent across every tenant */
-export async function tickRunningAgents(): Promise<{ tenants: number; ticked: number; failed: number }> {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return { tenants: 0, ticked: 0, failed: 0 };
+export async function tickRunningAgents(): Promise<{ tenants: number; ticked: number; failed: number; skipped: number }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { tenants: 0, ticked: 0, failed: 0, skipped: 0 };
 
-  // Fetch all running instances + their configs in two queries
   const instRes = await fetch(
     `${SUPABASE_URL}/rest/v1/agent_instances?status=eq.running&select=id,tenant_phone,agent_config_id,status,metadata`,
     { headers: headers() },
   );
-  if (!instRes.ok) return { tenants: 0, ticked: 0, failed: 0 };
+  if (!instRes.ok) return { tenants: 0, ticked: 0, failed: 0, skipped: 0 };
   const instances = await instRes.json() as AgentInstanceRow[];
-  if (instances.length === 0) return { tenants: 0, ticked: 0, failed: 0 };
+  if (instances.length === 0) return { tenants: 0, ticked: 0, failed: 0, skipped: 0 };
 
   const cfgIds = Array.from(new Set(instances.map((i) => i.agent_config_id)));
   const cfgRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/agent_configs?id=in.(${cfgIds.join(',')})&select=id,agent_name,agent_role,model_routing,output_channels`,
+    `${SUPABASE_URL}/rest/v1/agent_configs?id=in.(${cfgIds.join(',')})&select=id,agent_name,agent_role,model_routing,output_channels,config`,
     { headers: headers() },
   );
-  if (!cfgRes.ok) return { tenants: 0, ticked: 0, failed: 0 };
+  if (!cfgRes.ok) return { tenants: 0, ticked: 0, failed: 0, skipped: 0 };
   const cfgs = await cfgRes.json() as AgentConfigRow[];
   const cfgById = new Map(cfgs.map((c) => [c.id, c] as const));
 
-  const tenants = new Set(instances.map((i) => i.tenant_phone));
+  // Adaptive cadence: cron fires every 5 min, but each tenant has their own
+  // target cadence based on recent user activity. Skip a tenant entirely if
+  // not enough time has passed since their last tick.
+  const tenants = Array.from(new Set(instances.map((i) => i.tenant_phone)));
+  const dueTenants = new Set<string>();
+  for (const t of tenants) {
+    const { should, cadence, minSinceLastTick } = await shouldTickTenant(t);
+    if (should) {
+      dueTenants.add(t);
+      // Record now so concurrent ticks don't double-fire
+      await recordTickAt(t, cadence);
+      console.log(`[agent-tick] ${t} due (${cadence.band}, ${cadence.minutes}min cadence, ${minSinceLastTick === Infinity ? 'first' : Math.round(minSinceLastTick) + 'm'} since last)`);
+    } else {
+      console.log(`[agent-tick] ${t} skipped (${cadence.band}, ${cadence.minutes}min cadence, ${Math.round(minSinceLastTick)}m since last)`);
+    }
+  }
+
   let ticked = 0;
   let failed = 0;
+  let skipped = 0;
   for (const inst of instances) {
+    if (!dueTenants.has(inst.tenant_phone)) {
+      skipped++;
+      continue;
+    }
     const cfg = cfgById.get(inst.agent_config_id);
     if (!cfg) {
       failed++;
@@ -485,5 +607,5 @@ export async function tickRunningAgents(): Promise<{ tenants: number; ticked: nu
       failed++;
     }
   }
-  return { tenants: tenants.size, ticked, failed };
+  return { tenants: tenants.length, ticked, failed, skipped };
 }

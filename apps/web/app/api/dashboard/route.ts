@@ -273,6 +273,21 @@ export async function GET(request: Request) {
       console.warn('[dashboard] usage computation failed:', err);
     }
 
+    // Adaptive ticking — record this deck visit as a user-activity signal
+    // so the cron knows to stay in fast-tick band while Devon is using the deck.
+    if (ctx) {
+      try {
+        const updatedProfile = { ...profile, lastDeckVisit: new Date().toISOString() };
+        await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
+          method: 'PATCH',
+          headers: { ...headers, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+          body: JSON.stringify({ profile: updatedProfile }),
+        });
+      } catch {
+        // Non-fatal — activity tracking is opportunistic
+      }
+    }
+
     return NextResponse.json({
       user: {
         phone: cleanPhone,
