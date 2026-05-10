@@ -20,6 +20,7 @@ import {
 import { listImapUnread, sendImap } from '../../_lib/imap-runtime';
 import { queryKnowledge } from '../../_lib/knowledge-base';
 import { logCorrection } from '../../_lib/classification-learning';
+import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
 import {
   generateWordDoc,
   generatePowerPoint,
@@ -198,6 +199,36 @@ const TOOL_RUN_WORKFLOW: AnthropicTool = {
       },
     },
     required: ['name', 'steps'],
+  },
+};
+
+const TOOL_LIST_PROCESSES: AnthropicTool = {
+  name: 'list_proposed_processes',
+  description:
+    'List process_records in proposed status — patterns the team detected the user doing repeatedly that could be automated. Use when the user asks "what could we automate" or for proactive surfacing.',
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_APPROVE_PROCESS: AnthropicTool = {
+  name: 'approve_process_for_automation',
+  description:
+    'When the user agrees to automate a proposed process, transition it to approved + generate the workflow definition. Returns the workflow so the user can review before it actually runs.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      process_id: { type: 'string', description: 'The id of the process_record (from list_proposed_processes).' },
+    },
+    required: ['process_id'],
+  },
+};
+
+const TOOL_DECLINE_PROCESS: AnthropicTool = {
+  name: 'decline_process_automation',
+  description: 'Move a proposed process to declined when the user says they do not want to automate it. Reduces noise on future tick prompts.',
+  input_schema: {
+    type: 'object',
+    properties: { process_id: { type: 'string' } },
+    required: ['process_id'],
   },
 };
 
@@ -459,6 +490,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_CREATE_DOCUMENT);
   tools.push(TOOL_RUN_WORKFLOW);
   tools.push(TOOL_REPORT_MISCLASSIFICATION);
+  tools.push(TOOL_LIST_PROCESSES);
+  tools.push(TOOL_APPROVE_PROCESS);
+  tools.push(TOOL_DECLINE_PROCESS);
   tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
   tools.push(TOOL_UPDATE_AGENT);
@@ -580,6 +614,47 @@ export async function executeTool(
           content: `Event "${result.data.title}" created for ${new Date(result.data.start).toLocaleString()}.`,
           success: true,
         };
+      }
+
+      case 'list_proposed_processes': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const SU = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const SK = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!SU || !SK) return { content: 'Supabase not configured.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const res = await fetch(
+          `${SU}/rest/v1/process_records?tenant_phone=eq.${cleanPhone}&automation_status=eq.proposed&order=occurrence_count.desc&limit=10&select=id,name,description,occurrence_count,last_observed_at`,
+          { headers: { apikey: SK, Authorization: `Bearer ${SK}` } },
+        );
+        if (!res.ok) return { content: 'Could not load processes.', success: false };
+        const rows = await res.json();
+        if (rows.length === 0) return { content: 'No proposed processes yet. The team needs more activity to detect repeating patterns.', success: true };
+        const lines = rows.map((p: any, i: number) =>
+          `${i + 1}. [${p.id.slice(0, 8)}] ${p.description?.slice(0, 100) ?? p.name} (${p.occurrence_count}x)`,
+        );
+        return { content: `${rows.length} proposed automation${rows.length > 1 ? 's' : ''}:\n${lines.join('\n')}\n\nApprove with 'approve [id]' to auto-generate the workflow.`, success: true };
+      }
+
+      case 'approve_process_for_automation': {
+        const processId = call.input.process_id;
+        if (!processId) return { content: 'Missing process_id.', success: false };
+        const workflow = await proposeWorkflowFor(processId);
+        if (!workflow) return { content: 'Could not load process.', success: false };
+        const result = await transitionProcess(processId, 'automated', workflow);
+        if (!result.ok) return { content: `Approval failed: ${result.error}`, success: false };
+        return {
+          content: `Approved + automated. Workflow definition:\n${JSON.stringify(workflow, null, 2)}\n\nIt'll run on its next trigger condition.`,
+          success: true,
+        };
+      }
+
+      case 'decline_process_automation': {
+        const processId = call.input.process_id;
+        if (!processId) return { content: 'Missing process_id.', success: false };
+        const result = await transitionProcess(processId, 'declined');
+        return result.ok
+          ? { content: 'Declined. Won\'t surface again.', success: true }
+          : { content: `Decline failed: ${result.error}`, success: false };
       }
 
       case 'report_email_misclassification': {
