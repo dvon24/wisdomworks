@@ -202,6 +202,16 @@ export default function CommandDeck() {
   const totalPrice = calculateTotalPrice(team);
 
   const [chatBusy, setChatBusy] = useState(false);
+  // Activity feed: which agent groups are expanded
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const toggleExpanded = (agentId: string) => {
+    setExpandedAgents((prev) => {
+      const next = new Set(prev);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      return next;
+    });
+  };
   // Connection form state
   const [connForm, setConnForm] = useState<null | 'yahoo' | 'apple'>(null);
   const [connEmail, setConnEmail] = useState('');
@@ -596,33 +606,125 @@ export default function CommandDeck() {
             </div>
           )}
 
-          {view === 'activity' && (
-            <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540 }}>
-              <div className="eyebrow" style={{ marginBottom: 16 }}>Live activity feed</div>
-              {tenantData?.activity?.length > 0 ? (
-                tenantData.activity.map((event: any, i: number) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--glass-border)' }}>
-                    <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--accent-soft)', color: 'var(--accent-deep)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 13 }}>
-                      {event.agent[0]}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 500 }}>
-                        {event.agent} · <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>{event.action}</span>
-                      </div>
-                    </div>
-                    <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>{event.time}</div>
+          {view === 'activity' && (() => {
+            // Group enriched agent_runs by agent. Each group becomes a
+            // collapsible row showing run count + last activity time.
+            const runs: any[] = tenantData?.agentRuns ?? [];
+            const groupsMap = new Map<string, { agentName: string; agentRole: string; agentId: string; runs: any[]; lastTs: number }>();
+            for (const r of runs) {
+              if (r.outcome === 'no_op') continue; // skip noise from grouped view
+              const g = groupsMap.get(r.agentId) ?? { agentName: r.agentName, agentRole: r.agentRole, agentId: r.agentId, runs: [] as any[], lastTs: 0 };
+              g.runs.push(r);
+              const ts = new Date(r.startedAt).getTime();
+              if (ts > g.lastTs) g.lastTs = ts;
+              groupsMap.set(r.agentId, g);
+            }
+            const groups = Array.from(groupsMap.values()).sort((a, b) => b.lastTs - a.lastTs);
+            const fmtAgo = (ts: number) => {
+              const s = Math.floor((Date.now() - ts) / 1000);
+              if (s < 60) return 'just now';
+              if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+              if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+              return `${Math.floor(s / 86400)}d ago`;
+            };
+            const verbFor = (run: any) => {
+              if (run.delegatedToLane) return '↪ delegated';
+              if (run.outcome === 'escalated') return '⚡ flagged';
+              if (run.outcome === 'proposed') return 'proposed';
+              if (run.outcome === 'acted') return 'did';
+              if (run.outcome === 'failed') return '⚠ failed';
+              return 'observed';
+            };
+
+            return (
+              <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540, overflow: 'auto' }}>
+                <div className="eyebrow" style={{ marginBottom: 16 }}>Live activity feed</div>
+                {groups.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {groups.map((g) => {
+                      const isOpen = expandedAgents.has(g.agentId);
+                      const escalations = g.runs.filter((r) => r.outcome === 'escalated').length;
+                      const delegations = g.runs.filter((r) => r.delegatedToLane).length;
+                      return (
+                        <div key={g.agentId} className="glass" style={{ padding: 0, overflow: 'hidden' }}>
+                          <button
+                            onClick={() => toggleExpanded(g.agentId)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 12,
+                              padding: '12px 14px',
+                              width: '100%',
+                              background: 'transparent',
+                              border: 0,
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              color: 'inherit',
+                              fontFamily: 'inherit',
+                            }}
+                          >
+                            <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--accent-soft)', color: 'var(--accent-deep)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 13 }}>
+                              {g.agentName[0]}
+                            </div>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>
+                                {g.agentName} <span style={{ color: 'var(--text-faint)', fontWeight: 400 }}>· {g.agentRole}</span>
+                              </div>
+                              <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>
+                                {g.runs.length} {g.runs.length === 1 ? 'event' : 'events'}
+                                {escalations > 0 && ` · ${escalations} escalation${escalations > 1 ? 's' : ''}`}
+                                {delegations > 0 && ` · ${delegations} delegation${delegations > 1 ? 's' : ''}`}
+                                {' · last ' + fmtAgo(g.lastTs)}
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{isOpen ? '▾' : '▸'}</div>
+                          </button>
+                          {isOpen && (
+                            <div style={{ borderTop: '1px solid var(--glass-border)', padding: '8px 14px 14px 58px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                              {g.runs.slice(0, 10).map((r, i) => (
+                                <div key={i} style={{ fontSize: 12, lineHeight: 1.5, paddingTop: i === 0 ? 8 : 0 }}>
+                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
+                                    <span style={{ fontWeight: 600, color: r.delegatedToLane ? 'var(--accent-deep)' : r.outcome === 'escalated' ? '#c2410c' : 'var(--text)' }}>
+                                      {verbFor(r)}
+                                      {r.delegatedToLane && <span style={{ color: 'var(--accent-deep)' }}> → {r.delegatedToLane}</span>}
+                                    </span>
+                                    <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{fmtAgo(new Date(r.startedAt).getTime())}</span>
+                                  </div>
+                                  <div style={{ color: 'var(--text-dim)' }}>{r.summary}</div>
+                                  {r.delegationReason && (
+                                    <div style={{ fontSize: 11, color: 'var(--accent-deep)', marginTop: 4, paddingLeft: 8, borderLeft: '2px solid var(--accent-line)' }}>
+                                      {r.delegationReason}
+                                    </div>
+                                  )}
+                                  {r.recommendation && !r.delegatedToLane && (
+                                    <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 3 }}>
+                                      → {r.recommendation}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                              {g.runs.length > 10 && (
+                                <div style={{ fontSize: 11, color: 'var(--text-faint)', fontStyle: 'italic' }}>
+                                  + {g.runs.length - 10} earlier events
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                ))
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 400, gap: 8 }}>
-                  <div style={{ fontSize: 14, color: 'var(--text-dim)' }}>No activity yet</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>
-                    Once your agents start working — sending emails, drafting replies, syncing calendar — you'll see it here.
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 400, gap: 8 }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-dim)' }}>No activity yet</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>
+                      Once your agents start working — sending emails, drafting replies, syncing calendar — you'll see it here.
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            );
+          })()}
 
           {view === 'connections' && (
             <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540, display: 'flex', flexDirection: 'column', gap: 16 }}>

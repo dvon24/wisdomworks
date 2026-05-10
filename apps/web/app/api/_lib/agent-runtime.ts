@@ -72,6 +72,9 @@ async function logRun(row: {
   tokens_out?: number;
   error?: string;
   metadata?: Record<string, unknown>;
+  delegated_to_lane?: string | null;
+  delegation_reason?: string | null;
+  delegation_status?: 'pending' | 'claimed' | 'done' | 'declined' | null;
 }) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return;
   await fetch(`${SUPABASE_URL}/rest/v1/agent_runs`, {
@@ -170,12 +173,20 @@ async function loadTickContext(tenantPhone: string, instanceId: string): Promise
   };
 }
 
+type LaneId = 'orchestrator' | 'operations' | 'sales' | 'marketing' | 'support' | 'finance' | 'analytics' | 'creative' | 'people' | 'technical' | 'legal' | 'specialist';
+
 interface ReasoningResult {
   observation: string;
   recommendation: string;
   requires_action: boolean;
   escalation_priority: 'none' | 'low' | 'medium' | 'high';
   proposed_action?: string;
+  /** Specialist agents: if observed work belongs to another lane, name it. */
+  delegate_to_lane?: LaneId | null;
+  /** Why this should be delegated (one short sentence). */
+  delegation_reason?: string;
+  /** Orchestrator only: fan out to multiple lanes when work needs multi-input. */
+  delegations?: { lane: LaneId; reason: string }[];
 }
 
 function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: TickContext): string {
@@ -190,6 +201,11 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
     : '';
   const categoryDomain = cat.category_domain ? `Your category covers: ${cat.category_domain}.` : '';
 
+  const isOrchestrator = cat.category === 'orchestrator';
+  const laneRule = isOrchestrator
+    ? `YOU ARE THE ORCHESTRATOR\nYou span all lanes by design. Your job is to spot work that needs multiple specialists and fan it out. When something needs multi-lane input, populate the "delegations" array (plural) with one entry per lane that should weigh in. When something is straightforward and belongs to a single lane, use "delegate_to_lane" (singular). When you can answer it yourself, do.`
+    : `STAY IN YOUR LANE\nYou only own work that fits the category above. If you observe something that belongs to a different lane (sales/marketing/operations/finance/support/technical/etc), set "delegate_to_lane" to that lane and explain in "delegation_reason". Do NOT claim other domains' work. Do NOT use the "delegations" plural array — that's only for the orchestrator.`;
+
   return `You are ${config.agent_name}, the ${config.agent_role} for ${ctx.orgName} (${ctx.orgIndustry}).
 ${categoryHeader ? `Lane: ${categoryHeader}` : ''}
 
@@ -201,8 +217,7 @@ CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
 ${recentRuns}
 
-STAY IN YOUR LANE
-You only own work that fits the category above. If you observe something that belongs to a different lane (sales/marketing/operations/finance/support/technical/etc), name the lane in your recommendation and let the orchestrator route it. Do NOT claim other domains' work.
+${laneRule}
 
 YOUR AUTONOMY LEVEL: ${autonomy}
 ${autonomy === 'L1' ? '→ You may PROPOSE actions but NEVER act without owner approval.' : ''}
@@ -218,14 +233,22 @@ Respond with ONLY a JSON object, no other text:
   "recommendation": "1-2 sentences on what you'd do or what the owner should know — keep it concrete",
   "requires_action": true|false,
   "escalation_priority": "none" | "low" | "medium" | "high",
-  "proposed_action": "if requires_action, the specific next step (1 sentence). Omit otherwise."
+  "proposed_action": "if requires_action, the specific next step (1 sentence). Omit otherwise.",
+  "delegate_to_lane": "operations" | "sales" | "marketing" | "support" | "finance" | "analytics" | "creative" | "people" | "technical" | "legal" | null,
+  "delegation_reason": "if delegate_to_lane is set, one sentence on why this work belongs to that lane. Omit otherwise.",
+  "delegations": [{ "lane": "marketing", "reason": "..." }, { "lane": "operations", "reason": "..." }]
 }
 
 PRIORITY GUIDE:
 - "none" → routine, no signal
 - "low" → minor, can wait days
 - "medium" → owner should review this week
-- "high" → owner needs to know now (use sparingly)`;
+- "high" → owner needs to know now (use sparingly)
+
+DELEGATION RULES:
+- Specialists: use the SINGULAR delegate_to_lane when work clearly belongs elsewhere. Skip the delegations array.
+- Orchestrator: use the PLURAL delegations array (1+ entries) when work needs multi-lane input. Use the singular when it's a clean single-lane handoff. Use neither when you can resolve it yourself.
+- Either way: do NOT delegate to your own lane.`;
 }
 
 async function callAnthropicForTick(model: string, systemPrompt: string): Promise<{ result: ReasoningResult; tokensIn: number; tokensOut: number; raw: string }> {
@@ -342,6 +365,13 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
     if (result.escalation_priority === 'high') outcome = 'escalated';
     else if (result.requires_action) outcome = autonomy === 'L1' ? 'proposed' : 'acted';
 
+    // Story 2.1c — sanitize delegation. Don't accept "delegate to my own
+    // lane" — that would be the agent passing the buck to itself.
+    const ownLane = config.config?.category;
+    const delegateTo = result.delegate_to_lane && result.delegate_to_lane !== ownLane
+      ? result.delegate_to_lane
+      : null;
+
     await logRun({
       tenant_phone: instance.tenant_phone,
       agent_instance_id: instance.id,
@@ -354,14 +384,45 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
       tokens_out: tokensOut,
       input_summary: `Scheduled tick for ${config.agent_name} (${config.agent_role}).`,
       output_summary: result.observation || raw.slice(0, 200),
+      delegated_to_lane: delegateTo,
+      delegation_reason: delegateTo ? (result.delegation_reason ?? null) : null,
+      delegation_status: delegateTo ? 'pending' : null,
       metadata: {
         autonomy,
+        category: ownLane,
         recommendation: result.recommendation,
         requires_action: result.requires_action,
         escalation_priority: result.escalation_priority,
         proposed_action: result.proposed_action,
       },
     });
+
+    // Orchestrator multi-fan-out: write one extra delegation row per lane.
+    // Specialists get this filtered out — only orchestrator's prompt was
+    // told about the plural array, but we belt-and-suspenders here too.
+    if (ownLane === 'orchestrator' && Array.isArray(result.delegations)) {
+      for (const d of result.delegations) {
+        if (!d?.lane || d.lane === ownLane) continue;
+        await logRun({
+          tenant_phone: instance.tenant_phone,
+          agent_instance_id: instance.id,
+          trigger: 'tick',
+          phase: 'plan',
+          outcome: 'proposed',
+          input_summary: `Multi-lane delegation from ${config.agent_name}.`,
+          output_summary: d.reason ?? `Routed work to the ${d.lane} lane.`,
+          delegated_to_lane: d.lane,
+          delegation_reason: d.reason ?? null,
+          delegation_status: 'pending',
+          metadata: {
+            autonomy,
+            category: ownLane,
+            spawned_by: 'orchestrator_multi_delegation',
+            parent_observation: result.observation?.slice(0, 200),
+          },
+        });
+      }
+    }
 
     // Push high-priority escalations straight to the owner's WhatsApp.
     if (outcome === 'escalated' && result.observation) {

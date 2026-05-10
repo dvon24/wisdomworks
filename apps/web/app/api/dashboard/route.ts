@@ -62,9 +62,9 @@ export async function GET(request: Request) {
         `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&select=id,agent_config_id,status,nats_subjects,signal_connections,metadata`,
         { headers },
       ),
-      // Story 2.1b — recent agent_runs for the activity feed
+      // Story 2.1b/c — recent agent_runs for the activity feed (incl. delegation)
       fetch(
-        `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&order=started_at.desc&limit=30&select=agent_instance_id,trigger,outcome,output_summary,metadata,started_at,duration_ms,tokens_in,tokens_out`,
+        `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&order=started_at.desc&limit=50&select=agent_instance_id,trigger,outcome,output_summary,metadata,started_at,duration_ms,tokens_in,tokens_out,delegated_to_lane,delegation_reason,delegation_status`,
         { headers },
       ),
     ]);
@@ -155,24 +155,52 @@ export async function GET(request: Request) {
       if (cfg) instanceIdToAgent.set(inst.id, { name: cfg.agent_name, role: cfg.agent_role });
     }
 
-    // Push run rows — keep the noise low: skip 'no_op' unless nothing else
-    // happened, and trim long observations.
-    const meaningfulRuns = agentRunRows.filter((r: any) => r.outcome !== 'no_op').slice(0, 15);
+    // Build a richer agentRuns array (used by the deck for grouped view)
+    // and ALSO push a few headline runs into the legacy activity array
+    // so the existing flat fallback still has signal.
+    const enrichedRuns = agentRunRows
+      .map((run: any) => {
+        const agent = instanceIdToAgent.get(run.agent_instance_id);
+        if (!agent) return null;
+        return {
+          agentName: agent.name,
+          agentRole: agent.role,
+          agentId: (agent.name || '').toLowerCase().replace(/\s+/g, '-'),
+          trigger: run.trigger,
+          outcome: run.outcome,
+          summary: run.output_summary ?? '',
+          recommendation: run.metadata?.recommendation ?? null,
+          escalationPriority: run.metadata?.escalation_priority ?? 'none',
+          proposedAction: run.metadata?.proposed_action ?? null,
+          category: run.metadata?.category ?? null,
+          delegatedToLane: run.delegated_to_lane ?? null,
+          delegationReason: run.delegation_reason ?? null,
+          delegationStatus: run.delegation_status ?? null,
+          tokensIn: run.tokens_in,
+          tokensOut: run.tokens_out,
+          durationMs: run.duration_ms,
+          startedAt: run.started_at,
+        };
+      })
+      .filter(Boolean);
+
+    // Headline runs into legacy activity (skip no_op)
+    const meaningfulRuns = agentRunRows.filter((r: any) => r.outcome !== 'no_op').slice(0, 8);
     for (const run of meaningfulRuns) {
       const agent = instanceIdToAgent.get(run.agent_instance_id);
       if (!agent) continue;
       const ts = new Date(run.started_at).getTime();
-      const meta = run.metadata ?? {};
       const outcome = run.outcome;
+      const delegated = run.delegated_to_lane ? ` → ${run.delegated_to_lane}` : '';
       const verb = outcome === 'escalated' ? '⚡ flagged'
         : outcome === 'proposed' ? 'proposed'
         : outcome === 'acted' ? 'did'
         : outcome === 'failed' ? '⚠ failed'
         : 'observed';
-      const summary = (run.output_summary ?? '').replace(/\s+/g, ' ').slice(0, 160);
+      const summary = (run.output_summary ?? '').replace(/\s+/g, ' ').slice(0, 140);
       activity.push({
         agent: agent.name,
-        action: `${verb}: ${summary}${(run.output_summary ?? '').length > 160 ? '…' : ''}`,
+        action: `${verb}${delegated}: ${summary}${(run.output_summary ?? '').length > 140 ? '…' : ''}`,
         time: timeAgo(new Date(ts)),
         ts,
       });
@@ -245,6 +273,7 @@ export async function GET(request: Request) {
         classification: d.classification,
       })),
       activity: activity.slice(0, 20),
+      agentRuns: enrichedRuns,
       team,
       documentation,
       agentDetails,
