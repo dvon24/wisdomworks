@@ -115,6 +115,61 @@ const TOOL_CREATE_CALENDAR_EVENT: AnthropicTool = {
   },
 };
 
+const TOOL_LIST_TASKS: AnthropicTool = {
+  name: 'list_open_tasks',
+  description:
+    "List the user's open tasks pulled from the ontology (extracted from email action items, conversation, and manual additions). Use when the user asks 'what's on my plate', 'what's open', or 'todo list'.",
+  input_schema: {
+    type: 'object',
+    properties: { limit: { type: 'number', description: 'Max tasks (default 10).' } },
+  },
+};
+
+const TOOL_FIND_CONFLICTS: AnthropicTool = {
+  name: 'find_calendar_conflicts',
+  description:
+    "Check the user's calendar for scheduling conflicts with a proposed time window. Use when drafting a meeting invite or proposing a slot to confirm it's free.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      proposedStart: { type: 'string', description: 'ISO 8601 start time of the proposed slot.' },
+      proposedEnd: { type: 'string', description: 'ISO 8601 end time.' },
+    },
+    required: ['proposedStart', 'proposedEnd'],
+  },
+};
+
+const TOOL_DRAFT_EMAIL: AnthropicTool = {
+  name: 'draft_email',
+  description:
+    "Compose a polished email draft for the user to review BEFORE sending. Use when the user says 'draft an email to X about Y' or 'reply to that LinkedIn email'. Returns the draft text — DOES NOT send. The user must explicitly approve, then you call send_email.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      to: { type: 'array', items: { type: 'string' }, description: 'Recipient email addresses if known. Empty if user hasn\'t provided.' },
+      subject: { type: 'string' },
+      intent: { type: 'string', description: 'What the email needs to communicate (1-3 sentences).' },
+      tone: { type: 'string', enum: ['professional', 'friendly', 'direct', 'warm'], description: 'Default professional.' },
+      contextSnippets: { type: 'array', items: { type: 'string' }, description: 'Optional snippets from the original email being replied to.' },
+    },
+    required: ['intent'],
+  },
+};
+
+const TOOL_CORRECT_GRAMMAR: AnthropicTool = {
+  name: 'correct_grammar',
+  description:
+    'Fix grammar/spelling/tone in user-supplied text without changing meaning. Use when the user says "fix this", "polish this", or pastes text and asks for a clean version.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'The text to correct.' },
+      tone: { type: 'string', enum: ['professional', 'friendly', 'direct', 'warm'], description: 'Default keep original tone.' },
+    },
+    required: ['text'],
+  },
+};
+
 const TOOL_ANALYZE_WEBSITE: AnthropicTool = {
   name: 'analyze_website',
   description:
@@ -263,6 +318,10 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   }
   // Website + team-mutation + connect tools are always available
   tools.push(TOOL_ANALYZE_WEBSITE);
+  tools.push(TOOL_DRAFT_EMAIL);
+  tools.push(TOOL_CORRECT_GRAMMAR);
+  tools.push(TOOL_LIST_TASKS);
+  tools.push(TOOL_FIND_CONFLICTS);
   tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
   tools.push(TOOL_UPDATE_AGENT);
@@ -384,6 +443,115 @@ export async function executeTool(
           content: `Event "${result.data.title}" created for ${new Date(result.data.start).toLocaleString()}.`,
           success: true,
         };
+      }
+
+      case 'list_open_tasks': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const SUPABASE_URL_LOCAL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const SUPABASE_KEY_LOCAL = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!SUPABASE_URL_LOCAL || !SUPABASE_KEY_LOCAL) return { content: 'Supabase not configured.', success: false };
+        const limit = call.input.limit ?? 10;
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const res = await fetch(
+          `${SUPABASE_URL_LOCAL}/rest/v1/ontology_entities?tenant_phone=eq.${cleanPhone}&entity_type=eq.task&order=created_at.desc&limit=${limit}&select=name,metadata,created_at`,
+          { headers: { apikey: SUPABASE_KEY_LOCAL, Authorization: `Bearer ${SUPABASE_KEY_LOCAL}` } },
+        );
+        if (!res.ok) return { content: 'Could not load tasks.', success: false };
+        const tasks = await res.json();
+        if (tasks.length === 0) return { content: 'No open tasks tracked yet.', success: true };
+        const lines = tasks.map((t: any, i: number) =>
+          `${i + 1}. ${t.name}${t.metadata?.from_email_subject ? ` (from: ${t.metadata.from_email_subject})` : ''}`,
+        );
+        return { content: `Open tasks (${tasks.length}):\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'find_calendar_conflicts': {
+        const conn = connections.find((c) => c.service === 'calendar');
+        if (!conn) return { content: 'No calendar connected.', success: false };
+        const start = new Date(call.input.proposedStart);
+        const end = new Date(call.input.proposedEnd);
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+          return { content: 'Invalid proposed times — pass ISO 8601 datetimes.', success: false };
+        }
+        // Scan a small window around the proposed slot
+        const result = await listCalendarEvents(conn, {
+          from: new Date(start.getTime() - 60 * 60 * 1000),
+          to: new Date(end.getTime() + 60 * 60 * 1000),
+        });
+        if (!result.success || !result.data) {
+          return { content: `Could not check calendar: ${result.error}`, success: false };
+        }
+        const conflicts = result.data.filter((e: any) => {
+          const eStart = new Date(e.start).getTime();
+          const eEnd = new Date(e.end ?? e.start).getTime();
+          return eStart < end.getTime() && eEnd > start.getTime();
+        });
+        if (conflicts.length === 0) {
+          return { content: `No conflicts in the proposed window (${start.toLocaleString()} → ${end.toLocaleString()}).`, success: true };
+        }
+        const lines = conflicts.map((e: any) =>
+          `- ${new Date(e.start).toLocaleString()} ${e.title}`,
+        );
+        return { content: `${conflicts.length} conflict${conflicts.length > 1 ? 's' : ''}:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'draft_email': {
+        const apiKey = process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) return { content: 'No AI key configured.', success: false };
+        const { intent, tone = 'professional', subject, to, contextSnippets } = call.input;
+        const ctxBlock = contextSnippets?.length
+          ? `\n\nContext (original email being replied to):\n${(contextSnippets as string[]).slice(0, 3).join('\n---\n')}`
+          : '';
+        const prompt = `Draft an email${to?.length ? ` to ${(to as string[]).join(', ')}` : ''}${subject ? ` with subject "${subject}"` : ''}. Intent: ${intent}. Tone: ${tone}.${ctxBlock}\n\nReturn ONLY the email body — no greeting/sign-off scaffolding unless the intent requires them, no "Subject:" prefix.`;
+        try {
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-20250514',
+              max_tokens: 600,
+              system: [{ type: 'text', text: 'You draft email bodies for human review. Concise, on-tone, no fluff.', cache_control: { type: 'ephemeral' } }],
+              messages: [{ role: 'user', content: prompt }],
+            }),
+          });
+          if (!res.ok) return { content: `Draft generation failed: ${await res.text()}`, success: false };
+          const data = await res.json();
+          const draft = data.content?.[0]?.text ?? '';
+          const recipient = to?.length ? `to ${(to as string[]).join(', ')}` : '(recipient TBD)';
+          return {
+            content: `Draft ${recipient}${subject ? ` · subject: "${subject}"` : ''}:\n\n${draft}\n\n— Reply 'send' to send, 'edit' to revise, or paste your version.`,
+            success: true,
+          };
+        } catch (err) {
+          return { content: `Draft error: ${err}`, success: false };
+        }
+      }
+
+      case 'correct_grammar': {
+        const apiKey = process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) return { content: 'No AI key configured.', success: false };
+        const { text, tone } = call.input;
+        try {
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            body: JSON.stringify({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 800,
+              system: [{
+                type: 'text',
+                text: `Correct grammar/spelling/punctuation. ${tone ? `Adjust to ${tone} tone.` : 'Preserve original tone.'} Do not change meaning. Return ONLY the corrected text — no commentary.`,
+                cache_control: { type: 'ephemeral' },
+              }],
+              messages: [{ role: 'user', content: text }],
+            }),
+          });
+          if (!res.ok) return { content: `Grammar fix failed: ${await res.text()}`, success: false };
+          const data = await res.json();
+          return { content: data.content?.[0]?.text ?? text, success: true };
+        } catch (err) {
+          return { content: `Grammar error: ${err}`, success: false };
+        }
       }
 
       case 'analyze_website': {

@@ -311,6 +311,15 @@ interface ReasoningResult {
   delegation_reason?: string;
   /** Orchestrator only: fan out to multiple lanes when work needs multi-input. */
   delegations?: { lane: LaneId; reason: string }[];
+  /** Story 2.11 — BMAD: when an agent spots a recurring pattern or systemic
+   *  improvement, it returns a solution brief. Optional, sparing. */
+  solution_brief?: {
+    problem: string;
+    proposed_solution: string;
+    expected_impact: string;
+    confidence: number; // 0-1
+    risk: 'low' | 'medium' | 'high';
+  } | null;
 }
 
 function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: TickContext): string {
@@ -387,7 +396,8 @@ Respond with ONLY a JSON object, no other text:
   "proposed_action": "if requires_action, the specific next step (1 sentence). Omit otherwise.",
   "delegate_to_lane": "operations" | "sales" | "marketing" | "support" | "finance" | "analytics" | "creative" | "people" | "technical" | "legal" | null,
   "delegation_reason": "if delegate_to_lane is set, one sentence on why this work belongs to that lane. Omit otherwise.",
-  "delegations": [{ "lane": "marketing", "reason": "..." }, { "lane": "operations", "reason": "..." }]
+  "delegations": [{ "lane": "marketing", "reason": "..." }, { "lane": "operations", "reason": "..." }],
+  "solution_brief": { "problem": "...", "proposed_solution": "...", "expected_impact": "...", "confidence": 0..1, "risk": "low" | "medium" | "high" } OR null
 }
 
 PRIORITY GUIDE:
@@ -399,7 +409,10 @@ PRIORITY GUIDE:
 DELEGATION RULES:
 - Specialists: use the SINGULAR delegate_to_lane when work clearly belongs elsewhere. Skip the delegations array.
 - Orchestrator: use the PLURAL delegations array (1+ entries) when work needs multi-lane input. Use the singular when it's a clean single-lane handoff. Use neither when you can resolve it yourself.
-- Either way: do NOT delegate to your own lane.`;
+- Either way: do NOT delegate to your own lane.
+
+BMAD SOLUTION BRIEF (rare — only when justified):
+If you spot a RECURRING pattern, anomaly, or systemic improvement opportunity in your domain (NOT a one-off issue), populate solution_brief with: the problem, your proposed solution, expected impact (concrete metric), your confidence 0-1, and risk level. Otherwise leave solution_brief null. Don't generate one every tick — only when you see something actually worth surfacing as a structured proposal for the owner.`;
 }
 
 async function callAnthropicForTick(model: string, systemPrompt: string): Promise<{ result: ReasoningResult; tokensIn: number; tokensOut: number; raw: string }> {
@@ -552,6 +565,8 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
         escalation_priority: result.escalation_priority,
         proposed_action: result.proposed_action,
         delegations_handled: ctx.pendingDelegations.map((d) => d.id),
+        // Story 2.11 — keep BMAD solution briefs as a structured payload
+        solution_brief: result.solution_brief ?? null,
       },
     });
 
