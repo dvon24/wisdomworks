@@ -38,6 +38,36 @@ const GRAPH_API = 'https://graph.facebook.com/v25.0';
 
 // ─── Persistence helpers ────────────────────────────────────────────────────
 
+/**
+ * Wipe stale agent_configs / agent_instances / ontology_entities for the
+ * tenant before re-running the persistence pipeline. Re-deploys with renamed
+ * agents would otherwise coexist with their old config names — confusing for
+ * the activity feed and for downstream consumers.
+ */
+async function resetTenantAgents(supabaseUrl: string, supabaseKey: string, cleanPhone: string): Promise<{ configs: number; ontology: number }> {
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/rpc/reset_tenant_agents`, {
+      method: 'POST',
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ p_tenant_phone: cleanPhone }),
+    });
+    if (!res.ok) {
+      console.warn('[deploy-complete] resetTenantAgents failed:', res.status, await res.text());
+      return { configs: 0, ontology: 0 };
+    }
+    const rows = await res.json();
+    const row = rows?.[0] ?? {};
+    return { configs: row.configs_deleted ?? 0, ontology: row.ontology_deleted ?? 0 };
+  } catch (err) {
+    console.warn('[deploy-complete] resetTenantAgents error:', err);
+    return { configs: 0, ontology: 0 };
+  }
+}
+
 async function loadConnections(supabaseUrl: string, supabaseKey: string, cleanPhone: string) {
   try {
     const res = await fetch(
@@ -127,6 +157,14 @@ async function persistEpic1Pipeline(
   error: string | null;
 }> {
   try {
+    // Story 1.11 fix — wipe any stale agents/ontology from earlier deploys
+    // so renamed agents (e.g. template defaults → AI-generated names) don't
+    // pile up. tenant_configs is upserted-by-key so it overwrites cleanly.
+    const reset = await resetTenantAgents(supabaseUrl, supabaseKey, cleanPhone);
+    if (reset.configs > 0 || reset.ontology > 0) {
+      console.log(`[deploy-complete] reset stale rows: configs=${reset.configs} ontology=${reset.ontology}`);
+    }
+
     const spec = generateDeploymentSpec(collectedData);
     await saveDeploymentSpec(supabaseUrl, supabaseKey, cleanPhone, spec);
 

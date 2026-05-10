@@ -73,48 +73,85 @@ function inferTierFromAgent(agent: AgentSpec, structuredAgent?: any): AgentTier 
  * @param structured  Optional — the AI's free-form structured payload used to
  *                    enrich tier inference and pull custom names
  */
+/**
+ * Fuzzy-match a structured AI agent to a template spec agent by role pattern.
+ * Used to inherit structural defaults (modelRouting, outputChannels,
+ * governanceRules) without overwriting the AI's chosen names/personality.
+ */
+function findTemplateForAgent(
+  aiAgent: any,
+  specAgents: AgentSpec[],
+): AgentSpec | undefined {
+  const haystack = `${aiAgent?.name ?? ''} ${aiAgent?.role ?? ''}`.toLowerCase();
+  // 1. Exact name match (rare but cheap)
+  let match = specAgents.find((s) => s.name.toLowerCase() === (aiAgent?.name ?? '').toLowerCase());
+  if (match) return match;
+  // 2. Role keyword match against template role
+  match = specAgents.find((s) => {
+    const role = s.role.toLowerCase();
+    if (/scheduler|schedul/i.test(role) && /schedul|calendar|appoint|booking/i.test(haystack)) return true;
+    if (/marketing|brand|content/i.test(role) && /market|content|brand|social|instagram/i.test(haystack)) return true;
+    if (/customer|service|support|care/i.test(role) && /customer|support|care|service|client.*relations/i.test(haystack)) return true;
+    if (/website|web.manager/i.test(role) && /website|web.*manager|web.*site/i.test(haystack)) return true;
+    if (/operations|ops|logistics/i.test(role) && /operation|ops|logistics|business.*manager/i.test(haystack)) return true;
+    if (/sales|business.*development|biz.*dev/i.test(role) && /sales|business.*dev|biz.*dev|account/i.test(haystack)) return true;
+    if (/analytics|research|insights|intelligence/i.test(role) && /analytic|research|insight|intelligence|strateg/i.test(haystack)) return true;
+    return false;
+  });
+  return match;
+}
+
 export function deriveAgentConfigs(
   spec: AxisDeploymentSpec,
   structured?: any,
 ): DerivedAgentConfig[] {
   const out: DerivedAgentConfig[] = [];
   const structuredAgents: any[] = structured?.agents ?? [];
+  const specAgents: AgentSpec[] = spec.agents ?? [];
 
-  for (const agent of spec.agents ?? []) {
-    // Try to pair this spec agent with an AI-structured counterpart by name match
-    const structuredMatch = structuredAgents.find(
-      (a: any) => (a?.name ?? '').toLowerCase() === agent.name.toLowerCase(),
-    ) ?? structuredAgents.find(
-      (a: any) => (a?.role ?? '').toLowerCase() === agent.role.toLowerCase(),
+  // PREFER the AI-generated team as the source of truth for names/roles.
+  // Template spec agents only contribute structural defaults (routing,
+  // channels, governance) when fuzzy-matched by role pattern.
+  const sourceAgents = structuredAgents.length > 0 ? structuredAgents : specAgents;
+  const usingAI = structuredAgents.length > 0;
+
+  for (const aiAgent of sourceAgents) {
+    if (!aiAgent?.name) continue;
+    const templateMatch = usingAI ? findTemplateForAgent(aiAgent, specAgents) : (aiAgent as AgentSpec);
+
+    const tier = inferTierFromAgent(
+      // build a shim that satisfies inferTierFromAgent's expectations
+      { modelRouting: templateMatch?.modelRouting ?? {}, name: aiAgent.name, role: aiAgent.role ?? '' } as any,
+      usingAI ? aiAgent : undefined,
     );
-
-    const tier = inferTierFromAgent(agent, structuredMatch);
-    const routing = (agent.modelRouting && Object.keys(agent.modelRouting).length > 0)
-      ? agent.modelRouting
+    const routing = (templateMatch?.modelRouting && Object.keys(templateMatch.modelRouting).length > 0)
+      ? templateMatch.modelRouting
       : DEFAULT_ROUTING[tier];
 
     out.push({
-      agent_role: agent.role,
-      agent_name: agent.name,
+      agent_role: aiAgent.role ?? templateMatch?.role ?? 'Specialist',
+      agent_name: aiAgent.name,
       model_routing: routing,
-      output_channels: agent.outputChannels ?? structuredMatch?.channels ?? ['WhatsApp'],
-      governance_rules: agent.governanceRules ?? [],
-      entity_lookup_name: agent.name,
+      output_channels: aiAgent.channels?.length
+        ? aiAgent.channels
+        : (templateMatch?.outputChannels ?? ['WhatsApp']),
+      governance_rules: templateMatch?.governanceRules ?? [],
+      entity_lookup_name: aiAgent.name,
       entity_lookup_type: 'role',
       status: 'pending',
       config: {
         tier,
-        description: structuredMatch?.description,
-        emoji: structuredMatch?.emoji,
-        tools: structuredMatch?.tools ?? [],
-        strengths: structuredMatch?.strengths ?? [],
-        limitations: structuredMatch?.limitations ?? [],
+        description: aiAgent.description,
+        emoji: aiAgent.emoji,
+        tools: aiAgent.tools ?? [],
+        strengths: aiAgent.strengths ?? [],
+        limitations: aiAgent.limitations ?? [],
+        template_role: templateMatch?.role,
       },
     });
   }
 
-  // Synthesise an orchestrator for the founder/owner if none of the spec
-  // agents already serves that role. Linked to the org as a department-of-one.
+  // Synthesise an orchestrator only if NO source agent serves that role.
   const hasOrchestrator = out.some((a) =>
     /orchestrat|coordinator|personal assistant|chief of staff/i.test(a.agent_role) ||
     /orchestrat|coordinator|personal assistant|chief of staff/i.test(a.agent_name),
