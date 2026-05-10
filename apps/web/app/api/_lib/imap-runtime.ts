@@ -52,20 +52,47 @@ function makeClient(ImapFlow: any, conn: ImapConnection) {
 }
 
 /** Resolve a folder name by SPECIAL-USE attribute (\Sent, \Drafts, etc.).
- * Falls back to a list of common names for the role. */
-async function findMailbox(client: any, attribute: string, fallbacks: string[]): Promise<string | null> {
+ * Falls back to a list of common names for the role.
+ * Returns the matched path AND the full folder list (for diagnostic logging
+ * when nothing matches). */
+async function findMailbox(
+  client: any,
+  attribute: string,
+  fallbacks: string[],
+): Promise<{ path: string | null; available: string[] }> {
   try {
     const list = await client.list();
-    const match = list.find((m: any) => Array.isArray(m.specialUse) ? m.specialUse.includes(attribute) : m.specialUse === attribute);
-    if (match) return match.path;
+    const paths = (list ?? []).map((m: any) => m.path).filter(Boolean);
+    // 1. SPECIAL-USE attribute
+    const special = list.find((m: any) =>
+      Array.isArray(m.specialUse) ? m.specialUse.includes(attribute) : m.specialUse === attribute,
+    );
+    if (special?.path) return { path: special.path, available: paths };
+    // 2. Exact name match against fallbacks (case-insensitive)
+    const lowered = paths.map((p: string) => p.toLowerCase());
     for (const name of fallbacks) {
-      const hit = list.find((m: any) => m.path === name || m.name === name);
-      if (hit) return hit.path;
+      const idx = lowered.indexOf(name.toLowerCase());
+      if (idx >= 0) return { path: paths[idx], available: paths };
     }
-  } catch {
-    // ignore
+    // 3. Substring match — handles namespaces like "INBOX.Sent" or "[Gmail]/Sent Mail"
+    for (const name of fallbacks) {
+      const idx = lowered.findIndex((p: string) => p.endsWith(name.toLowerCase()) || p.includes(`.${name.toLowerCase()}`) || p.includes(`/${name.toLowerCase()}`));
+      if (idx >= 0) return { path: paths[idx], available: paths };
+    }
+    return { path: null, available: paths };
+  } catch (err) {
+    return { path: null, available: [] };
   }
-  return null;
+}
+
+/** Pull the meaningful message from an IMAPFlow error, which often hides
+ * the real cause behind a generic "Command failed". */
+function imapErrorDetail(err: any): string {
+  if (!err) return 'unknown';
+  const parts = [err.message, err.responseText, err.response, err.code, err.serverResponseCode]
+    .filter(Boolean)
+    .map((p: any) => typeof p === 'string' ? p : JSON.stringify(p));
+  return parts.length > 0 ? parts.join(' | ') : String(err);
 }
 
 async function parseBody(simpleParser: any, source: Buffer | undefined): Promise<{ text: string; html: string }> {
@@ -130,7 +157,7 @@ export async function listImapUnread(conn: ImapConnection, limit = 10): Promise<
       lock.release();
     }
   } catch (err: any) {
-    return { success: false, error: `IMAP error: ${err?.message ?? err}` };
+    return { success: false, error: `IMAP error: ${imapErrorDetail(err)}` };
   } finally {
     try { await client.logout(); } catch {}
   }
@@ -162,37 +189,78 @@ export async function listImapSent(conn: ImapConnection, limit = 50, sinceDays =
 
   try {
     await client.connect();
-    const sentPath = await findMailbox(client, '\\Sent', ['Sent', 'Sent Messages', 'Sent Mail', '[Gmail]/Sent Mail', 'INBOX.Sent']);
+    const { path: sentPath, available } = await findMailbox(client, '\\Sent', ['Sent', 'Sent Messages', 'Sent Mail', '[Gmail]/Sent Mail', 'INBOX.Sent', 'Sent Items']);
     if (!sentPath) {
-      return { success: false, error: 'Could not locate Sent folder' };
+      return { success: false, error: `Could not locate Sent folder. Available: ${available.join(', ')}` };
     }
     const lock = await client.getMailboxLock(sentPath);
     try {
-      const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
-      const uids = await client.search({ since });
-      const slice = (uids ?? []).slice(-limit).reverse();
+      // Try SEARCH first; if Yahoo refuses or times out, fall back to fetching
+      // the last N messages by sequence number from the mailbox tail.
+      let uidList: number[] = [];
+      try {
+        const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+        const searched = await client.search({ since });
+        uidList = (searched ?? []).slice(-limit).reverse();
+      } catch (searchErr) {
+        console.warn(`[imap] SENT folder ${sentPath} SEARCH failed (${imapErrorDetail(searchErr)}); falling back to tail-by-sequence`);
+        uidList = [];
+      }
+
       const out: SentEmail[] = [];
-      for (const uid of slice) {
-        const msg = await client.fetchOne(uid, { envelope: true, source: true });
-        if (!msg) continue;
-        const env = msg.envelope ?? {};
-        const body = await parseBody(simpleParser, msg.source);
-        const text = body.text || body.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        out.push({
-          id: msg.uid?.toString() ?? uid.toString(),
-          to: (env.to ?? []).map((a: any) => ({ address: a.address ?? '', name: a.name })),
-          cc: (env.cc ?? []).map((a: any) => ({ address: a.address ?? '', name: a.name })),
-          subject: env.subject ?? '(no subject)',
-          body: text,
-          date: env.date?.toISOString() ?? new Date().toISOString(),
-        });
+      const fetchOne = async (uid: number) => {
+        try {
+          const msg = await client.fetchOne(uid, { envelope: true, source: true });
+          if (!msg) return;
+          const env = msg.envelope ?? {};
+          const body = await parseBody(simpleParser, msg.source);
+          const text = body.text || body.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          out.push({
+            id: msg.uid?.toString() ?? uid.toString(),
+            to: (env.to ?? []).map((a: any) => ({ address: a.address ?? '', name: a.name })),
+            cc: (env.cc ?? []).map((a: any) => ({ address: a.address ?? '', name: a.name })),
+            subject: env.subject ?? '(no subject)',
+            body: text,
+            date: env.date?.toISOString() ?? new Date().toISOString(),
+          });
+        } catch (fetchErr) {
+          console.warn(`[imap] SENT fetchOne(${uid}) failed: ${imapErrorDetail(fetchErr)}`);
+        }
+      };
+
+      if (uidList.length > 0) {
+        for (const uid of uidList) await fetchOne(uid);
+      } else {
+        // Tail fallback: use mailbox.exists message count to grab the last N.
+        const exists = client.mailbox?.exists ?? 0;
+        if (exists === 0) return { success: true, data: [] };
+        const start = Math.max(1, exists - limit + 1);
+        const range = `${start}:${exists}`;
+        try {
+          for await (const msg of client.fetch(range, { envelope: true, source: true })) {
+            const env = msg.envelope ?? {};
+            const body = await parseBody(simpleParser, msg.source);
+            const text = body.text || body.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            out.push({
+              id: msg.uid?.toString() ?? msg.seq?.toString() ?? '',
+              to: (env.to ?? []).map((a: any) => ({ address: a.address ?? '', name: a.name })),
+              cc: (env.cc ?? []).map((a: any) => ({ address: a.address ?? '', name: a.name })),
+              subject: env.subject ?? '(no subject)',
+              body: text,
+              date: env.date?.toISOString() ?? new Date().toISOString(),
+            });
+          }
+          out.reverse();
+        } catch (rangeErr) {
+          return { success: false, error: `Sent fetch range failed for ${sentPath}: ${imapErrorDetail(rangeErr)}` };
+        }
       }
       return { success: true, data: out };
     } finally {
       lock.release();
     }
   } catch (err: any) {
-    return { success: false, error: `IMAP sent error: ${err?.message ?? err}` };
+    return { success: false, error: `IMAP sent error: ${imapErrorDetail(err)}` };
   } finally {
     try { await client.logout(); } catch {}
   }
@@ -246,7 +314,7 @@ export async function listImapSeen(conn: ImapConnection, limit = 50, sinceDays =
       lock.release();
     }
   } catch (err: any) {
-    return { success: false, error: `IMAP seen error: ${err?.message ?? err}` };
+    return { success: false, error: `IMAP seen error: ${imapErrorDetail(err)}` };
   } finally {
     try { await client.logout(); } catch {}
   }
