@@ -21,6 +21,7 @@ import { listImapUnread, sendImap } from '../../_lib/imap-runtime';
 import { queryKnowledge } from '../../_lib/knowledge-base';
 import { logCorrection } from '../../_lib/classification-learning';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
+import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
 import {
   generateWordDoc,
   generatePowerPoint,
@@ -229,6 +230,33 @@ const TOOL_DECLINE_PROCESS: AnthropicTool = {
     type: 'object',
     properties: { process_id: { type: 'string' } },
     required: ['process_id'],
+  },
+};
+
+// ─── Story 2.15 — Skill formation ───
+const TOOL_LIST_SKILLS: AnthropicTool = {
+  name: 'list_skills',
+  description:
+    "List the techniques each lane has learned (cross-agent skill catalog). Use when the user asks 'what have my agents learned' or wants to audit what's being shared between agents. Includes success rate per technique.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      include_retired: { type: 'boolean', description: 'Include retired skills (default false).' },
+    },
+  },
+};
+
+const TOOL_RETIRE_SKILL: AnthropicTool = {
+  name: 'retire_skill',
+  description:
+    'Manually retire a learned technique that is producing bad results or no longer applies. Stops the skill from being injected into future agent prompts. Use when the user says a particular technique is wrong or outdated.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      skill_id: { type: 'string', description: 'The id of the agent_skills row (from list_skills).' },
+      reason: { type: 'string', description: "Why it's being retired (1 line)." },
+    },
+    required: ['skill_id', 'reason'],
   },
 };
 
@@ -493,6 +521,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LIST_PROCESSES);
   tools.push(TOOL_APPROVE_PROCESS);
   tools.push(TOOL_DECLINE_PROCESS);
+  tools.push(TOOL_LIST_SKILLS);
+  tools.push(TOOL_RETIRE_SKILL);
   tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
   tools.push(TOOL_UPDATE_AGENT);
@@ -655,6 +685,40 @@ export async function executeTool(
         return result.ok
           ? { content: 'Declined. Won\'t surface again.', success: true }
           : { content: `Decline failed: ${result.error}`, success: false };
+      }
+
+      case 'list_skills': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const skills = await listAllSkills(cleanPhone, !!call.input.include_retired);
+        if (skills.length === 0) return { content: 'No skills learned yet — agents will start cataloging techniques as they complete successful work.', success: true };
+        // Group by lane
+        const byLane = new Map<string, any[]>();
+        for (const s of skills) {
+          const bucket = byLane.get(s.lane) ?? [];
+          bucket.push(s);
+          byLane.set(s.lane, bucket);
+        }
+        const sections = Array.from(byLane.entries()).map(([lane, rows]) => {
+          const lines = rows.map((s) => {
+            const total = (s.success_count || 0) + (s.failure_count || 0);
+            const rate = total === 0 ? 'new' : `${Math.round((s.success_count / total) * 100)}% (${total} uses)`;
+            const tag = s.retired_at ? ' [RETIRED]' : '';
+            return `  • [${s.id.slice(0, 8)}] ${s.description?.slice(0, 100) ?? s.technique_signature} — ${rate}${tag}`;
+          });
+          return `${lane.toUpperCase()}\n${lines.join('\n')}`;
+        });
+        return { content: `Skill catalog (${skills.length} total):\n\n${sections.join('\n\n')}`, success: true };
+      }
+
+      case 'retire_skill': {
+        const skillId = call.input.skill_id;
+        const reason = call.input.reason || 'manually retired by owner';
+        if (!skillId) return { content: 'Missing skill_id.', success: false };
+        const ok = await retireSkill(skillId, reason);
+        return ok
+          ? { content: `Retired. Agents won't be prompted with that technique anymore.`, success: true }
+          : { content: 'Retire failed.', success: false };
       }
 
       case 'report_email_misclassification': {

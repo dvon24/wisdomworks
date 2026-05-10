@@ -75,13 +75,22 @@ async function logRun(row: {
   delegated_to_lane?: string | null;
   delegation_reason?: string | null;
   delegation_status?: 'pending' | 'claimed' | 'done' | 'declined' | null;
-}) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return;
-  await fetch(`${SUPABASE_URL}/rest/v1/agent_runs`, {
+}, returnId = false): Promise<string | null> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/agent_runs`, {
     method: 'POST',
-    headers: { ...headers(), Prefer: 'return=minimal' },
+    headers: { ...headers(), Prefer: returnId ? 'return=representation' : 'return=minimal' },
     body: JSON.stringify(row),
   });
+  if (returnId && res.ok) {
+    try {
+      const rows = await res.json();
+      return rows?.[0]?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /** Start every ready agent for a tenant — flips ready → running */
@@ -227,10 +236,21 @@ interface TickContext {
   cadence: TickCadence;
   /** Story 2.4 — pending delegations targeted at THIS agent's lane */
   pendingDelegations: PendingDelegation[];
+  /** Story 2.15 — proven techniques the lane has learned */
+  appliedSkills: AppliedSkill[];
 }
 
 // Story 2.10 — periodic snapshots after each successful tick.
 import { saveSnapshot } from './state-recovery';
+// Story 2.15 — skill formation + cross-agent learning.
+import {
+  topSkillsForLane,
+  upsertSkill,
+  recordSkillOutcome,
+  extractSkillFromRun,
+  renderSkillsForPrompt,
+  type AppliedSkill,
+} from './skill-formation';
 
 // ─── Story 2.4 — Signal layer (delegation pickup) ─────────────────────────
 // Agents read pending delegations targeting their lane on each tick and
@@ -269,7 +289,7 @@ async function markDelegationsDone(ids: string[]): Promise<void> {
 async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string): Promise<TickContext> {
   const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [] };
+    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [] };
   }
 
   // Three small queries in parallel — context tab kept tight on purpose.
@@ -289,6 +309,10 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
   // Caller passes ownLane so we don't have to look up the config again.
   const pendingDelegations = ownLane ? await fetchPendingDelegationsForLane(tenantPhone, ownLane) : [];
 
+  // Story 2.15 — pull the lane's top proven techniques. Cap at 5 to keep
+  // the prompt tight; the RPC ranks new skills first to give them a shot.
+  const appliedSkills = ownLane ? await topSkillsForLane(tenantPhone, ownLane, 5) : [];
+
   return {
     orgName: ctxRows[0]?.business_name ?? '',
     orgIndustry: ctxRows[0]?.business_type ?? '',
@@ -297,6 +321,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     recentRunsForAgent: runRows ?? [],
     cadence,
     pendingDelegations,
+    appliedSkills,
   };
 }
 
@@ -323,6 +348,9 @@ interface ReasoningResult {
     confidence: number; // 0-1
     risk: 'low' | 'medium' | 'high';
   } | null;
+  /** Story 2.15 — if the agent applied a learned technique this tick,
+   *  echo back its signature so we can record success/failure. */
+  applied_skill_signature?: string | null;
 }
 
 function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: TickContext): string {
@@ -367,6 +395,9 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
       ).join('\n')
     : '';
 
+  // Story 2.15 — proven techniques the lane has learned
+  const skillsBlock = renderSkillsForPrompt(ctx.appliedSkills);
+
   return `You are ${config.agent_name}, the ${config.agent_role} for ${ctx.orgName} (${ctx.orgIndustry}).
 ${categoryHeader ? `Lane: ${categoryHeader}` : ''}
 
@@ -376,7 +407,7 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
-${recentRuns}${inbox}
+${recentRuns}${inbox}${skillsBlock}
 
 ${cadenceGuide}
 
@@ -400,7 +431,8 @@ Respond with ONLY a JSON object, no other text:
   "delegate_to_lane": "operations" | "sales" | "marketing" | "support" | "finance" | "analytics" | "creative" | "people" | "technical" | "legal" | null,
   "delegation_reason": "if delegate_to_lane is set, one sentence on why this work belongs to that lane. Omit otherwise.",
   "delegations": [{ "lane": "marketing", "reason": "..." }, { "lane": "operations", "reason": "..." }],
-  "solution_brief": { "problem": "...", "proposed_solution": "...", "expected_impact": "...", "confidence": 0..1, "risk": "low" | "medium" | "high" } OR null
+  "solution_brief": { "problem": "...", "proposed_solution": "...", "expected_impact": "...", "confidence": 0..1, "risk": "low" | "medium" | "high" } OR null,
+  "applied_skill_signature": "snake_case_signature_from_proven_techniques_block_if_you_used_one_or_null"
 }
 
 PRIORITY GUIDE:
@@ -543,7 +575,7 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
       ? result.delegate_to_lane
       : null;
 
-    await logRun({
+    const runId = await logRun({
       tenant_phone: instance.tenant_phone,
       agent_instance_id: instance.id,
       trigger: ctx.pendingDelegations.length > 0 ? 'signal' : 'tick',
@@ -570,13 +602,69 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
         delegations_handled: ctx.pendingDelegations.map((d) => d.id),
         // Story 2.11 — keep BMAD solution briefs as a structured payload
         solution_brief: result.solution_brief ?? null,
+        applied_skill_signature: result.applied_skill_signature ?? null,
       },
-    });
+    }, true);
 
     // Story 2.4 — mark the inbox-claimed delegations as done so we don't
     // re-process them next tick.
     if (ctx.pendingDelegations.length > 0) {
       await markDelegationsDone(ctx.pendingDelegations.map((d) => d.id));
+    }
+
+    // Story 2.15 — skill formation + cross-agent learning.
+    //   1. If the agent applied one of the lane's proven techniques, record
+    //      success/failure on that skill (success = acted/proposed, failure
+    //      = no_op/failed/blocked, neutral = observed).
+    //   2. If the run was a substantive success (acted/proposed) AND no
+    //      skill was applied, mine it for a NEW technique that peers can
+    //      reuse next tick.
+    if (ownLane && ownLane !== 'specialist') {
+      try {
+        const appliedSig = result.applied_skill_signature?.toLowerCase().trim();
+        if (appliedSig && ctx.appliedSkills.length > 0) {
+          const matched = ctx.appliedSkills.find((s) => s.technique_signature === appliedSig);
+          if (matched) {
+            const skillOutcome: 'success' | 'failure' | 'neutral' =
+              outcome === 'acted' || outcome === 'proposed' || outcome === 'escalated'
+                ? 'success'
+                : outcome === 'observed' ? 'neutral' : 'failure';
+            await recordSkillOutcome({
+              skillId: matched.id,
+              agentInstanceId: instance.id,
+              agentRunId: runId ?? undefined,
+              outcome: skillOutcome,
+              notes: result.recommendation?.slice(0, 200),
+            });
+          }
+        } else if ((outcome === 'acted' || outcome === 'proposed') && (result.observation?.length ?? 0) > 30) {
+          // Mine for a new technique — only on substantive successful runs
+          // and only if the agent didn't already cite an existing skill.
+          const skill = await extractSkillFromRun({
+            agentName: config.agent_name,
+            agentRole: config.agent_role,
+            lane: ownLane,
+            observation: result.observation,
+            recommendation: result.recommendation,
+            outputSummary: raw.slice(0, 400),
+            proposedAction: result.proposed_action,
+          });
+          if (skill) {
+            await upsertSkill({
+              tenantPhone: instance.tenant_phone,
+              lane: ownLane,
+              signature: skill.signature,
+              description: skill.description,
+              payload: skill.payload,
+              discoveredByInstanceId: instance.id,
+              discoveredFromRunId: runId ?? undefined,
+              metadata: { agent_role: config.agent_role, agent_name: config.agent_name },
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[skill-formation] tick hook failed:', err);
+      }
     }
 
     // Story 2.10 — periodic snapshot after a successful tick. Stores the
