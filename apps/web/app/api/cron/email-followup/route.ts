@@ -24,7 +24,7 @@ import {
   persistProposal,
   expireStaleFollowups,
 } from '../../_lib/email-followup';
-import { isMuted } from '../../_lib/mute-state';
+import { enqueueNotification } from '../../_lib/notifications';
 
 import 'imapflow';
 import 'mailparser';
@@ -35,9 +35,6 @@ export const maxDuration = 300;
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
-const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
-const GRAPH_API = 'https://graph.facebook.com/v25.0';
 
 interface OauthConn {
   phone_number: string;
@@ -48,40 +45,20 @@ interface OauthConn {
   metadata: any;
 }
 
-async function pushFollowupPrompt(tenantPhone: string, proposalId: string, recipientLabel: string, days: number, subject: string, body: string): Promise<void> {
-  if (!WHATSAPP_PHONE_ID || !WHATSAPP_TOKEN) return;
-  // The proposal still gets persisted — we just hold the WhatsApp ping until
-  // the user is reachable. They can pull pending follow-ups whenever they
-  // come back via list_pending_followups.
-  const mute = await isMuted(tenantPhone);
-  if (mute.muted) {
-    console.log(`[email-followup] WhatsApp push suppressed (muted${mute.reason ? `: ${mute.reason}` : ''})`);
-    return;
-  }
-  const idShort = proposalId.slice(0, 8);
-  const message = [
-    `Heads up — ${recipientLabel} hasn't replied to your email "${subject}" from ${days} days ago.`,
-    ``,
-    `I drafted a follow-up:`,
-    ``,
-    body,
-    ``,
-    `— Reply 'send ${idShort}' to send it, 'edit ${idShort}' to revise, or 'skip ${idShort}' to dismiss.`,
-  ].join('\n');
-  try {
-    await fetch(`${GRAPH_API}/${WHATSAPP_PHONE_ID}/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: tenantPhone,
-        type: 'text',
-        text: { body: message },
-      }),
-    });
-  } catch (err) {
-    console.warn('[email-followup] WhatsApp push failed:', err);
-  }
+/** Enqueue the follow-up as a notification — drained into the next
+ * scheduled digest (morning / lunch / afternoon). User replies 'send [id]'
+ * later to actually send. */
+async function enqueueFollowupPrompt(tenantPhone: string, proposalId: string, recipientLabel: string, days: number, subject: string): Promise<void> {
+  await enqueueNotification({
+    tenantPhone,
+    kind: 'followup_prompt',
+    severity: days >= 14 ? 'high' : 'medium',
+    title: `Follow up with ${recipientLabel} on "${subject}"`,
+    body: `${days} days since you sent. Reply 'send ${proposalId.slice(0, 8)}' to send the drafted follow-up, or 'show ${proposalId.slice(0, 8)}' to review it first.`,
+    sourceAgent: 'email-followup',
+    sourceId: proposalId,
+    metadata: { days_since_sent: days, recipient: recipientLabel },
+  });
 }
 
 export async function GET(request: Request) {
@@ -166,15 +143,14 @@ export async function GET(request: Request) {
           }
           proposalsCreated++;
 
-          await pushFollowupPrompt(
+          await enqueueFollowupPrompt(
             conn.phone_number,
             persist.id,
             candidate.recipient_name ? `${candidate.recipient_name} <${candidate.recipient_address}>` : candidate.recipient_address,
             candidate.days_since_sent,
             candidate.original_subject,
-            draft.body,
           );
-          whatsappSent++;
+          whatsappSent++; // counter name kept; tracks queued items now
         }
       } catch (err) {
         failures++;

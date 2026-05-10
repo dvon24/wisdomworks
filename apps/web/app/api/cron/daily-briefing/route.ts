@@ -35,12 +35,36 @@ export async function GET(request: Request) {
 
     let briefed = 0;
 
+    // Drain the notification queue and bundle into the morning briefing so
+    // the user sees ONE structured message (overnight narrative + queued items)
+    const { loadPending, markDelivered, synthesizeStructuredDigest } = await import('../../_lib/notifications');
+
     for (const user of users) {
       try {
         const briefing = await generateBriefing(user);
-        await sendWhatsApp(user.phone_number, briefing);
+
+        // Bundle queued items into the morning briefing
+        const queued = await loadPending(user.phone_number);
+        let combined = briefing;
+        let deliveredIds: string[] = [];
+        if (queued.length > 0) {
+          const synth = await synthesizeStructuredDigest({
+            orchestratorName: 'Sophia',
+            notifications: queued,
+            recentAgentRuns: [],
+          });
+          if (synth.hasSignal) {
+            combined = `${briefing}\n\n— — —\n\n${synth.message}`;
+            deliveredIds = synth.deliveredIds;
+          }
+        }
+
+        await sendWhatsApp(user.phone_number, combined);
+        if (deliveredIds.length > 0) {
+          await markDelivered(deliveredIds);
+        }
         briefed++;
-        console.log(`[daily-briefing] Sent to ${user.name} (${user.phone_number})`);
+        console.log(`[daily-briefing] Sent to ${user.name} (${user.phone_number}) with ${queued.length} queued items`);
       } catch (err) {
         console.error(`[daily-briefing] Failed for ${user.phone_number}:`, err);
       }

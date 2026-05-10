@@ -432,24 +432,40 @@ EXTRACTION (Story 2.5 — structured signal, business mail only):
 }
 
 async function sendEmailSummary(phoneNumber: string, emails: EmailSummary[]): Promise<void> {
-  const lines = [`You have ${emails.length} email${emails.length > 1 ? 's' : ''} that need attention:`, ''];
+  // Enqueue ONE notification per email (or one summary if there are many)
+  // so the next scheduled digest bundles them together. No more individual
+  // texts each time email-sift runs.
+  const cleanPhone = phoneNumber.replace(/[\s\-\+\(\)]/g, '');
+  const { enqueueNotification } = await import('../../_lib/notifications');
 
-  emails.forEach((e, i) => {
-    const tag = e.classification === 'urgent' ? 'URGENT' : 'Reply needed';
-    lines.push(`${i + 1}. [${tag}] From: ${e.from}`);
-    lines.push(`   Subject: ${e.subject}`);
-    if (e.draftReply) {
-      lines.push(`   Draft: "${e.draftReply.slice(0, 120)}${e.draftReply.length > 120 ? '...' : ''}"`);
+  if (emails.length <= 3) {
+    for (const e of emails) {
+      const sev = e.classification === 'urgent' ? 'high' : 'medium';
+      await enqueueNotification({
+        tenantPhone: cleanPhone,
+        kind: 'email_attention',
+        severity: sev,
+        title: `${e.classification === 'urgent' ? 'Urgent email' : 'Email needs reply'} from ${e.from}`,
+        body: `Subject: ${e.subject}${e.draftReply ? ` — draft ready: "${e.draftReply.slice(0, 80)}${e.draftReply.length > 80 ? '...' : ''}"` : ''}`,
+        sourceAgent: 'email-sift',
+        sourceId: e.id,
+        metadata: { from: e.from, subject: e.subject, has_draft: !!e.draftReply },
+      });
     }
-    lines.push('');
-  });
-
-  lines.push('Reply with:');
-  lines.push('- "approve 1" to send draft');
-  lines.push('- "edit 1 [text]" to modify');
-  lines.push('- "skip 1" to ignore');
-
-  await sendWhatsApp(phoneNumber, lines.join('\n'));
+  } else {
+    // Aggregate when there's a flood — one bullet for the whole batch
+    const urgent = emails.filter((e) => e.classification === 'urgent').length;
+    const fromList = Array.from(new Set(emails.map((e) => e.from))).slice(0, 5).join(', ');
+    await enqueueNotification({
+      tenantPhone: cleanPhone,
+      kind: 'email_attention',
+      severity: urgent > 0 ? 'high' : 'medium',
+      title: `${emails.length} emails need attention${urgent > 0 ? ` (${urgent} urgent)` : ''}`,
+      body: `From: ${fromList}${emails.length > 5 ? ` and ${emails.length - 5} more` : ''}. Ask 'show inbox' for the full list.`,
+      sourceAgent: 'email-sift',
+      metadata: { count: emails.length, urgent_count: urgent },
+    });
+  }
 }
 
 async function storePendingDrafts(phoneNumber: string, emails: EmailSummary[]): Promise<void> {

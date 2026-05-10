@@ -244,6 +244,8 @@ interface TickContext {
 import { saveSnapshot } from './state-recovery';
 // DND / mute — proactive pushes are silenced when the user said "talk later"
 import { isMuted } from './mute-state';
+// Notification queue — bundle all proactive items into scheduled digests
+import { enqueueNotification } from './notifications';
 // Story 2.15 — skill formation + cross-agent learning.
 import {
   topSkillsForLane,
@@ -484,35 +486,18 @@ async function callAnthropicForTick(model: string, systemPrompt: string): Promis
 }
 
 async function pushEscalationToOwner(tenantPhone: string, agentName: string, agentRole: string, observation: string, recommendation: string): Promise<void> {
-  if (!WHATSAPP_PHONE_ID || !WHATSAPP_TOKEN) return;
-  // Honor DND — proactive escalations stay silent until the user is back
-  const mute = await isMuted(tenantPhone);
-  if (mute.muted) {
-    console.log(`[agent-runtime] escalation suppressed (muted${mute.reason ? `: ${mute.reason}` : ''})`);
-    return;
-  }
-  const message = [
-    `⚡ ${agentName} (${agentRole}) flagged something:`,
-    ``,
-    `What I noticed: ${observation}`,
-    `What I'd do: ${recommendation}`,
-    ``,
-    `Reply "approve" to proceed, "skip" to dismiss, or chat to ask why.`,
-  ].join('\n');
-  try {
-    await fetch(`${GRAPH_API}/${WHATSAPP_PHONE_ID}/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: tenantPhone,
-        type: 'text',
-        text: { body: message },
-      }),
-    });
-  } catch (err) {
-    console.warn('[agent-runtime] escalation push failed:', err);
-  }
+  // Escalations now flow into the notification queue and surface in the
+  // next scheduled digest (morning/lunch/afternoon). No more individual
+  // texts every time an agent flags something.
+  await enqueueNotification({
+    tenantPhone,
+    kind: 'escalation',
+    severity: 'high',
+    title: `${agentName} (${agentRole}) flagged: ${observation.slice(0, 100)}`,
+    body: `What I'd do: ${recommendation.slice(0, 200)}`,
+    sourceAgent: agentName,
+    metadata: { observation, recommendation, agent_role: agentRole },
+  });
 }
 
 /**
@@ -874,13 +859,34 @@ export async function maybeSendTeamDigest(tenantPhone: string, cadence: TickCade
   }
   const enriched = runs.map((r: any) => ({ ...r, agent_name: nameByInstance.get(r.agent_instance_id) ?? '?' }));
 
-  const orchestratorName = await loadOrchestratorName(tenantPhone);
-  const digest = await synthesizeDigest(orchestratorName, enriched);
-  if (!digest.hasSignal) return { sent: false, reason: 'no_signal_per_orchestrator' };
+  // Tick-driven digests no longer push directly. Each meaningful run with
+  // a non-routine outcome becomes a queued notification, drained later by
+  // the scheduled digest crons (morning/lunch/afternoon).
+  let queued = 0;
+  for (const r of enriched) {
+    if (r.outcome === 'observed' || r.outcome === 'no_op') continue;
+    const sev = r.outcome === 'escalated' ? 'high'
+      : r.outcome === 'failed' ? 'high'
+      : r.outcome === 'acted' ? 'low'
+      : 'medium';
+    const verb = r.outcome === 'escalated' ? 'flagged'
+      : r.outcome === 'failed' ? 'failed'
+      : r.outcome === 'acted' ? 'did'
+      : 'proposed';
+    await enqueueNotification({
+      tenantPhone,
+      kind: 'agent_observation',
+      severity: sev,
+      title: `${r.agent_name} ${verb}: ${(r.output_summary ?? '').slice(0, 100)}`,
+      body: r.delegated_to_lane ? `→ delegated to ${r.delegated_to_lane}` : undefined,
+      sourceAgent: r.agent_name,
+      sourceId: r.agent_instance_id,
+      metadata: { outcome: r.outcome, started_at: r.started_at },
+    });
+    queued++;
+  }
 
-  await pushDigestToOwner(tenantPhone, digest.message);
-
-  // Mark lastDigestAt
+  // Mark lastDigestAt to keep the throttle behavior (skip if already evaluated recently)
   profile.lastDigestAt = new Date().toISOString();
   await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${tenantPhone}`, {
     method: 'PATCH',
@@ -888,8 +894,8 @@ export async function maybeSendTeamDigest(tenantPhone: string, cadence: TickCade
     body: JSON.stringify({ profile }),
   });
 
-  console.log(`[digest] Sent for ${tenantPhone} (band=${cadence.band}, ${runs.length} runs)`);
-  return { sent: true };
+  console.log(`[digest] Queued ${queued} items for ${tenantPhone} (band=${cadence.band}, drained at next scheduled digest)`);
+  return { sent: queued > 0, reason: queued === 0 ? 'no_actionable_runs' : undefined };
 }
 
 /** Cron entry point — tick every running agent across every tenant */
