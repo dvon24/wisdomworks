@@ -18,6 +18,7 @@ import {
   type OAuthConnection,
 } from '@wisdomworks/shared';
 import { listImapUnread, sendImap } from '../../_lib/imap-runtime';
+import { queryKnowledge } from '../../_lib/knowledge-base';
 import { saveUserContext, type UserContext } from './context-store';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -112,6 +113,33 @@ const TOOL_CREATE_CALENDAR_EVENT: AnthropicTool = {
       },
     },
     required: ['title', 'start', 'end'],
+  },
+};
+
+const TOOL_QUERY_KB: AnthropicTool = {
+  name: 'query_knowledge_base',
+  description:
+    "Search the user's organizational knowledge base (their org documentation, roles, capabilities, projects, tasks, risks) using semantic similarity. Returns relevant snippets with their source entity citations. Use when the user asks about company policy, team structure, what someone does, project history, or any factual question about their org.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      question: { type: 'string', description: 'The natural-language question to search for.' },
+      limit: { type: 'number', description: 'Max snippets to return (default 5).' },
+    },
+    required: ['question'],
+  },
+};
+
+const TOOL_ERROR_CHECK: AnthropicTool = {
+  name: 'error_check',
+  description:
+    "Before taking a significant action (sending an email, scheduling a meeting, making a financial decision), check the knowledge base for any relevant policies, constraints, or known risks that should inform the action. Returns matching snippets — call BEFORE acting on something with external impact.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      proposed_action: { type: 'string', description: 'Plain-English description of what you intend to do.' },
+    },
+    required: ['proposed_action'],
   },
 };
 
@@ -322,6 +350,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_CORRECT_GRAMMAR);
   tools.push(TOOL_LIST_TASKS);
   tools.push(TOOL_FIND_CONFLICTS);
+  tools.push(TOOL_QUERY_KB);
+  tools.push(TOOL_ERROR_CHECK);
   tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
   tools.push(TOOL_UPDATE_AGENT);
@@ -443,6 +473,53 @@ export async function executeTool(
           content: `Event "${result.data.title}" created for ${new Date(result.data.start).toLocaleString()}.`,
           success: true,
         };
+      }
+
+      case 'query_knowledge_base': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const question = call.input.question?.toString();
+        if (!question) return { content: 'Missing question.', success: false };
+        try {
+          const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+          const { matches, embedTokens } = await queryKnowledge(cleanPhone, question, { limit: call.input.limit ?? 5 });
+          if (matches.length === 0) {
+            return { content: `No knowledge-base matches for "${question}". The KB may be empty or the question is outside the org's recorded scope.`, success: true };
+          }
+          const lines = matches.map((m, i) =>
+            `${i + 1}. [${m.source_entity_type}: ${m.source_entity_name}] (similarity ${(m.similarity * 100).toFixed(0)}%)\n   ${m.content.slice(0, 240)}${m.content.length > 240 ? '…' : ''}`,
+          );
+          return {
+            content: `${matches.length} match${matches.length > 1 ? 'es' : ''} (embed: ${embedTokens} tok):\n\n${lines.join('\n\n')}`,
+            success: true,
+          };
+        } catch (err) {
+          return { content: `Knowledge base error: ${err}`, success: false };
+        }
+      }
+
+      case 'error_check': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const action = call.input.proposed_action?.toString();
+        if (!action) return { content: 'Missing proposed_action.', success: false };
+        try {
+          const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+          // Lower threshold for error_check: we'd rather show a possibly-relevant
+          // policy than miss a real one. minSimilarity=0.3 errs on the side of more results.
+          const { matches } = await queryKnowledge(cleanPhone, action, { limit: 5, minSimilarity: 0.3 });
+          if (matches.length === 0) {
+            return { content: 'No relevant policies, constraints, or risks found in the knowledge base. Action is unconstrained from the KB perspective.', success: true };
+          }
+          const flags = matches.filter((m) => m.source_entity_type === 'risk' || /policy|compliance|constraint/i.test(m.content));
+          const lines = matches.map((m, i) =>
+            `${i + 1}. [${m.source_entity_type}: ${m.source_entity_name}]: ${m.content.slice(0, 200)}`,
+          );
+          const verdict = flags.length > 0
+            ? `⚠ ${flags.length} potential issue${flags.length > 1 ? 's' : ''} flagged. Review before proceeding.`
+            : `${matches.length} related entries found. Review for context, no hard blockers identified.`;
+          return { content: `${verdict}\n\n${lines.join('\n')}`, success: true };
+        } catch (err) {
+          return { content: `Error check failed: ${err}`, success: false };
+        }
       }
 
       case 'list_open_tasks': {

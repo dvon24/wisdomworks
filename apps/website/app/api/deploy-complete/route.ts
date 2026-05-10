@@ -194,6 +194,25 @@ async function persistEpic1Pipeline(
         : [],
     });
 
+    // Story 2.9 — auto-ingest the freshly-written ontology into the
+    // knowledge base so agents can query it immediately. Non-fatal: if
+    // OpenAI key is missing or embedding fails we keep going.
+    try {
+      const ingestRes = await fetch(`${supabaseUrl}/rest/v1/rpc/match_knowledge`, {
+        method: 'POST',
+        headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_tenant_phone: cleanPhone, p_query_embedding: new Array(1536).fill(0), p_match_count: 1 }),
+      });
+      // If match_knowledge returns 200 the table+function exist; trigger ingest via the deck endpoint.
+      if (ingestRes.ok) {
+        await fetch(`${process.env.NEXT_PUBLIC_APP_BASE_URL ?? 'https://wisdomworks.vercel.app'}/api/knowledge/ingest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: cleanPhone }),
+        }).catch(() => {});
+      }
+    } catch {}
+
     // Provisioning with operating-protocol override
     const protocolOverride = await loadProtocolOverride(supabaseUrl, supabaseKey, cleanPhone);
     const instances = planProvisioning(cleanPhone, spec, derivedAgents, protocolOverride);
