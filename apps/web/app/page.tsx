@@ -456,6 +456,33 @@ export default function CommandDeck() {
         <div style={{ flex: 1 }} />
 
         <span className="pill info">{tenantData?.pendingEmailDrafts?.length ?? 0} pending</span>
+        <button
+          onClick={async () => {
+            if (!phoneNumber) return;
+            try {
+              const res = await fetch('/api/agents/lifecycle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ phone: phoneNumber, action: 'tick' }),
+              });
+              const data = await res.json();
+              console.log('[manual-tick]', data);
+              // Refetch dashboard to surface new runs
+              setTimeout(async () => {
+                const r = await fetch(`/api/dashboard?phone=${encodeURIComponent(phoneNumber)}`);
+                const d = await r.json();
+                if (!d.error) setTenantData(d);
+              }, 500);
+            } catch (err) {
+              console.error('manual tick failed', err);
+            }
+          }}
+          className="btn ghost"
+          style={{ fontSize: 12 }}
+          title="Run a tick on every running agent right now (testing)"
+        >
+          ⚡ Tick now
+        </button>
         <button className="btn" style={{ fontSize: 12 }}>
           <span style={{ marginRight: 6 }}>✦</span>
           {team.length} agents · €{totalPrice}/mo
@@ -529,7 +556,47 @@ export default function CommandDeck() {
               <div className="num-md" style={{ fontSize: 28, fontWeight: 300 }}>{tenantData?.messageCount ?? 0}</div>
               <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>via WhatsApp</div>
             </div>
+            {tenantData?.budget && (
+              <div>
+                <div className="eyebrow" style={{ marginBottom: 4 }}>Usage this month</div>
+                <div className="num-md" style={{
+                  fontSize: 28,
+                  fontWeight: 300,
+                  color: tenantData.budget.status === 'exceeded' ? '#c2410c'
+                    : tenantData.budget.status === 'warning' ? '#b45309'
+                    : 'inherit',
+                }}>
+                  ${tenantData.budget.usedUsd.toFixed(2)}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+                  of ${tenantData.budget.monthlyBudgetUsd}/mo
+                  {tenantData.budget.daysToExhaustion !== null && tenantData.budget.daysToExhaustion < 30 && (
+                    <> · ~{tenantData.budget.daysToExhaustion}d left</>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
+          )}
+
+          {/* Budget warning banner */}
+          {view === 'team' && tenantData?.budget?.status === 'warning' && (
+            <div className="glass" style={{ padding: '10px 14px', background: 'rgba(180, 83, 9, 0.1)', border: '1px solid rgba(180, 83, 9, 0.35)', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 18 }}>⚠</span>
+              <span style={{ fontSize: 12.5, color: 'var(--text)' }}>
+                You're at <strong>{tenantData.budget.pctUsed}%</strong> of this month's ${tenantData.budget.monthlyBudgetUsd} budget.
+                {tenantData.budget.daysToExhaustion !== null && ` Burn rate suggests exhaustion in ~${tenantData.budget.daysToExhaustion}d.`}
+              </span>
+            </div>
+          )}
+          {view === 'team' && tenantData?.budget?.status === 'exceeded' && (
+            <div className="glass" style={{ padding: '10px 14px', background: 'rgba(194, 65, 12, 0.12)', border: '1px solid rgba(194, 65, 12, 0.4)', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 18 }}>🛑</span>
+              <span style={{ fontSize: 12.5, color: 'var(--text)' }}>
+                Monthly budget exceeded (${tenantData.budget.usedUsd} of ${tenantData.budget.monthlyBudgetUsd}).
+                Agents have been paused. Top up to resume autonomous work.
+              </span>
+            </div>
           )}
 
           {/* Hero — hierarchy or detail */}

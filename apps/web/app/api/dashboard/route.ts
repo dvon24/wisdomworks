@@ -12,6 +12,7 @@
  */
 
 import { NextResponse } from 'next/server';
+import { computeMonthlyUsage, evaluateBudget } from '../_lib/usage-tracker';
 
 export const dynamic = 'force-dynamic';
 
@@ -251,6 +252,27 @@ export async function GET(request: Request) {
       };
     }
 
+    // Story 2.1c — usage + budget for the current calendar month.
+    // Budget is the spec's monthlyBase from the saved deployment_spec
+    // (falls back to $50 to match the deposit).
+    let usage = null as any;
+    let budget = null as any;
+    try {
+      const usageData = await computeMonthlyUsage(cleanPhone);
+      if (usageData) {
+        const specRes = await fetch(
+          `${SUPABASE_URL}/rest/v1/tenant_configs?tenant_phone=eq.${cleanPhone}&config_type=eq.deployment_spec&select=config`,
+          { headers },
+        );
+        const specRows = specRes.ok ? await specRes.json() : [];
+        const monthlyBudget = specRows[0]?.config?.pricing?.monthlyBase ?? 50;
+        usage = usageData;
+        budget = evaluateBudget(usageData, monthlyBudget);
+      }
+    } catch (err) {
+      console.warn('[dashboard] usage computation failed:', err);
+    }
+
     return NextResponse.json({
       user: {
         phone: cleanPhone,
@@ -277,6 +299,8 @@ export async function GET(request: Request) {
       team,
       documentation,
       agentDetails,
+      usage,
+      budget,
       messageCount: ctx.message_count ?? 0,
       lastSeen: ctx.last_seen,
     });

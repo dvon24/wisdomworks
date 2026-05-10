@@ -10,7 +10,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { startTenantAgents, stopTenantAgents } from '../../_lib/agent-runtime';
+import { startTenantAgents, stopTenantAgents, tickAgent } from '../../_lib/agent-runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,6 +34,36 @@ export async function POST(request: Request) {
     if (action === 'stop') {
       const result = await stopTenantAgents(cleanPhone);
       return NextResponse.json({ ok: true, ...result });
+    }
+    if (action === 'tick') {
+      // Manual tick — fires every running agent for THIS tenant only.
+      // Used for testing without waiting for the 15-min cron.
+      if (!SUPABASE_URL || !SUPABASE_KEY) return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
+      const instRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&status=eq.running&select=id,tenant_phone,agent_config_id,status,metadata`,
+        { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+      );
+      if (!instRes.ok) return NextResponse.json({ error: 'failed to load instances' }, { status: 500 });
+      const instances = await instRes.json();
+      if (instances.length === 0) {
+        return NextResponse.json({ ok: true, ticked: 0, note: 'No running agents to tick. Call action=start first.' });
+      }
+      const cfgIds = Array.from(new Set(instances.map((i: any) => i.agent_config_id)));
+      const cfgRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/agent_configs?id=in.(${cfgIds.join(',')})&select=id,agent_name,agent_role,model_routing,output_channels,config`,
+        { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+      );
+      const cfgs = cfgRes.ok ? await cfgRes.json() : [];
+      const cfgById = new Map(cfgs.map((c: any) => [c.id, c]));
+      let ticked = 0;
+      let failed = 0;
+      // Run ticks in parallel — they're independent and the lambda has 30s.
+      await Promise.all(instances.map(async (inst: any) => {
+        const cfg: any = cfgById.get(inst.agent_config_id);
+        if (!cfg) { failed++; return; }
+        try { await tickAgent(inst, cfg); ticked++; } catch { failed++; }
+      }));
+      return NextResponse.json({ ok: true, ticked, failed });
     }
     if (action === 'status') {
       if (!SUPABASE_URL || !SUPABASE_KEY) return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
