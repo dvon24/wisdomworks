@@ -33,6 +33,13 @@ interface EmailSummary {
   // Story 2.3 — privacy classification at the boundary
   privacyClass: 'business' | 'personal' | 'uncertain';
   privacyConfidence: number; // 0-1
+  // Story 2.5 — structured extraction (business mail only; null for personal/uncertain)
+  extracted?: {
+    people: string[];
+    projects: string[];
+    dates: string[];
+    actionItems: string[];
+  };
 }
 
 export async function GET(request: Request) {
@@ -137,7 +144,59 @@ async function processCustomer(
   // Story 2.2 + 2.3 — log this batch as a 'signal' run with privacy counts.
   await logEmailSignal(conn.phone_number, decrypted.provider, processed, actionable.length, { personalCount, uncertainCount });
 
+  // Story 2.5 — fold extracted business entities into the ontology so
+  // future agent prompts know about the people, projects, and tasks
+  // mentioned. Personal/uncertain mail never reaches this step.
+  await mapExtractionsToOntology(conn.phone_number, businessOnly);
+
   return { processed: emails.length, actionable: actionable.length };
+}
+
+/**
+ * Story 2.5 — upsert extracted entities (people, projects, action items,
+ * dates) into the tenant's ontology via the existing upsert_ontology RPC.
+ * Idempotent (the function dedupes by (entity_type, name)).
+ */
+async function mapExtractionsToOntology(tenantPhone: string, emails: EmailSummary[]): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  const entities: any[] = [];
+  const seen = new Set<string>();
+  const add = (entity_type: string, name: string, metadata: Record<string, unknown> = {}) => {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return;
+    const key = `${entity_type}:${trimmed.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entities.push({ entity_type, name: trimmed.slice(0, 200), metadata, source: 'agent_inferred' });
+  };
+  for (const e of emails) {
+    const ext = e.extracted;
+    if (!ext) continue;
+    for (const p of ext.people ?? []) add('employee', p, { mentioned_in_email: true });
+    for (const p of ext.projects ?? []) add('project', p, { mentioned_in_email: true });
+    for (const a of ext.actionItems ?? []) add('task', a, { from_email_subject: e.subject });
+    for (const d of ext.dates ?? []) add('decision', `Date mentioned: ${d}`, { date_string: d });
+  }
+  if (entities.length === 0) return;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_ontology`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({
+        p_tenant_phone: tenantPhone,
+        p_entities: entities,
+        p_relationships: [],
+      }),
+    });
+    if (!res.ok) console.warn('[email-sift] ontology mapping failed:', res.status);
+  } catch (err) {
+    console.warn('[email-sift] ontology mapping error:', err);
+  }
 }
 
 /**
@@ -264,7 +323,8 @@ Return ONLY a valid JSON array. Each item:
   "privacyClass": "business" | "personal" | "uncertain",
   "privacyConfidence": 0..1,
   "classification": "urgent" | "needs_response" | "informational" | "spam",
-  "draftReply": "reply text or null"
+  "draftReply": "reply text or null",
+  "extracted": { "people": ["full names mentioned"], "projects": ["named projects/initiatives"], "dates": ["yyyy-mm-dd or natural-language dates"], "actionItems": ["action item phrases"] }
 }
 
 PRIVACY RULES (defense-in-depth — Story 2.3):
@@ -278,7 +338,12 @@ ACTION RULES (only when privacyClass is "business"):
 - needs_response: requires reply but not urgent
 - informational: FYI, no action
 - spam: unsolicited, marketing
-- Draft reply ONLY for urgent + needs_response. Professional, concise.`,
+- Draft reply ONLY for urgent + needs_response. Professional, concise.
+
+EXTRACTION (Story 2.5 — structured signal, business mail only):
+- For privacyClass "business" only, populate extracted with names of people mentioned, projects/initiatives referenced, dates that matter (deadlines, meetings), and action items.
+- For "personal" or "uncertain", set extracted to null. NEVER extract names or other identifying info from personal mail (privacy boundary).
+- Keep arrays short — 5 items max each.`,
             cache_control: { type: 'ephemeral' },
           },
         ],
@@ -296,9 +361,14 @@ ACTION RULES (only when privacyClass is "business"):
     const data = await response.json();
     const text = data.content?.[0]?.text ?? '[]';
     const jsonMatch = text.match(/\[[\s\S]*\]/);
-    const results: { index: number; classification: string; draftReply: string | null; privacyClass?: string; privacyConfidence?: number }[] = jsonMatch
-      ? JSON.parse(jsonMatch[0])
-      : [];
+    const results: {
+      index: number;
+      classification: string;
+      draftReply: string | null;
+      privacyClass?: string;
+      privacyConfidence?: number;
+      extracted?: { people?: string[]; projects?: string[]; dates?: string[]; actionItems?: string[] } | null;
+    }[] = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
 
     return emails.map((e, i) => {
       const result = results.find((r) => r.index === i + 1);
@@ -317,6 +387,13 @@ ACTION RULES (only when privacyClass is "business"):
         draftReply: isPrivate ? undefined : (result?.draftReply ?? undefined),
         privacyClass,
         privacyConfidence,
+        // Story 2.5 — extraction only on business mail (privacy boundary)
+        extracted: isPrivate ? undefined : {
+          people: result?.extracted?.people ?? [],
+          projects: result?.extracted?.projects ?? [],
+          dates: result?.extracted?.dates ?? [],
+          actionItems: result?.extracted?.actionItems ?? [],
+        },
       };
     });
   } catch (error) {

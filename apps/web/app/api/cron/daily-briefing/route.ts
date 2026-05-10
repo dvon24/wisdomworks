@@ -73,42 +73,115 @@ async function getActiveUsers(): Promise<any[]> {
 
 async function generateBriefing(user: any): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return `Good morning ${user.name}! Your AI team is running smoothly. Have a great day!`;
-  }
-
   const now = new Date();
   const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
   const dateStr = now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      system: [{
-        type: 'text',
-        text: `You generate concise WhatsApp morning briefings for business owners. Keep it under 200 words. Use line breaks, not markdown. Be warm and actionable. Include the day and date. Respond in the same language the user's business name suggests.`,
-        cache_control: { type: 'ephemeral' },
-      }],
-      messages: [{
-        role: 'user',
-        content: `Generate a morning briefing for ${user.name}, who owns "${user.business_name || 'their business'}" (${user.business_type || 'business'}). Today is ${dayOfWeek}, ${dateStr}. They've exchanged ${user.message_count || 0} messages with their assistant. This is their daily check-in from their AI team.`,
-      }],
-    }),
-  });
-
-  if (!response.ok) {
-    return `Good morning ${user.name}!\n\n${dayOfWeek}, ${dateStr}\n\nYour AI team is online and ready. Text me anytime you need something today.`;
+  if (!apiKey) {
+    return `Good morning ${user.name}! Your AI team is running smoothly. Have a great day!`;
   }
 
-  const data = await response.json();
-  return data.content?.[0]?.text ?? `Good morning ${user.name}! Your AI team is ready for the day.`;
+  // Story 2.6 — gather real briefing context from the runtime tables.
+  const since = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const cleanPhone = user.phone_number;
+
+  let recentRuns: any[] = [];
+  let uncertainEmails: any[] = [];
+  let pendingDrafts: any[] = [];
+  let upcomingCalendar: any[] = [];
+  let orchestratorName = 'Sophia';
+
+  try {
+    const [runsRes, ctxRes, cfgRes] = await Promise.all([
+      fetch(
+        `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&started_at=gte.${since}&outcome=neq.no_op&order=started_at.desc&limit=20&select=outcome,output_summary,delegated_to_lane,metadata,started_at`,
+        { headers: { apikey: SUPABASE_KEY!, Authorization: `Bearer ${SUPABASE_KEY}` } },
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile`,
+        { headers: { apikey: SUPABASE_KEY!, Authorization: `Bearer ${SUPABASE_KEY}` } },
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&select=agent_name,config&order=created_at.asc&limit=1`,
+        { headers: { apikey: SUPABASE_KEY!, Authorization: `Bearer ${SUPABASE_KEY}` } },
+      ),
+    ]);
+    recentRuns = runsRes.ok ? await runsRes.json() : [];
+    const ctxRows = ctxRes.ok ? await ctxRes.json() : [];
+    const profile = ctxRows[0]?.profile ?? {};
+    pendingDrafts = profile.pendingEmailDrafts ?? [];
+    uncertainEmails = profile.uncertainEmails ?? [];
+    upcomingCalendar = profile.todaysCalendar ?? [];
+    const cfgRows = cfgRes.ok ? await cfgRes.json() : [];
+    if (cfgRows[0]?.agent_name) orchestratorName = cfgRows[0].agent_name;
+  } catch (err) {
+    console.warn('[daily-briefing] context fetch failed:', err);
+  }
+
+  const runsSummary = recentRuns.slice(0, 10).map((r: any) =>
+    `  - [${r.outcome}${r.delegated_to_lane ? ` → ${r.delegated_to_lane}` : ''}] ${(r.output_summary || '').slice(0, 120)}`,
+  ).join('\n') || '  (quiet overnight)';
+
+  const calendarSummary = upcomingCalendar.slice(0, 5).map((e: any) =>
+    `  - ${new Date(e.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${e.title}`,
+  ).join('\n') || '  (nothing scheduled)';
+
+  const userMsg = `Today is ${dayOfWeek}, ${dateStr}.
+
+Owner: ${user.name}
+Business: ${user.business_name || 'their business'} (${user.business_type || 'business'})
+
+Overnight team activity (last 24h):
+${runsSummary}
+
+Today's calendar:
+${calendarSummary}
+
+Pending email drafts awaiting review: ${pendingDrafts.length}
+Uncertain email classifications to clarify: ${uncertainEmails.length}
+
+Generate the morning briefing.`;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 350,
+        system: [{
+          type: 'text',
+          text: `You are ${orchestratorName}, the user's personal orchestrator. You're sending the morning briefing via WhatsApp.
+
+Format:
+- Short greeting with the day + date
+- 2-4 line summary of overnight team activity (lead with what NEEDS attention, defer routine)
+- Today's schedule headline (skip if nothing scheduled)
+- Pending items the user must review (drafts, uncertain emails)
+- One-line close inviting them to engage
+
+Rules:
+- Under 220 words
+- Use line breaks, no markdown
+- Mention agents by name when crediting work
+- If the team had a quiet night and nothing needs attention, say so plainly — don't pad
+- Be warm but not sycophantic. No 'have a wonderful day!'`,
+          cache_control: { type: 'ephemeral' },
+        }],
+        messages: [{ role: 'user', content: userMsg }],
+      }),
+    });
+    if (!response.ok) throw new Error(`Anthropic ${response.status}`);
+    const data = await response.json();
+    return data.content?.[0]?.text ?? `Good morning ${user.name}! Quiet overnight. Anything for today?`;
+  } catch (err) {
+    console.error('[daily-briefing] generate failed:', err);
+    return `Good morning ${user.name}!\n\n${dayOfWeek}, ${dateStr}\n\nQuiet overnight. ${pendingDrafts.length > 0 ? `${pendingDrafts.length} draft${pendingDrafts.length > 1 ? 's' : ''} awaiting review.` : ''} ${upcomingCalendar.length > 0 ? `${upcomingCalendar.length} event${upcomingCalendar.length > 1 ? 's' : ''} on the calendar.` : ''}`.trim();
+  }
 }
 
 async function sendWhatsApp(to: string, message: string): Promise<void> {
