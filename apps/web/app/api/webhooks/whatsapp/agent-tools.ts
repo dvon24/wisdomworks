@@ -19,6 +19,17 @@ import {
 } from '@wisdomworks/shared';
 import { listImapUnread, sendImap } from '../../_lib/imap-runtime';
 import { queryKnowledge } from '../../_lib/knowledge-base';
+import {
+  generateWordDoc,
+  generatePowerPoint,
+  generateExcel,
+  generatePdf,
+  uploadToGoogleDrive,
+  uploadToOneDrive,
+  type DocSection,
+  type SlideSpec,
+  type SheetSpec,
+} from '../../_lib/doc-gen';
 import { saveUserContext, type UserContext } from './context-store';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -113,6 +124,79 @@ const TOOL_CREATE_CALENDAR_EVENT: AnthropicTool = {
       },
     },
     required: ['title', 'start', 'end'],
+  },
+};
+
+const TOOL_CREATE_DOCUMENT: AnthropicTool = {
+  name: 'create_document',
+  description:
+    "Generate a Word/PowerPoint/Excel/PDF document and upload it to the user's Google Drive or OneDrive (whichever they have connected). Use when the user asks for a doc/deck/spreadsheet/PDF — meeting notes, report, proposal, status update, etc. Returns the file URL.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      format: { type: 'string', enum: ['docx', 'pptx', 'xlsx', 'pdf'], description: 'docx for Word, pptx for PowerPoint, xlsx for Excel, pdf for PDF.' },
+      filename: { type: 'string', description: 'Filename WITHOUT extension. Will be appended automatically.' },
+      title: { type: 'string', description: 'Document title shown on the cover/first page.' },
+      // Format-specific payloads
+      sections: {
+        type: 'array',
+        description: 'For docx/pdf: sections of [heading, paragraphs[], bullets[]].',
+        items: {
+          type: 'object',
+          properties: {
+            heading: { type: 'string' },
+            paragraphs: { type: 'array', items: { type: 'string' } },
+            bullets: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+      slides: {
+        type: 'array',
+        description: 'For pptx: slides of [title, body, bullets[], notes].',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            body: { type: 'string' },
+            bullets: { type: 'array', items: { type: 'string' } },
+            notes: { type: 'string' },
+          },
+          required: ['title'],
+        },
+      },
+      sheets: {
+        type: 'array',
+        description: 'For xlsx: sheets of [name, rows: string[][]].',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            rows: { type: 'array', items: { type: 'array' } },
+          },
+          required: ['name', 'rows'],
+        },
+      },
+    },
+    required: ['format', 'filename', 'title'],
+  },
+};
+
+const TOOL_RUN_WORKFLOW: AnthropicTool = {
+  name: 'run_workflow',
+  description:
+    'Execute a multi-step workflow (chained tool calls with conditionals + retries). Use for repeatable procedures: weekly report cycle, client onboarding sequence, meeting follow-up. Returns a per-step trace.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Workflow name (for logging).' },
+      description: { type: 'string' },
+      steps: {
+        type: 'array',
+        description: "Steps: { id, type: 'tool'|'if'|'parallel'|'delay', ... }. Tool steps reference other tools by name and can use {{stepId.field}} templating to thread outputs.",
+        items: { type: 'object' },
+      },
+    },
+    required: ['name', 'steps'],
   },
 };
 
@@ -352,6 +436,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_FIND_CONFLICTS);
   tools.push(TOOL_QUERY_KB);
   tools.push(TOOL_ERROR_CHECK);
+  tools.push(TOOL_CREATE_DOCUMENT);
+  tools.push(TOOL_RUN_WORKFLOW);
   tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
   tools.push(TOOL_UPDATE_AGENT);
@@ -473,6 +559,71 @@ export async function executeTool(
           content: `Event "${result.data.title}" created for ${new Date(result.data.start).toLocaleString()}.`,
           success: true,
         };
+      }
+
+      case 'create_document': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const { format, filename, title } = call.input;
+        const ext = format === 'docx' ? '.docx' : format === 'pptx' ? '.pptx' : format === 'xlsx' ? '.xlsx' : '.pdf';
+        const mime = format === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          : format === 'pptx' ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+          : format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'application/pdf';
+        const safeName = `${filename}${ext}`;
+
+        try {
+          let buffer: Buffer;
+          if (format === 'docx') {
+            buffer = await generateWordDoc(title, (call.input.sections ?? []) as DocSection[]);
+          } else if (format === 'pptx') {
+            buffer = await generatePowerPoint(title, (call.input.slides ?? []) as SlideSpec[]);
+          } else if (format === 'xlsx') {
+            buffer = await generateExcel((call.input.sheets ?? []) as SheetSpec[]);
+          } else {
+            buffer = await generatePdf(title, (call.input.sections ?? []) as DocSection[]);
+          }
+
+          // Pick a destination: prefer Google Drive if connected, else OneDrive
+          const googleConn = connections.find((c) => c.provider === 'google');
+          const msConn = connections.find((c) => c.provider === 'microsoft');
+          let upload: any = null;
+          if (googleConn) {
+            upload = await uploadToGoogleDrive(googleConn.access_token, safeName, mime, buffer);
+            if (upload.ok) return { content: `Created ${safeName} in your Google Drive: ${upload.webUrl}`, success: true };
+          }
+          if (msConn) {
+            upload = await uploadToOneDrive(msConn.access_token, safeName, buffer);
+            if (upload.ok) return { content: `Created ${safeName} in your OneDrive: ${upload.webUrl}`, success: true };
+          }
+          // Fallback: return the size + base64 length so the user knows it was generated
+          return {
+            content: `Generated ${safeName} (${(buffer.length / 1024).toFixed(1)} KB) but no Drive/OneDrive connection found. Connect one in the deck to auto-upload, or I can attach via WhatsApp on next iteration.`,
+            success: true,
+          };
+        } catch (err) {
+          return { content: `Document generation failed: ${err}`, success: false };
+        }
+      }
+
+      case 'run_workflow': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        try {
+          // Late-bind to avoid an import cycle (workflow-runner imports from this file)
+          const { runWorkflow } = await import('../../_lib/workflow-runner');
+          const wf = {
+            name: call.input.name,
+            description: call.input.description,
+            steps: call.input.steps ?? [],
+          };
+          const result = await runWorkflow(user.phoneNumber, wf);
+          const summary = `${wf.name}: ${result.ok ? '✓' : '✗'} ${result.steps.length} steps in ${result.totalDurationMs}ms`;
+          const stepLines = result.steps.map((s) =>
+            `  ${s.success ? '✓' : '✗'} ${s.id} (${s.type}, ${s.durationMs}ms)${s.error ? ' — ' + s.error : ''}`,
+          );
+          return { content: `${summary}\n${stepLines.join('\n')}`, success: result.ok };
+        } catch (err) {
+          return { content: `Workflow execution failed: ${err}`, success: false };
+        }
       }
 
       case 'query_knowledge_base': {
