@@ -6,6 +6,7 @@
     { "path": "/api/cron/daily-briefing", "schedule": "0 7 * * *" },
     { "path": "/api/cron/calendar-sync", "schedule": "30 6 * * *" },
     { "path": "/api/cron/proactive-loop", "schedule": "0 */4 * * *" },
-    { "path": "/api/cron/email-sift", "schedule": "*/30 * * * *" }
+    { "path": "/api/cron/email-sift", "schedule": "*/30 * * * *" },
+    { "path": "/api/cron/agent-tick", "schedule": "*/15 * * * *" }
   ]
 }

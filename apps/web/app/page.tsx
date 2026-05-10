@@ -89,7 +89,16 @@ export default function CommandDeck() {
   const [teamMeta, setTeamMeta] = useState<Record<string, any>>({});
 
   // Convert raw profile.team[] from /api/dashboard or /api/chat into hierarchy + meta
-  function convertTeam(rawTeam: any[]): { team: HierarchyAgent[]; meta: Record<string, any> } {
+  // Map agent_instances.status (provisioning/ready/running/paused/stopped/error)
+  // to the hierarchy node's visual status pill.
+  function statusFromInstance(instanceStatus?: string | null): 'ok' | 'warn' | 'bad' {
+    if (!instanceStatus) return 'ok';
+    if (instanceStatus === 'error' || instanceStatus === 'stopped') return 'bad';
+    if (instanceStatus === 'provisioning' || instanceStatus === 'paused') return 'warn';
+    return 'ok'; // ready, running
+  }
+
+  function convertTeam(rawTeam: any[], details?: Record<string, any>): { team: HierarchyAgent[]; meta: Record<string, any> } {
     const meta: Record<string, any> = {};
     const team: HierarchyAgent[] = rawTeam.map((a: any, i: number) => {
       const id = (a.name || `agent-${i}`).toLowerCase().replace(/\s+/g, '-');
@@ -105,9 +114,10 @@ export default function CommandDeck() {
       if (i === 0) meta['iris'] = meta[id];
       const model = (a.aiModel || a.tier || '').toString().toLowerCase();
       const tier: 'Opus' | 'Sonnet' | 'Haiku' = model.includes('opus') ? 'Opus' : model.includes('haiku') ? 'Haiku' : 'Sonnet';
+      const status = statusFromInstance(details?.[id]?.instanceStatus);
       const base: HierarchyAgent = i === 0
-        ? { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus' as const, status: 'ok', required: true }
-        : { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status: 'ok' as const };
+        ? { id: 'iris', label: a.name || 'Iris', role: a.role || 'Personal assistant', tier: 'Opus' as const, status: statusFromInstance(details?.['iris']?.instanceStatus), required: true }
+        : { id, label: a.name || `Agent ${i + 1}`, role: a.role || 'Specialist', tier, status };
 
       const subAgents = a.subTeam?.agents ?? [];
       const subCount = a.subTeam?.count ?? subAgents.length;
@@ -153,7 +163,7 @@ export default function CommandDeck() {
 
         // Convert saved AI team into HierarchyAgent shape and capture rich metadata
         if (data.team && Array.isArray(data.team) && data.team.length > 0) {
-          const { team, meta } = convertTeam(data.team);
+          const { team, meta } = convertTeam(data.team, data.agentDetails);
           setTeam(team);
           setTeamMeta(meta);
         }
@@ -348,7 +358,7 @@ export default function CommandDeck() {
       setMessages((m) => [...m, { from: 'iris' as const, text: data.reply || '...' }]);
       // If the brain mutated the team, re-render the hierarchy from the fresh team
       if (Array.isArray(data.team) && data.team.length > 0) {
-        const { team: fresh, meta } = convertTeam(data.team);
+        const { team: fresh, meta } = convertTeam(data.team, data.agentDetails);
         setTeam(fresh);
         setTeamMeta(meta);
       }
@@ -1107,19 +1117,28 @@ export default function CommandDeck() {
                     </button>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {selectedAgent.subTeam.agents.slice(0, 5).map((sub) => (
-                      <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                        <div style={{ width: 20, height: 20, borderRadius: 6, background: 'rgba(255,255,255,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 10, border: '1px solid var(--glass-border)' }}>
-                          {sub.label[0]}
+                    {selectedAgent.subTeam.agents.slice(0, 5).map((sub) => {
+                      const subDetail = tenantData?.agentDetails?.[sub.id];
+                      const subAutonomy = subDetail?.autonomyLevel;
+                      return (
+                        <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                          <div style={{ width: 20, height: 20, borderRadius: 6, background: 'rgba(255,255,255,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 10, border: '1px solid var(--glass-border)' }}>
+                            {sub.label[0]}
+                          </div>
+                          <span style={{ fontWeight: 500 }}>{sub.label}</span>
+                          <span style={{ color: 'var(--text-faint)' }}>·</span>
+                          <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{sub.role}</span>
+                          <span style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' }}>
+                            {subAutonomy && (
+                              <span className="mono" style={{ fontSize: 9, color: 'var(--text-faint)' }}>{subAutonomy}</span>
+                            )}
+                            {sub.tier && (
+                              <span className="mono" style={{ fontSize: 9, color: 'var(--accent-deep)' }}>{sub.tier}</span>
+                            )}
+                          </span>
                         </div>
-                        <span style={{ fontWeight: 500 }}>{sub.label}</span>
-                        <span style={{ color: 'var(--text-faint)' }}>·</span>
-                        <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{sub.role}</span>
-                        {sub.tier && (
-                          <span className="mono" style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--accent-deep)' }}>{sub.tier}</span>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
