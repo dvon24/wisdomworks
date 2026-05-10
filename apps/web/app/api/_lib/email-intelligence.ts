@@ -134,6 +134,38 @@ export async function getTopContacts(tenantPhone: string, limit = 25): Promise<T
   }
 }
 
+/** Search contacts by display name OR address (case-insensitive partial match).
+ * Ranks results by engagement_score so the most relevant matches surface first.
+ * Returns up to `limit` results — caller decides how to disambiguate. */
+export async function searchContacts(tenantPhone: string, query: string, limit = 10): Promise<TopContact[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  try {
+    // Use PostgREST or filter — match name OR address with ilike
+    const params = `tenant_phone=eq.${tenantPhone}&or=(display_name.ilike.*${encodeURIComponent(q)}*,address.ilike.*${encodeURIComponent(q)}*)&select=address,display_name,sent_count,received_count,read_count,trust_label,last_sent_at,last_received_at&limit=${limit * 3}`;
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/email_contacts?${params}`, { headers: headers() });
+    if (!res.ok) return [];
+    const rows = await res.json();
+    return rows
+      .map((r: any) => ({
+        address: r.address,
+        display_name: r.display_name,
+        sent_count: r.sent_count ?? 0,
+        received_count: r.received_count ?? 0,
+        read_count: r.read_count ?? 0,
+        trust_label: r.trust_label,
+        engagement_score: (r.sent_count ?? 0) * 2 + (r.read_count ?? 0) + (r.received_count ?? 0) * 0.5,
+        last_interaction_at: r.last_sent_at ?? r.last_received_at ?? '',
+      }))
+      .filter((r: TopContact) => r.trust_label !== 'blocked')
+      .sort((a: TopContact, b: TopContact) => b.engagement_score - a.engagement_score)
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
 export async function getContactByAddress(tenantPhone: string, address: string): Promise<TopContact | null> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
   try {

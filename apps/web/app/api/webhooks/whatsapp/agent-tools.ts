@@ -22,7 +22,7 @@ import { queryKnowledge } from '../../_lib/knowledge-base';
 import { logCorrection } from '../../_lib/classification-learning';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
 import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
-import { getVoiceProfile, getTopContacts, renderVoiceForDraft } from '../../_lib/email-intelligence';
+import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, type TopContact } from '../../_lib/email-intelligence';
 import {
   generateWordDoc,
   generatePowerPoint,
@@ -334,17 +334,30 @@ const TOOL_FIND_CONFLICTS: AnthropicTool = {
 const TOOL_DRAFT_EMAIL: AnthropicTool = {
   name: 'draft_email',
   description:
-    "Compose a polished email draft for the user to review BEFORE sending. Use when the user says 'draft an email to X about Y' or 'reply to that LinkedIn email'. Returns the draft text — DOES NOT send. The user must explicitly approve, then you call send_email.",
+    "Compose a polished email draft for the user to review BEFORE sending. Use when the user says 'draft an email to X about Y' or 'reply to that LinkedIn email'. The 'to' field accepts EITHER email addresses OR names — names get resolved against the user's contacts table automatically (so 'Ron Beaman' will be matched to ron@example.com if Ron is in their contacts). Returns the draft text — DOES NOT send. The user must explicitly approve, then you call send_email.",
   input_schema: {
     type: 'object',
     properties: {
-      to: { type: 'array', items: { type: 'string' }, description: 'Recipient email addresses if known. Empty if user hasn\'t provided.' },
+      to: { type: 'array', items: { type: 'string' }, description: "Recipients — either email addresses (foo@bar.com) OR names (Ron Beaman). Names get resolved against the contact list automatically." },
       subject: { type: 'string' },
       intent: { type: 'string', description: 'What the email needs to communicate (1-3 sentences).' },
-      tone: { type: 'string', enum: ['professional', 'friendly', 'direct', 'warm'], description: 'Default professional.' },
+      tone: { type: 'string', enum: ['professional', 'friendly', 'direct', 'warm'], description: 'Optional tone override. Default: match the owner\'s voice profile.' },
       contextSnippets: { type: 'array', items: { type: 'string' }, description: 'Optional snippets from the original email being replied to.' },
     },
     required: ['intent'],
+  },
+};
+
+const TOOL_FIND_CONTACT: AnthropicTool = {
+  name: 'find_contact',
+  description:
+    "Look up an email contact by name or partial name. Use when the user mentions someone by name and you need their email address — e.g. 'send Ron a follow-up' before drafting. Returns matching contacts with addresses and how often the user emails them.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: "Name or partial name to search for (case-insensitive). E.g. 'Ron', 'ron beaman', 'beaman'." },
+    },
+    required: ['query'],
   },
 };
 
@@ -511,6 +524,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   // Website + team-mutation + connect tools are always available
   tools.push(TOOL_ANALYZE_WEBSITE);
   tools.push(TOOL_DRAFT_EMAIL);
+  tools.push(TOOL_FIND_CONTACT);
   tools.push(TOOL_CORRECT_GRAMMAR);
   tools.push(TOOL_LIST_TASKS);
   tools.push(TOOL_FIND_CONFLICTS);
@@ -914,16 +928,58 @@ export async function executeTool(
           ? `\n\nContext (original email being replied to):\n${(contextSnippets as string[]).slice(0, 3).join('\n---\n')}`
           : '';
 
-        // Pull the owner's voice profile so the draft sounds like them.
-        // If no profile exists yet, fall back to the requested tone.
         const cleanPhone = user?.phoneNumber.replace(/[\s\-+()]/g, '');
+
+        // Resolve any names in `to` against the contacts table. Items that
+        // contain @ are treated as already-resolved addresses; everything
+        // else becomes a name lookup.
+        let resolvedTo: string[] = [];
+        const ambiguous: { query: string; matches: TopContact[] }[] = [];
+        const unresolved: string[] = [];
+        if (to?.length && cleanPhone) {
+          for (const item of to as string[]) {
+            const trimmed = item.trim();
+            if (trimmed.includes('@')) {
+              resolvedTo.push(trimmed);
+              continue;
+            }
+            const matches = await searchContacts(cleanPhone, trimmed, 5);
+            if (matches.length === 0) {
+              unresolved.push(trimmed);
+            } else if (matches.length === 1) {
+              resolvedTo.push(matches[0]!.address);
+            } else {
+              ambiguous.push({ query: trimmed, matches });
+            }
+          }
+          // Bail early if anything needs human disambiguation
+          if (unresolved.length > 0) {
+            return {
+              content: `I don't have an email for ${unresolved.join(', ')} in your contacts. Either give me their address or call find_contact with a different spelling.`,
+              success: false,
+            };
+          }
+          if (ambiguous.length > 0) {
+            const lines = ambiguous.map((a) =>
+              `"${a.query}" matches ${a.matches.length}: ${a.matches.map((m) => `${m.display_name ?? m.address} <${m.address}>`).join(', ')}`,
+            );
+            return {
+              content: `Need disambiguation:\n${lines.join('\n')}\n\nReply with which one (or include the full address in your draft request).`,
+              success: false,
+            };
+          }
+        } else if (to?.length) {
+          resolvedTo = to as string[];
+        }
+
+        // Pull the owner's voice profile so the draft sounds like them.
         const profile = cleanPhone ? await getVoiceProfile(cleanPhone) : null;
         const voiceBlock = renderVoiceForDraft(profile);
         const toneInstruction = profile
           ? `Match the OWNER VOICE PROFILE below. ${tone ? `User asked for tone override: ${tone}.` : ''}`
           : `Tone: ${tone ?? 'professional'}.`;
 
-        const prompt = `Draft an email${to?.length ? ` to ${(to as string[]).join(', ')}` : ''}${subject ? ` with subject "${subject}"` : ''}. Intent: ${intent}. ${toneInstruction}${voiceBlock}${ctxBlock}\n\nReturn ONLY the email body — no greeting/sign-off scaffolding unless the intent requires them, no "Subject:" prefix.`;
+        const prompt = `Draft an email${resolvedTo.length ? ` to ${resolvedTo.join(', ')}` : ''}${subject ? ` with subject "${subject}"` : ''}. Intent: ${intent}. ${toneInstruction}${voiceBlock}${ctxBlock}\n\nReturn ONLY the email body — no greeting/sign-off scaffolding unless the intent requires them, no "Subject:" prefix.`;
         try {
           const res = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -938,7 +994,7 @@ export async function executeTool(
           if (!res.ok) return { content: `Draft generation failed: ${await res.text()}`, success: false };
           const data = await res.json();
           const draft = data.content?.[0]?.text ?? '';
-          const recipient = to?.length ? `to ${(to as string[]).join(', ')}` : '(recipient TBD)';
+          const recipient = resolvedTo.length ? `to ${resolvedTo.join(', ')}` : '(recipient TBD)';
           const voiceTag = profile ? ` · matched to your voice (${profile.sample_size ?? 0} sent samples)` : '';
           return {
             content: `Draft ${recipient}${subject ? ` · subject: "${subject}"` : ''}${voiceTag}:\n\n${draft}\n\n— Reply 'send' to send, 'edit' to revise, or paste your version.`,
@@ -947,6 +1003,23 @@ export async function executeTool(
         } catch (err) {
           return { content: `Draft error: ${err}`, success: false };
         }
+      }
+
+      case 'find_contact': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const query = call.input.query;
+        if (!query) return { content: 'Need a name or address fragment to search.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const matches = await searchContacts(cleanPhone, query, 8);
+        if (matches.length === 0) {
+          return { content: `No contact found matching "${query}". Either give me their email directly or check the spelling.`, success: true };
+        }
+        const lines = matches.map((m, i) => {
+          const total = m.sent_count + m.received_count;
+          const tag = m.trust_label === 'trusted' ? ' [trusted]' : '';
+          return `${i + 1}. ${m.display_name ?? m.address} <${m.address}> — ${m.sent_count} sent, ${total} total${tag}`;
+        });
+        return { content: `Matches for "${query}":\n${lines.join('\n')}`, success: true };
       }
 
       case 'correct_grammar': {

@@ -10,6 +10,7 @@
  */
 
 import { NextResponse } from 'next/server';
+import { decryptToken } from '@wisdomworks/shared';
 import { listImapSent, listImapSeen } from '../../_lib/imap-runtime';
 import { ingestSentEmails, ingestSeenInbox, refreshVoiceProfile } from '../../_lib/email-intelligence';
 
@@ -58,12 +59,17 @@ export async function GET(request: Request) {
 
     for (const conn of imapConns) {
       try {
+        // Decrypt the stored token — saveConnection encrypts on write when
+        // TOKEN_ENCRYPTION_KEY is set, so plain reads would send the
+        // ciphertext to IMAP and auth would fail.
+        const password = await decryptToken(conn.access_token);
+
         // Sent — drives both contact frequency and voice profile
         const sent = await listImapSent({
           provider: conn.provider,
           service: conn.service,
           account_email: conn.account_email,
-          access_token: conn.access_token,
+          access_token: password,
           metadata: conn.metadata,
         }, 50, 90);
 
@@ -81,7 +87,7 @@ export async function GET(request: Request) {
           provider: conn.provider,
           service: conn.service,
           account_email: conn.account_email,
-          access_token: conn.access_token,
+          access_token: password,
           metadata: conn.metadata,
         }, 50, 30);
 

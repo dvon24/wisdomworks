@@ -45,16 +45,23 @@ export async function saveConnection(conn: ConnectionInput): Promise<SaveResult>
     status: 'active',
     updated_at: new Date().toISOString(),
   };
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/oauth_connections`, {
-    method: 'POST',
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-      Prefer: 'resolution=merge-duplicates,return=minimal',
+  // PostgREST needs on_conflict to know which constraint to merge on. Without
+  // it, merge-duplicates falls back to PK conflict (id), which never matches
+  // a fresh insert — so a re-connect would hit the (phone, provider, service)
+  // unique constraint and 409.
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/oauth_connections?on_conflict=phone_number,provider,service`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify(encrypted),
     },
-    body: JSON.stringify(encrypted),
-  });
+  );
   if (!res.ok) {
     const body = await res.text();
     const msg = `Supabase ${res.status}: ${body.slice(0, 300)}`;
