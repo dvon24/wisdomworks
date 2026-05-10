@@ -1160,6 +1160,18 @@ export default function HomePage() {
                           businessType: s.businessType,
                           agentCount: agents.length,
                           agents: enrichedAgents,
+                          // Stories 1.7+ persistence pipeline runs server-side from these:
+                          structured: structuredData,
+                          collectedData: {
+                            organizationName: bName,
+                            businessType: s.businessType,
+                            industry: s.businessType,
+                            employeeCount: structuredData?.employeeCount,
+                            existingTools: structuredData?.detectedIntegrations,
+                            painPoints: structuredData?.painPoints,
+                            websiteUrl: structuredData?.websiteUrl,
+                            communicationChannels: structuredData?.communicationChannels,
+                          },
                         }),
                       });
                     }

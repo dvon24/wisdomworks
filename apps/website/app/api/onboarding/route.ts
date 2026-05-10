@@ -2,19 +2,11 @@ import {
   getOnboardingSystemPrompt,
   generateDeploymentSpec,
   generatePreview,
-  extractOntology,
-  deriveAgentConfigs,
-  planProvisioning,
-  runAxisDiscovery,
 } from '@wisdomworks/shared';
 import type {
   OnboardingData,
   ConversationMessage,
   AxisDeploymentSpec,
-  ExtractedOntology,
-  DerivedAgentConfig,
-  InstancePayload,
-  DiscoveryResult,
 } from '@wisdomworks/shared';
 
 /**
@@ -210,231 +202,6 @@ function structuredToOnboardingData(structured: any, collected: OnboardingData =
  * provisioning can apply tightening rules. Returns the JSON config blob
  * stored at tenant_configs.config_type='operating_protocol' or null.
  */
-async function loadProtocolOverride(tenantPhone: string): Promise<any | null> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key || !tenantPhone) return null;
-  try {
-    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
-    const res = await fetch(
-      `${url}/rest/v1/tenant_configs?tenant_phone=eq.${cleanPhone}&config_type=eq.operating_protocol&select=config`,
-      { headers: { apikey: key, Authorization: `Bearer ${key}` } },
-    );
-    if (!res.ok) return null;
-    const rows = await res.json();
-    return rows[0]?.config ?? null;
-  } catch (err) {
-    console.warn('[onboarding] loadProtocolOverride error:', err);
-    return null;
-  }
-}
-
-/**
- * Story 1.13 — fetch the customer's actual oauth_connections so Axis
- * discovery can ground the integrations array in real authorisations.
- */
-async function fetchConnections(tenantPhone: string): Promise<Array<{ provider: string; service: string; account_email?: string; status?: string }>> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key || !tenantPhone) return [];
-  try {
-    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
-    const res = await fetch(
-      `${url}/rest/v1/oauth_connections?phone_number=eq.${cleanPhone}&status=eq.active&select=provider,service,account_email,status`,
-      { headers: { apikey: key, Authorization: `Bearer ${key}` } },
-    );
-    if (!res.ok) return [];
-    return await res.json();
-  } catch (err) {
-    console.warn('[onboarding] fetchConnections error:', err);
-    return [];
-  }
-}
-
-/**
- * Story 1.10 — write entities + relationships atomically via the
- * upsert_ontology Postgres function. All-or-nothing per FR-NFR36.
- */
-async function saveOntology(
-  tenantPhone: string,
-  ontology: ExtractedOntology,
-): Promise<void> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key || !tenantPhone) return;
-  if (!ontology.entities.length && !ontology.relationships.length) return;
-
-  try {
-    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
-    const res = await fetch(`${url}/rest/v1/rpc/upsert_ontology`, {
-      method: 'POST',
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        p_tenant_phone: cleanPhone,
-        p_entities: ontology.entities,
-        p_relationships: ontology.relationships,
-      }),
-    });
-    if (!res.ok) {
-      console.warn('[onboarding] saveOntology failed:', res.status, await res.text());
-    } else {
-      const result = await res.json();
-      console.log(`[onboarding-ontology] wrote entities=${result?.[0]?.entities_written ?? '?'} rels=${result?.[0]?.relationships_written ?? '?'}`);
-    }
-  } catch (err) {
-    console.warn('[onboarding] saveOntology error:', err);
-  }
-}
-
-/**
- * Story 1.11 — write derived agent_configs atomically via the
- * upsert_agent_configs Postgres function. Looks up entity_id by name from
- * ontology_entities so the link to the org graph is automatic.
- */
-/**
- * Story 1.12 — provision agent instances by calling provision_agents.
- * Returns counts; the Postgres function flips agent_configs.status to 'ready'
- * for each agent it provisions and creates/updates the matching agent_instance
- * with the planned NATS subjects + signal connections.
- */
-async function provisionAgents(
-  tenantPhone: string,
-  instances: InstancePayload[],
-): Promise<void> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key || !tenantPhone || instances.length === 0) return;
-
-  try {
-    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
-    const res = await fetch(`${url}/rest/v1/rpc/provision_agents`, {
-      method: 'POST',
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ p_tenant_phone: cleanPhone, p_instances: instances }),
-    });
-    if (!res.ok) {
-      console.warn('[onboarding] provisionAgents failed:', res.status, await res.text());
-    } else {
-      const result = await res.json();
-      const row = result?.[0] ?? {};
-      console.log(`[onboarding-provision] provisioned=${row.provisioned ?? '?'} skipped=${row.skipped ?? '?'}`);
-    }
-  } catch (err) {
-    console.warn('[onboarding] provisionAgents error:', err);
-  }
-}
-
-/**
- * Mark the tenant as 'active' in whatsapp_contexts.profile once provisioning
- * is complete. We don't have a real tenants table yet, so the profile flag
- * is the canonical signal for "deployment is live".
- */
-async function markTenantActive(tenantPhone: string): Promise<void> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key || !tenantPhone) return;
-  try {
-    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
-    // Read-modify-write the profile.tenantStatus field (PostgREST has no
-    // patch-jsonb-key in REST; use a small RPC-style update).
-    const ctxRes = await fetch(
-      `${url}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile`,
-      { headers: { apikey: key, Authorization: `Bearer ${key}` } },
-    );
-    if (!ctxRes.ok) return;
-    const rows = await ctxRes.json();
-    const profile = rows[0]?.profile ?? {};
-    if (profile.tenantStatus === 'active') return;
-    profile.tenantStatus = 'active';
-    profile.activatedAt = new Date().toISOString();
-    await fetch(`${url}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
-      method: 'PATCH',
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify({ profile }),
-    });
-  } catch (err) {
-    console.warn('[onboarding] markTenantActive error:', err);
-  }
-}
-
-async function saveAgentConfigs(
-  tenantPhone: string,
-  agents: DerivedAgentConfig[],
-): Promise<void> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key || !tenantPhone || agents.length === 0) return;
-
-  try {
-    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
-    const res = await fetch(`${url}/rest/v1/rpc/upsert_agent_configs`, {
-      method: 'POST',
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        p_tenant_phone: cleanPhone,
-        p_agents: agents,
-      }),
-    });
-    if (!res.ok) {
-      console.warn('[onboarding] saveAgentConfigs failed:', res.status, await res.text());
-    } else {
-      const result = await res.json();
-      console.log(`[onboarding-agent-configs] wrote ${result?.[0]?.agents_written ?? '?'} configs`);
-    }
-  } catch (err) {
-    console.warn('[onboarding] saveAgentConfigs error:', err);
-  }
-}
-
-async function saveDeploymentSpec(
-  tenantPhone: string,
-  spec: AxisDeploymentSpec,
-): Promise<void> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key || !tenantPhone) return;
-
-  try {
-    const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
-    const res = await fetch(`${url}/rest/v1/tenant_configs`, {
-      method: 'POST',
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-        Prefer: 'resolution=merge-duplicates,return=minimal',
-      },
-      body: JSON.stringify({
-        tenant_phone: cleanPhone,
-        config_type: 'deployment_spec',
-        config: spec,
-      }),
-    });
-    if (!res.ok) {
-      console.warn('[onboarding] saveDeploymentSpec failed:', res.status, await res.text());
-    }
-  } catch (err) {
-    console.warn('[onboarding] saveDeploymentSpec error:', err);
-  }
-}
-
 async function extractStructuredData(
   apiKey: string,
   conversationText: string,
@@ -519,72 +286,16 @@ export async function POST(request: Request) {
     // signal. We try every turn — generateDeploymentSpec is pure compute
     // (no LLM call), and Zod validation will throw early if the data is
     // too thin. Both outcomes are non-fatal for the conversation.
+    // Live spec/preview for the UI only — actual persistence happens in
+    // /api/deploy-complete once the user enters their phone via ConnectTools.
     let spec: AxisDeploymentSpec | null = null;
     let preview: ReturnType<typeof generatePreview> | null = null;
     let specError: string | null = null;
-    let ontologyCounts: { entities: number; relationships: number } | null = null;
-    let agentConfigCount: number | null = null;
-    let discovery: DiscoveryResult | null = null;
     if (structured?.businessType || structured?.businessName) {
       try {
         const onboardingData = structuredToOnboardingData(structured, collectedData ?? {});
         spec = generateDeploymentSpec(onboardingData);
         preview = generatePreview(spec);
-        const phone = (collectedData as any)?.contactPhone || (body as any)?.phoneNumber;
-        if (phone) await saveDeploymentSpec(phone, spec);
-
-        // Story 1.10 — extract + persist ontology alongside the spec.
-        const ontology = extractOntology(structured, spec);
-        ontologyCounts = {
-          entities: ontology.entities.length,
-          relationships: ontology.relationships.length,
-        };
-        if (phone) await saveOntology(phone, ontology);
-
-        // Story 1.11 — derive agent_configs from spec + persist. Run AFTER
-        // the ontology write so the upsert can resolve entity_id by name.
-        const derivedAgents = deriveAgentConfigs(spec, structured);
-        agentConfigCount = derivedAgents.length;
-        if (phone) await saveAgentConfigs(phone, derivedAgents);
-
-        // Story 1.12 — provision agent_instances + mark tenant active.
-        // Provision only on the turn the user signals readiness so we don't
-        // thrash agent_instances on every chat message. Heuristic for now:
-        // 'recommending' or later phase + at least 2 agents derived.
-        const phaseReady = ['recommending', 'discussing'].includes(structured?.phase ?? '');
-        if (phone && phaseReady && derivedAgents.length >= 2) {
-          // Story 1.14 — pull tenant-level operating protocol override and let
-          // planProvisioning bake it into each instance's metadata.
-          const protocolOverride = await loadProtocolOverride(phone);
-          const instances = planProvisioning(phone, spec, derivedAgents, protocolOverride);
-          await provisionAgents(phone, instances);
-          await markTenantActive(phone);
-        }
-
-        // Story 1.13 — Axis discovery: enrich integrations from real
-        // oauth_connections, recommend per-role channels, write a
-        // documentation entity. Runs whenever a phone is available so the
-        // doc keeps refreshing as the conversation evolves; cheap, no LLM.
-        if (phone) {
-          const realConnections = await fetchConnections(phone);
-          discovery = runAxisDiscovery(spec, structured, realConnections, derivedAgents);
-          // Merge enriched integrations back into the spec + persist
-          spec.integrations = discovery.integrations;
-          await saveDeploymentSpec(phone, spec);
-          // Persist the documentation entity into the ontology graph
-          await saveOntology(phone, {
-            entities: [discovery.documentation],
-            relationships: spec.organization?.name
-              ? [{
-                  from_type: 'department',
-                  from_name: spec.organization.name,
-                  to_type: 'documentation',
-                  to_name: discovery.documentation.name,
-                  relationship_type: 'owns',
-                }]
-              : [],
-          });
-        }
       } catch (err) {
         specError = err instanceof Error ? err.message : String(err);
         console.log('[onboarding-spec] not yet generatable:', specError);
@@ -596,8 +307,6 @@ export async function POST(request: Request) {
       messageCount: validatedMessages.length,
       phase: structured.phase ?? 'unknown',
       specGenerated: spec !== null,
-      ontology: ontologyCounts,
-      agentConfigs: agentConfigCount,
       tokens: { in: total, cached, out: mainResult.usage.output_tokens, cacheHitPct },
     }));
 
@@ -607,9 +316,6 @@ export async function POST(request: Request) {
       spec,
       preview,
       specError,
-      ontology: ontologyCounts,
-      agentConfigs: agentConfigCount,
-      discovery,
       usage: {
         input: total,
         output: mainResult.usage.output_tokens,
