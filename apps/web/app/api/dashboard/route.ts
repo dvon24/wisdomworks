@@ -198,10 +198,10 @@ export async function GET(request: Request) {
         : outcome === 'acted' ? 'did'
         : outcome === 'failed' ? '⚠ failed'
         : 'observed';
-      const summary = (run.output_summary ?? '').replace(/\s+/g, ' ').slice(0, 140);
+      const summary = (run.output_summary ?? '').replace(/\s+/g, ' ');
       activity.push({
         agent: agent.name,
-        action: `${verb}${delegated}: ${summary}${(run.output_summary ?? '').length > 140 ? '…' : ''}`,
+        action: `${verb}${delegated}: ${summary}`,
         time: timeAgo(new Date(ts)),
         ts,
       });

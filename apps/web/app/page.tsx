@@ -1168,11 +1168,15 @@ export default function CommandDeck() {
             <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
               {tenantData?.activity?.length > 0 ? (
                 tenantData.activity.map((e: any, i: number) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 4px', fontSize: 12 }}>
-                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--ok)' }} />
-                    <span style={{ fontWeight: 500 }}>{e.agent}</span>
-                    <span style={{ flex: 1, color: 'var(--text-dim)' }}>{e.action}</span>
-                    <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{e.time}</span>
+                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 4px', fontSize: 12, borderBottom: i < tenantData.activity.length - 1 ? '1px solid var(--glass-border)' : 'none' }}>
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--ok)', marginTop: 6, flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontWeight: 500 }}>{e.agent}</span>
+                        <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{e.time}</span>
+                      </div>
+                      <div style={{ color: 'var(--text-dim)', lineHeight: 1.5, wordBreak: 'break-word' }}>{e.action}</div>
+                    </div>
                   </div>
                 ))
               ) : (
