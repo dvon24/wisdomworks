@@ -8,6 +8,7 @@
     { "path": "/api/cron/proactive-loop", "schedule": "0 */4 * * *" },
     { "path": "/api/cron/email-sift", "schedule": "*/30 * * * *" },
     { "path": "/api/cron/agent-tick", "schedule": "*/5 * * * *" },
-    { "path": "/api/cron/knowledge-refresh", "schedule": "0 * * * *" }
+    { "path": "/api/cron/knowledge-refresh", "schedule": "0 * * * *" },
+    { "path": "/api/cron/qa-scan", "schedule": "15 6 * * *" }
   ]
 }

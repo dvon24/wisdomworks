@@ -14,6 +14,7 @@
 import { NextResponse } from 'next/server';
 import { listEmails, decryptToken, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
 import { listImapUnread } from '../../_lib/imap-runtime';
+import { logSample, buildFewShotExamples } from '../../_lib/classification-learning';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -123,7 +124,18 @@ async function processCustomer(
   }
 
   const emails = result.data;
-  const processed = await classifyAndDraft(emails);
+  const processed = await classifyAndDraft(emails, conn.phone_number);
+
+  // Story 2.13 — log samples for QA scanning (PII-safe metadata only).
+  await logSample(conn.phone_number, processed.map((e) => ({
+    email_id: e.id,
+    privacy_class: e.privacyClass,
+    privacy_confidence: e.privacyConfidence,
+    classification: e.classification,
+    email_from: e.from,
+    email_subject: e.privacyClass === 'business' ? e.subject : '(redacted)',
+    has_draft: !!e.draftReply,
+  })));
 
   // Story 2.3 — privacy boundary: only business mail flows through to
   // actionable processing. Personal mail stays private (no draft, no
@@ -279,7 +291,10 @@ async function logEmailSignal(tenantPhone: string, provider: string, emails: Ema
   }
 }
 
-async function classifyAndDraft(emails: EmailMessage[]): Promise<EmailSummary[]> {
+async function classifyAndDraft(emails: EmailMessage[], tenantPhone?: string): Promise<EmailSummary[]> {
+  // Story 2.13 — pull recent corrections as few-shot examples so the
+  // classifier learns from the user's corrections over time.
+  const fewShot = tenantPhone ? await buildFewShotExamples(tenantPhone) : '';
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return emails.map((e) => ({
@@ -338,7 +353,7 @@ ACTION RULES (only when privacyClass is "business"):
 - needs_response: requires reply but not urgent
 - informational: FYI, no action
 - spam: unsolicited, marketing
-- Draft reply ONLY for urgent + needs_response. Professional, concise.
+- Draft reply ONLY for urgent + needs_response. Professional, concise.${fewShot}
 
 EXTRACTION (Story 2.5 — structured signal, business mail only):
 - For privacyClass "business" only, populate extracted with names of people mentioned, projects/initiatives referenced, dates that matter (deadlines, meetings), and action items.

@@ -19,6 +19,7 @@ import {
 } from '@wisdomworks/shared';
 import { listImapUnread, sendImap } from '../../_lib/imap-runtime';
 import { queryKnowledge } from '../../_lib/knowledge-base';
+import { logCorrection } from '../../_lib/classification-learning';
 import {
   generateWordDoc,
   generatePowerPoint,
@@ -197,6 +198,25 @@ const TOOL_RUN_WORKFLOW: AnthropicTool = {
       },
     },
     required: ['name', 'steps'],
+  },
+};
+
+const TOOL_REPORT_MISCLASSIFICATION: AnthropicTool = {
+  name: 'report_email_misclassification',
+  description:
+    "When the user says an email was wrongly classified (e.g. 'that wasn't personal, it was a client'), record the correction so future classifications learn from it. Use whenever the user disputes a privacy or action label.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      email_from: { type: 'string' },
+      email_subject: { type: 'string' },
+      original_privacy_class: { type: 'string', enum: ['business', 'personal', 'uncertain'] },
+      original_classification: { type: 'string' },
+      corrected_privacy_class: { type: 'string', enum: ['business', 'personal', 'uncertain'] },
+      corrected_classification: { type: 'string' },
+      user_reason: { type: 'string', description: "Optional: why the user said it should be different (helps the model learn)." },
+    },
+    required: ['original_privacy_class', 'corrected_privacy_class'],
   },
 };
 
@@ -438,6 +458,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_ERROR_CHECK);
   tools.push(TOOL_CREATE_DOCUMENT);
   tools.push(TOOL_RUN_WORKFLOW);
+  tools.push(TOOL_REPORT_MISCLASSIFICATION);
   tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
   tools.push(TOOL_UPDATE_AGENT);
@@ -559,6 +580,28 @@ export async function executeTool(
           content: `Event "${result.data.title}" created for ${new Date(result.data.start).toLocaleString()}.`,
           success: true,
         };
+      }
+
+      case 'report_email_misclassification': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        try {
+          await logCorrection(user.phoneNumber.replace(/[\s\-+()]/g, ''), {
+            original_privacy_class: call.input.original_privacy_class,
+            original_classification: call.input.original_classification,
+            corrected_privacy_class: call.input.corrected_privacy_class,
+            corrected_classification: call.input.corrected_classification,
+            email_from: call.input.email_from,
+            email_subject: call.input.email_subject,
+            user_reason: call.input.user_reason,
+            source: 'whatsapp',
+          });
+          return {
+            content: `Got it — recorded "${call.input.original_privacy_class}" → "${call.input.corrected_privacy_class}". Future classifications will learn from this.`,
+            success: true,
+          };
+        } catch (err) {
+          return { content: `Couldn't save correction: ${err}`, success: false };
+        }
       }
 
       case 'create_document': {
