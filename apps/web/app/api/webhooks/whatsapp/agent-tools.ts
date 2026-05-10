@@ -23,6 +23,8 @@ import { logCorrection } from '../../_lib/classification-learning';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
 import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
 import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, type TopContact } from '../../_lib/email-intelligence';
+import { listPendingFollowups, markFollowupSent, markFollowupDeclined } from '../../_lib/email-followup';
+import { decryptToken } from '@wisdomworks/shared';
 import {
   generateWordDoc,
   generatePowerPoint,
@@ -348,6 +350,39 @@ const TOOL_DRAFT_EMAIL: AnthropicTool = {
   },
 };
 
+const TOOL_LIST_FOLLOWUPS: AnthropicTool = {
+  name: 'list_pending_followups',
+  description:
+    "List the email follow-ups currently waiting for the user's review. Use when the user asks 'what follow-ups do I have' or 'show me what needs my attention'. The daily email-followup cron creates these for sent emails that haven't gotten a reply.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_APPROVE_FOLLOWUP: AnthropicTool = {
+  name: 'approve_followup',
+  description:
+    "Send a pending follow-up email after the user approves it. Use when the user says 'send', 'approve it', 'yeah send the follow-up to ron'. Looks up by id prefix or by recipient name. Returns confirmation when sent.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      proposal_id: { type: 'string', description: 'Either the full UUID, an 8-char id prefix from the WhatsApp prompt, or a recipient name to disambiguate.' },
+    },
+    required: ['proposal_id'],
+  },
+};
+
+const TOOL_DECLINE_FOLLOWUP: AnthropicTool = {
+  name: 'decline_followup',
+  description:
+    "Mark a pending follow-up as declined when the user says 'skip', 'no don't send', 'dismiss', etc. The proposal stays in history but won't be re-prompted (until a fresh stale email triggers a new one).",
+  input_schema: {
+    type: 'object',
+    properties: {
+      proposal_id: { type: 'string' },
+    },
+    required: ['proposal_id'],
+  },
+};
+
 const TOOL_FIND_CONTACT: AnthropicTool = {
   name: 'find_contact',
   description:
@@ -525,6 +560,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_ANALYZE_WEBSITE);
   tools.push(TOOL_DRAFT_EMAIL);
   tools.push(TOOL_FIND_CONTACT);
+  tools.push(TOOL_LIST_FOLLOWUPS);
+  tools.push(TOOL_APPROVE_FOLLOWUP);
+  tools.push(TOOL_DECLINE_FOLLOWUP);
   tools.push(TOOL_CORRECT_GRAMMAR);
   tools.push(TOOL_LIST_TASKS);
   tools.push(TOOL_FIND_CONFLICTS);
@@ -1003,6 +1041,111 @@ export async function executeTool(
         } catch (err) {
           return { content: `Draft error: ${err}`, success: false };
         }
+      }
+
+      case 'list_pending_followups': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const proposals = await listPendingFollowups(cleanPhone);
+        if (proposals.length === 0) {
+          return { content: 'No follow-ups pending. The cron checks once a day at 2 PM UTC for stale sent emails.', success: true };
+        }
+        const lines = proposals.map((p, i) => {
+          const recipient = p.recipient_name ? `${p.recipient_name} <${p.recipient_address}>` : p.recipient_address;
+          return `${i + 1}. [${p.id.slice(0, 8)}] ${recipient} — "${p.original_subject}" (${p.days_since_sent}d ago)`;
+        });
+        return {
+          content: `${proposals.length} pending follow-up${proposals.length > 1 ? 's' : ''}:\n${lines.join('\n')}\n\nReply 'send [id]' to send, 'skip [id]' to dismiss, or 'show [id]' to see the draft.`,
+          success: true,
+        };
+      }
+
+      case 'approve_followup': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const inputId = String(call.input.proposal_id ?? '').trim();
+        if (!inputId) return { content: 'Missing proposal_id.', success: false };
+
+        // Resolve: full UUID, prefix, or name
+        const all = await listPendingFollowups(cleanPhone);
+        const lower = inputId.toLowerCase();
+        let matches = all.filter((p) => p.id === inputId || p.id.startsWith(lower));
+        if (matches.length === 0) {
+          matches = all.filter((p) =>
+            (p.recipient_name ?? '').toLowerCase().includes(lower) ||
+            p.recipient_address.toLowerCase().includes(lower),
+          );
+        }
+        if (matches.length === 0) return { content: `No pending follow-up matches "${inputId}".`, success: false };
+        if (matches.length > 1) {
+          const lines = matches.map((m) => `[${m.id.slice(0, 8)}] ${m.recipient_name ?? m.recipient_address} — "${m.original_subject}"`);
+          return { content: `Multiple matches:\n${lines.join('\n')}\n\nReply with which one (paste the 8-char id).`, success: false };
+        }
+
+        const proposal = matches[0]!;
+
+        // Look up the IMAP connection so we can send via SMTP
+        const SU = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const SK = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!SU || !SK) return { content: 'Supabase not configured.', success: false };
+        const connRes = await fetch(
+          `${SU}/rest/v1/oauth_connections?phone_number=eq.${cleanPhone}&service=eq.email&status=eq.active&select=provider,service,account_email,access_token,metadata&limit=1`,
+          { headers: { apikey: SK, Authorization: `Bearer ${SK}` } },
+        );
+        const conns = connRes.ok ? await connRes.json() : [];
+        if (conns.length === 0) return { content: 'No active email connection — can\'t send the follow-up.', success: false };
+        const conn = conns[0];
+        const password = await decryptToken(conn.access_token);
+
+        const result = await sendImap(
+          {
+            provider: conn.provider,
+            service: conn.service,
+            account_email: conn.account_email,
+            access_token: password,
+            metadata: conn.metadata,
+          },
+          {
+            to: [proposal.recipient_address],
+            subject: proposal.draft_subject ?? `Re: ${proposal.original_subject}`,
+            body: proposal.draft_body,
+            inReplyToMessageId: proposal.original_message_id ?? undefined,
+          },
+        );
+        if (!result.success) return { content: `Send failed: ${result.error}`, success: false };
+
+        await markFollowupSent(proposal.id, result.data?.messageId);
+        return {
+          content: `Sent. Followed up with ${proposal.recipient_name ?? proposal.recipient_address} on "${proposal.original_subject}".`,
+          success: true,
+        };
+      }
+
+      case 'decline_followup': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const inputId = String(call.input.proposal_id ?? '').trim();
+        if (!inputId) return { content: 'Missing proposal_id.', success: false };
+
+        const all = await listPendingFollowups(cleanPhone);
+        const lower = inputId.toLowerCase();
+        let matches = all.filter((p) => p.id === inputId || p.id.startsWith(lower));
+        if (matches.length === 0) {
+          matches = all.filter((p) =>
+            (p.recipient_name ?? '').toLowerCase().includes(lower) ||
+            p.recipient_address.toLowerCase().includes(lower),
+          );
+        }
+        if (matches.length === 0) return { content: `No pending follow-up matches "${inputId}".`, success: false };
+        if (matches.length > 1) {
+          const lines = matches.map((m) => `[${m.id.slice(0, 8)}] ${m.recipient_name ?? m.recipient_address}`);
+          return { content: `Multiple matches:\n${lines.join('\n')}\n\nWhich one to skip?`, success: false };
+        }
+
+        const ok = await markFollowupDeclined(matches[0]!.id);
+        return ok
+          ? { content: `Skipped. Won't re-prompt about ${matches[0]!.recipient_name ?? matches[0]!.recipient_address} for that thread.`, success: true }
+          : { content: 'Decline failed.', success: false };
       }
 
       case 'find_contact': {

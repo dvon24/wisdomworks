@@ -320,6 +320,84 @@ export async function listImapSeen(conn: ImapConnection, limit = 50, sinceDays =
   }
 }
 
+/** Lightweight inbox scan — pulls envelope-only metadata for ALL messages
+ * (read or unread) in the time window. Used by email-followup to detect
+ * which sent emails got a reply. */
+export async function listImapInboxSince(conn: ImapConnection, sinceDays = 14): Promise<{ success: boolean; data?: SeenInboxEmail[]; error?: string }> {
+  if (!conn.account_email) return { success: false, error: 'IMAP connection missing account email' };
+
+  let ImapFlow: any;
+  try {
+    ImapFlow = await loadImapFlow();
+  } catch (err: any) {
+    return { success: false, error: `imap deps load failed: ${err?.message ?? err}` };
+  }
+
+  const client = makeClient(ImapFlow, conn);
+
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+      let uidList: number[] = [];
+      try {
+        const searched = await client.search({ since });
+        uidList = searched ?? [];
+      } catch (searchErr) {
+        console.warn(`[imap] INBOX SEARCH failed (${imapErrorDetail(searchErr)}); falling back to tail-by-sequence`);
+        const exists = client.mailbox?.exists ?? 0;
+        const start = Math.max(1, exists - 200);
+        try {
+          const out: SeenInboxEmail[] = [];
+          for await (const msg of client.fetch(`${start}:${exists}`, { envelope: true, source: false })) {
+            const env = msg.envelope ?? {};
+            const date = env.date ? new Date(env.date) : null;
+            if (date && date < since) continue;
+            const fromAddr = env.from?.[0];
+            out.push({
+              id: msg.uid?.toString() ?? msg.seq?.toString() ?? '',
+              from: fromAddr?.address ?? '',
+              fromName: fromAddr?.name,
+              subject: env.subject ?? '(no subject)',
+              date: date?.toISOString() ?? new Date().toISOString(),
+            });
+          }
+          return { success: true, data: out };
+        } catch (rangeErr) {
+          return { success: false, error: `Inbox range fetch failed: ${imapErrorDetail(rangeErr)}` };
+        }
+      }
+
+      const out: SeenInboxEmail[] = [];
+      for (const uid of uidList) {
+        try {
+          const msg = await client.fetchOne(uid, { envelope: true, source: false, headers: ['from', 'subject', 'date'] });
+          if (!msg) continue;
+          const env = msg.envelope ?? {};
+          const fromAddr = env.from?.[0];
+          out.push({
+            id: msg.uid?.toString() ?? uid.toString(),
+            from: fromAddr?.address ?? '',
+            fromName: fromAddr?.name,
+            subject: env.subject ?? '(no subject)',
+            date: env.date?.toISOString() ?? new Date().toISOString(),
+          });
+        } catch (fetchErr) {
+          console.warn(`[imap] INBOX fetchOne(${uid}) failed: ${imapErrorDetail(fetchErr)}`);
+        }
+      }
+      return { success: true, data: out };
+    } finally {
+      lock.release();
+    }
+  } catch (err: any) {
+    return { success: false, error: `IMAP inbox-since error: ${imapErrorDetail(err)}` };
+  } finally {
+    try { await client.logout(); } catch {}
+  }
+}
+
 interface SendRequest {
   to: string[];
   cc?: string[];

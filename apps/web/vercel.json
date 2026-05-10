@@ -11,6 +11,7 @@
     { "path": "/api/cron/knowledge-refresh", "schedule": "0 * * * *" },
     { "path": "/api/cron/qa-scan", "schedule": "15 6 * * *" },
     { "path": "/api/cron/process-detect", "schedule": "30 * * * *" },
-    { "path": "/api/cron/email-learn", "schedule": "0 4 * * *" }
+    { "path": "/api/cron/email-learn", "schedule": "0 4 * * *" },
+    { "path": "/api/cron/email-followup", "schedule": "0 14 * * *" }
   ]
 }
