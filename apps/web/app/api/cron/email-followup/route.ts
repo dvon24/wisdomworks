@@ -132,6 +132,7 @@ export async function GET(request: Request) {
 
         const candidates = detectFollowupCandidates(sentRes.data, inboxRes.data);
         candidatesFound += candidates.length;
+        console.log(`[email-followup] tenant ${conn.phone_number}: ${sentRes.data.length} sent, ${inboxRes.data.length} inbox, ${candidates.length} candidates after dedup+filter+reply-check`);
 
         for (const candidate of candidates) {
           const draft = await draftFollowup({

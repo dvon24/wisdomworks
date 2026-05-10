@@ -64,8 +64,14 @@ export interface FollowupProposal {
   proposed_at: string;
 }
 
-/** Decide if a sent email is a viable follow-up candidate (no reply received). */
-function shouldProposeFollowup(sent: SentEmail, inboxFromRecipient: SeenInboxEmail[]): { ok: boolean; reason?: string } {
+/** Strip "Re:", "RE:", "Fwd:", "FW:" etc. so a thread groups under one key. */
+function normalizeSubject(subject: string): string {
+  return subject.replace(/^(re|fw|fwd|aw|sv)\s*:\s*/gi, '').trim().toLowerCase();
+}
+
+/** Static filter — recipient/subject/age sanity checks that don't depend
+ * on whether they replied. */
+function passesStaticFilters(sent: SentEmail): { ok: boolean; reason?: string } {
   const sentAt = new Date(sent.date);
   const ageDays = (Date.now() - sentAt.getTime()) / (1000 * 60 * 60 * 24);
 
@@ -77,42 +83,56 @@ function shouldProposeFollowup(sent: SentEmail, inboxFromRecipient: SeenInboxEma
   if (recipients.length > MAX_RECIPIENTS_FOR_FOLLOWUP) {
     return { ok: false, reason: `${recipients.length} recipients (looks like blast)` };
   }
-  // Skip if any recipient looks automated/no-reply
   for (const r of recipients) {
     if (NO_REPLY_PATTERNS.some((p) => p.test(r.address))) {
       return { ok: false, reason: `automated address: ${r.address}` };
     }
   }
-  // Skip replies/forwards — those are usually IN response to something, not initiating
-  if (/^(re|fwd?):/i.test(sent.subject)) {
-    // Allow Re: only if they REPLIED first and never followed up — but distinguishing
-    // is hard without thread headers. Conservative: skip.
-    return { ok: false, reason: 'reply/forward subject' };
-  }
-
-  // Did any recipient email back since we sent it?
-  const replied = inboxFromRecipient.some((inbox) => {
-    if (!inbox.from) return false;
-    const matchesRecipient = recipients.some((r) => r.address.toLowerCase() === inbox.from.toLowerCase());
-    if (!matchesRecipient) return false;
-    return new Date(inbox.date) > sentAt;
-  });
-  if (replied) return { ok: false, reason: 'recipient already replied' };
-
   return { ok: true };
 }
 
 export function detectFollowupCandidates(sent: SentEmail[], inbox: SeenInboxEmail[]): FollowupCandidate[] {
-  const candidates: FollowupCandidate[] = [];
+  // 1. Thread dedup: group sent emails by (primary recipient, normalized subject)
+  // and keep only the LATEST one per thread. We never want to propose follow-ups
+  // for two messages in the same conversation.
+  const byThread = new Map<string, SentEmail>();
   for (const email of sent) {
-    const result = shouldProposeFollowup(email, inbox);
-    if (!result.ok) continue;
+    const primary = email.to.find((r) => r.address) ?? email.cc[0];
+    if (!primary?.address) continue;
+    const key = `${primary.address.toLowerCase()}|${normalizeSubject(email.subject)}`;
+    const existing = byThread.get(key);
+    if (!existing || new Date(email.date) > new Date(existing.date)) {
+      byThread.set(key, email);
+    }
+  }
+
+  const candidates: FollowupCandidate[] = [];
+  for (const email of byThread.values()) {
+    const filterResult = passesStaticFilters(email);
+    if (!filterResult.ok) continue;
+
     const primary = email.to.find((r) => r.address) ?? email.cc[0];
     if (!primary) continue;
+    const recipientAddr = primary.address.toLowerCase();
     const sentAt = new Date(email.date);
+
+    // 2. Reply detection: did the recipient email back about THIS THREAD
+    // since the sent date? Match by sender AND normalized subject so a
+    // reply to a different thread doesn't false-positive.
+    const sentNormSubject = normalizeSubject(email.subject);
+    const replied = inbox.some((inboxMsg) => {
+      if (!inboxMsg.from) return false;
+      if (inboxMsg.from.toLowerCase() !== recipientAddr) return false;
+      if (new Date(inboxMsg.date) <= sentAt) return false;
+      // Subject match — both should normalize to the same thread
+      if (normalizeSubject(inboxMsg.subject) !== sentNormSubject) return false;
+      return true;
+    });
+    if (replied) continue;
+
     const ageDays = Math.floor((Date.now() - sentAt.getTime()) / (1000 * 60 * 60 * 24));
     candidates.push({
-      recipient_address: primary.address.toLowerCase(),
+      recipient_address: recipientAddr,
       recipient_name: primary.name,
       original_message_id: email.id,
       original_subject: email.subject,
