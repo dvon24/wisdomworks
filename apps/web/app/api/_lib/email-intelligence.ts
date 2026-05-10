@@ -369,14 +369,37 @@ export function renderVoiceForDraft(profile: VoiceProfile | null): string {
 
 export function renderTrustedContactsForClassifier(contacts: TopContact[]): string {
   if (contacts.length === 0) return '';
+
+  // TRUSTED: owner has either marked them, or they've sent a real reply OR
+  // the owner has actually opened multiple of their messages. Threshold lifted
+  // from 3 to 5 because the previous bar was floating promotional senders up.
   const trusted = contacts
-    .filter((c) => c.trust_label === 'trusted' || c.engagement_score >= 3)
+    .filter((c) => c.trust_label === 'trusted' || (c.sent_count >= 1 && c.engagement_score >= 5) || c.read_count >= 3)
     .slice(0, 30)
     .map((c) => c.display_name ? `${c.display_name} <${c.address}>` : c.address);
-  if (trusted.length === 0) return '';
-  return [
-    '',
-    'TRUSTED SENDERS (the owner regularly emails or reads mail from these addresses — bias toward business + needs_response, never spam):',
-    trusted.map((t) => `  - ${t}`).join('\n'),
-  ].join('\n');
+
+  // UNTRUSTED: the inverse signal — addresses that send mail but get ignored.
+  // received_count >= 5 with read_count = 0 is a strong "this is spam/promo"
+  // pattern. The owner has had a chance to engage and chose not to.
+  const untrusted = contacts
+    .filter((c) => c.trust_label !== 'trusted' && c.received_count >= 5 && c.read_count === 0 && c.sent_count === 0)
+    .slice(0, 20)
+    .map((c) => c.display_name ? `${c.display_name} <${c.address}>` : c.address);
+
+  const blocks: string[] = [];
+  if (trusted.length > 0) {
+    blocks.push(
+      '',
+      'TRUSTED SENDERS (real ongoing relationships — bias toward business + needs_response, NEVER classify as spam):',
+      trusted.map((t) => `  - ${t}`).join('\n'),
+    );
+  }
+  if (untrusted.length > 0) {
+    blocks.push(
+      '',
+      'UNREAD-ONLY SENDERS (owner consistently ignores these — strong spam/promo signal, prefer "spam" or "informational" classification):',
+      untrusted.map((t) => `  - ${t}`).join('\n'),
+    );
+  }
+  return blocks.join('\n');
 }

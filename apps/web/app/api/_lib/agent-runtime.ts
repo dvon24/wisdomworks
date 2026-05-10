@@ -402,6 +402,31 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
   // Story 2.15 — proven techniques the lane has learned
   const skillsBlock = renderSkillsForPrompt(ctx.appliedSkills);
 
+  // Don't-repeat-yourself guard. If the agent's last 3 ticks all surfaced
+  // the same kind of observation (e.g. Alex flagging "no Au7o baseline"
+  // every single tick), call it out so it either escalates to a SOLUTION
+  // brief or stays silent (no_op).
+  const repeatBlock = (() => {
+    const recents = ctx.recentRunsForAgent.slice(0, 3);
+    if (recents.length < 2) return '';
+    // Crude but effective: normalize each summary and check if 2+ overlap
+    const norm = (s: string) => (s || '').toLowerCase().replace(/[0-9]+/g, 'N').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const sigs = recents.map((r) => norm(r.output_summary ?? ''));
+    const counts = new Map<string, number>();
+    for (const s of sigs) counts.set(s, (counts.get(s) ?? 0) + 1);
+    const repeating = Array.from(counts.entries()).find(([sig, n]) => sig.length > 10 && n >= 2);
+    if (!repeating) return '';
+    return [
+      '',
+      'STOP REPEATING YOURSELF',
+      `You have raised this exact observation in ${repeating[1]} of your last ${recents.length} ticks: "${recents[0]?.output_summary?.slice(0, 120) ?? ''}".`,
+      'The owner has heard it. Do ONE of the following — never the same observation a third time:',
+      '  (a) If you can propose a CONCRETE solution that unblocks the situation, do so via solution_brief and set escalation_priority appropriately.',
+      '  (b) If you cannot, return outcome implicitly as "observed" with escalation_priority "none" and a TERSE observation that just acknowledges no change ("still blocked on Au7o baseline, no new info"). Do NOT re-explain the situation.',
+      '  (c) If absolutely nothing new happened, you may set requires_action=false and escalation_priority="none" with a 1-sentence observation. The cost guard will treat this as a no-op.',
+    ].join('\n');
+  })();
+
   return `You are ${config.agent_name}, the ${config.agent_role} for ${ctx.orgName} (${ctx.orgIndustry}).
 ${categoryHeader ? `Lane: ${categoryHeader}` : ''}
 
@@ -411,7 +436,7 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
-${recentRuns}${inbox}${skillsBlock}
+${recentRuns}${inbox}${skillsBlock}${repeatBlock}
 
 ${cadenceGuide}
 

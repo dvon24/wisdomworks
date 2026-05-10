@@ -355,9 +355,16 @@ PRIVACY RULES (defense-in-depth — Story 2.3):
 
 ACTION RULES (only when privacyClass is "business"):
 - urgent: time-sensitive, deadlines, escalations
-- needs_response: requires reply but not urgent
-- informational: FYI, no action
-- spam: unsolicited, marketing
+- needs_response: a real human is asking the owner a specific question or needs a decision
+- informational: FYI from a known source, no action required (newsletters from people the owner reads, system notifications, automated reports)
+- spam: classify as spam if ANY of these apply:
+    * sender domain doesn't match the brand they claim to represent
+    * generic salutation ("Hi {name}", "Dear customer", or no salutation)
+    * primary CTA is a marketing link (unsubscribe footer is the giveaway)
+    * cold outreach / sales pitch from someone not in the trusted senders list
+    * appears in the UNREAD-ONLY SENDERS block below (owner ignores these)
+    * unsolicited promotional content, even from a real company
+- Default to spam over needs_response when uncertain — false positives waste the owner's attention. The owner can always recover a misclassified spam email; they cannot un-read a spammed needs_response.
 - Draft reply ONLY for urgent + needs_response. Professional, concise.${fewShot}
 
 EXTRACTION (Story 2.5 — structured signal, business mail only):
