@@ -43,6 +43,7 @@ export async function GET(request: Request) {
       docRes,
       configsRes,
       instancesRes,
+      runsRes,
     ] = await Promise.all([
       fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=*`, { headers }),
       fetch(
@@ -58,7 +59,12 @@ export async function GET(request: Request) {
         { headers },
       ),
       fetch(
-        `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&select=agent_config_id,status,nats_subjects,signal_connections,metadata`,
+        `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&select=id,agent_config_id,status,nats_subjects,signal_connections,metadata`,
+        { headers },
+      ),
+      // Story 2.1b — recent agent_runs for the activity feed
+      fetch(
+        `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&order=started_at.desc&limit=30&select=agent_instance_id,trigger,outcome,output_summary,metadata,started_at,duration_ms,tokens_in,tokens_out`,
         { headers },
       ),
     ]);
@@ -68,6 +74,7 @@ export async function GET(request: Request) {
     const docRows = docRes.ok ? await docRes.json() : [];
     const agentConfigs = configsRes.ok ? await configsRes.json() : [];
     const agentInstances = instancesRes.ok ? await instancesRes.json() : [];
+    const agentRunRows = runsRes.ok ? await runsRes.json() : [];
     const ctx = contextRows[0] ?? null;
 
     if (!ctx) {
@@ -136,6 +143,39 @@ export async function GET(request: Request) {
       });
       pairs++;
       i--; // skip the user turn we just consumed
+    }
+
+    // Story 2.1b — agent_runs into the activity feed.
+    // Build an instance_id → agent_name map by joining the two tables.
+    const cfgById = new Map<string, any>();
+    for (const c of agentConfigs) cfgById.set(c.id, c);
+    const instanceIdToAgent = new Map<string, { name: string; role: string }>();
+    for (const inst of agentInstances as any[]) {
+      const cfg = cfgById.get(inst.agent_config_id);
+      if (cfg) instanceIdToAgent.set(inst.id, { name: cfg.agent_name, role: cfg.agent_role });
+    }
+
+    // Push run rows — keep the noise low: skip 'no_op' unless nothing else
+    // happened, and trim long observations.
+    const meaningfulRuns = agentRunRows.filter((r: any) => r.outcome !== 'no_op').slice(0, 15);
+    for (const run of meaningfulRuns) {
+      const agent = instanceIdToAgent.get(run.agent_instance_id);
+      if (!agent) continue;
+      const ts = new Date(run.started_at).getTime();
+      const meta = run.metadata ?? {};
+      const outcome = run.outcome;
+      const verb = outcome === 'escalated' ? '⚡ flagged'
+        : outcome === 'proposed' ? 'proposed'
+        : outcome === 'acted' ? 'did'
+        : outcome === 'failed' ? '⚠ failed'
+        : 'observed';
+      const summary = (run.output_summary ?? '').replace(/\s+/g, ' ').slice(0, 160);
+      activity.push({
+        agent: agent.name,
+        action: `${verb}: ${summary}${(run.output_summary ?? '').length > 160 ? '…' : ''}`,
+        time: timeAgo(new Date(ts)),
+        ts,
+      });
     }
 
     // Sort by recency
