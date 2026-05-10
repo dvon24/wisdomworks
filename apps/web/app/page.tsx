@@ -202,6 +202,8 @@ export default function CommandDeck() {
   const totalPrice = calculateTotalPrice(team);
 
   const [chatBusy, setChatBusy] = useState(false);
+  const [tickBusy, setTickBusy] = useState(false);
+  const [tickResult, setTickResult] = useState<string | null>(null);
   // Activity feed: which agent groups are expanded
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const toggleExpanded = (agentId: string) => {
@@ -458,7 +460,9 @@ export default function CommandDeck() {
         <span className="pill info">{tenantData?.pendingEmailDrafts?.length ?? 0} pending</span>
         <button
           onClick={async () => {
-            if (!phoneNumber) return;
+            if (!phoneNumber || tickBusy) return;
+            setTickBusy(true);
+            setTickResult(null);
             try {
               const res = await fetch('/api/agents/lifecycle', {
                 method: 'POST',
@@ -467,22 +471,56 @@ export default function CommandDeck() {
               });
               const data = await res.json();
               console.log('[manual-tick]', data);
-              // Refetch dashboard to surface new runs
-              setTimeout(async () => {
-                const r = await fetch(`/api/dashboard?phone=${encodeURIComponent(phoneNumber)}`);
-                const d = await r.json();
-                if (!d.error) setTenantData(d);
-              }, 500);
+              if (!res.ok) {
+                setTickResult(`❌ ${data.error || 'tick failed'}`);
+              } else {
+                const parts: string[] = [];
+                if (data.autoStarted > 0) parts.push(`started ${data.autoStarted}`);
+                parts.push(`ticked ${data.ticked ?? 0}`);
+                if (data.failed > 0) parts.push(`${data.failed} failed`);
+                if (data.digest?.sent) parts.push('digest sent to WhatsApp');
+                else if (data.digest?.reason) parts.push(`no digest (${data.digest.reason.replace(/_/g, ' ')})`);
+                setTickResult(`✓ ${parts.join(' · ')}`);
+              }
+              // Refetch dashboard to surface new runs in the activity feed
+              const r = await fetch(`/api/dashboard?phone=${encodeURIComponent(phoneNumber)}`);
+              const d = await r.json();
+              if (!d.error) setTenantData(d);
             } catch (err) {
               console.error('manual tick failed', err);
+              setTickResult(`❌ ${String(err)}`);
+            } finally {
+              setTickBusy(false);
+              // Auto-clear result after 8 seconds
+              setTimeout(() => setTickResult(null), 8000);
             }
           }}
+          disabled={tickBusy || !phoneNumber}
           className="btn ghost"
-          style={{ fontSize: 12 }}
-          title="Run a tick on every running agent right now (testing)"
+          style={{ fontSize: 12, opacity: tickBusy ? 0.6 : 1 }}
+          title="Run a tick on every agent right now (testing). Auto-starts ready agents."
         >
-          ⚡ Tick now
+          {tickBusy ? '⏳ Ticking…' : '⚡ Tick now'}
         </button>
+        {tickResult && (
+          <span
+            style={{
+              fontSize: 11,
+              color: tickResult.startsWith('❌') ? '#c2410c' : 'var(--accent-deep)',
+              fontWeight: 500,
+              padding: '4px 10px',
+              borderRadius: 8,
+              background: tickResult.startsWith('❌') ? 'rgba(194, 65, 12, 0.1)' : 'var(--accent-soft)',
+              border: `1px solid ${tickResult.startsWith('❌') ? 'rgba(194, 65, 12, 0.3)' : 'var(--accent-line)'}`,
+              maxWidth: 380,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {tickResult}
+          </span>
+        )}
         <button className="btn" style={{ fontSize: 12 }}>
           <span style={{ marginRight: 6 }}>✦</span>
           {team.length} agents · €{totalPrice}/mo
