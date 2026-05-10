@@ -225,12 +225,48 @@ interface TickContext {
   connections: { provider: string; service: string; account_email?: string }[];
   recentRunsForAgent: { outcome: string; output_summary?: string; started_at: string }[];
   cadence: TickCadence;
+  /** Story 2.4 — pending delegations targeted at THIS agent's lane */
+  pendingDelegations: PendingDelegation[];
 }
 
-async function loadTickContext(tenantPhone: string, instanceId: string): Promise<TickContext> {
+// ─── Story 2.4 — Signal layer (delegation pickup) ─────────────────────────
+// Agents read pending delegations targeting their lane on each tick and
+// claim them. Postgres serves as the bus — no NATS required for now.
+
+interface PendingDelegation {
+  id: string;
+  delegated_to_lane: string;
+  delegation_reason: string;
+  output_summary: string;
+  metadata: any;
+  started_at: string;
+}
+
+async function fetchPendingDelegationsForLane(tenantPhone: string, lane: string): Promise<PendingDelegation[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${tenantPhone}&delegated_to_lane=eq.${lane}&delegation_status=eq.pending&order=started_at.asc&limit=5&select=id,delegated_to_lane,delegation_reason,output_summary,metadata,started_at`,
+    { headers: headers() },
+  );
+  return res.ok ? await res.json() : [];
+}
+
+async function markDelegationsDone(ids: string[]): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_KEY || ids.length === 0) return;
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/agent_runs?id=in.(${ids.join(',')})`,
+    {
+      method: 'PATCH',
+      headers: { ...headers(), Prefer: 'return=minimal' },
+      body: JSON.stringify({ delegation_status: 'done' }),
+    },
+  );
+}
+
+async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string): Promise<TickContext> {
   const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence };
+    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [] };
   }
 
   // Three small queries in parallel — context tab kept tight on purpose.
@@ -246,6 +282,10 @@ async function loadTickContext(tenantPhone: string, instanceId: string): Promise
   const connRows = connRes.ok ? await connRes.json() : [];
   const runRows = runsRes.ok ? await runsRes.json() : [];
 
+  // Story 2.4 — pull pending delegations targeting THIS agent's lane.
+  // Caller passes ownLane so we don't have to look up the config again.
+  const pendingDelegations = ownLane ? await fetchPendingDelegationsForLane(tenantPhone, ownLane) : [];
+
   return {
     orgName: ctxRows[0]?.business_name ?? '',
     orgIndustry: ctxRows[0]?.business_type ?? '',
@@ -253,6 +293,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string): Promise
     connections: connRows ?? [],
     recentRunsForAgent: runRows ?? [],
     cadence,
+    pendingDelegations,
   };
 }
 
@@ -306,6 +347,14 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
     }
   })();
 
+  // Story 2.4 — inbox of pending delegations targeting this agent's lane
+  const inbox = ctx.pendingDelegations.length > 0
+    ? `\n\nINCOMING DELEGATIONS (signals from other agents that landed in your inbox — process them this tick):\n` +
+      ctx.pendingDelegations.map((d, i) =>
+        `  ${i + 1}. ${d.delegation_reason || '(no reason)'} | context: ${(d.output_summary || '').slice(0, 140)}`,
+      ).join('\n')
+    : '';
+
   return `You are ${config.agent_name}, the ${config.agent_role} for ${ctx.orgName} (${ctx.orgIndustry}).
 ${categoryHeader ? `Lane: ${categoryHeader}` : ''}
 
@@ -315,7 +364,7 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
-${recentRuns}
+${recentRuns}${inbox}
 
 ${cadenceGuide}
 
@@ -426,14 +475,18 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
   const primaryModel = config.model_routing?.primary?.model ?? 'claude-haiku-4-5-20251001';
 
   try {
-    const ctx = await loadTickContext(instance.tenant_phone, instance.id);
+    const ownLaneForCtx = config.config?.category;
+    const ctx = await loadTickContext(instance.tenant_phone, instance.id, ownLaneForCtx);
 
     // COST GUARD — if the agent has no connected services to observe AND
-    // no recent activity, log a no_op instead of burning tokens. The
+    // no recent activity AND no pending delegations, log a no_op instead
+    // of burning tokens. Pending delegations always justify a tick. The
     // orchestrator (Iris) is exempt because she always has signal from
     // the conversation history.
     const isOrchestrator = /orchestrat|coordinator|personal/i.test(config.agent_role);
-    const hasSignal = ctx.connections.length > 0 || ctx.recentRunsForAgent.some((r) => r.outcome !== 'no_op');
+    const hasSignal = ctx.connections.length > 0
+      || ctx.recentRunsForAgent.some((r) => r.outcome !== 'no_op')
+      || ctx.pendingDelegations.length > 0;
     if (!isOrchestrator && !hasSignal) {
       await logRun({
         tenant_phone: instance.tenant_phone,
@@ -477,14 +530,16 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
     await logRun({
       tenant_phone: instance.tenant_phone,
       agent_instance_id: instance.id,
-      trigger: 'tick',
+      trigger: ctx.pendingDelegations.length > 0 ? 'signal' : 'tick',
       phase: 'observe',
       model_used: primaryModel,
       outcome,
       duration_ms: Date.now() - start,
       tokens_in: tokensIn,
       tokens_out: tokensOut,
-      input_summary: `Scheduled tick for ${config.agent_name} (${config.agent_role}).`,
+      input_summary: ctx.pendingDelegations.length > 0
+        ? `Tick + ${ctx.pendingDelegations.length} delegation(s) for ${config.agent_name} (${config.agent_role}).`
+        : `Scheduled tick for ${config.agent_name} (${config.agent_role}).`,
       output_summary: result.observation || raw.slice(0, 200),
       delegated_to_lane: delegateTo,
       delegation_reason: delegateTo ? (result.delegation_reason ?? null) : null,
@@ -496,8 +551,15 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
         requires_action: result.requires_action,
         escalation_priority: result.escalation_priority,
         proposed_action: result.proposed_action,
+        delegations_handled: ctx.pendingDelegations.map((d) => d.id),
       },
     });
+
+    // Story 2.4 — mark the inbox-claimed delegations as done so we don't
+    // re-process them next tick.
+    if (ctx.pendingDelegations.length > 0) {
+      await markDelegationsDone(ctx.pendingDelegations.map((d) => d.id));
+    }
 
     // Orchestrator multi-fan-out: write one extra delegation row per lane.
     // Specialists get this filtered out — only orchestrator's prompt was

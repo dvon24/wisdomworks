@@ -13,6 +13,7 @@
 
 import { NextResponse } from 'next/server';
 import { listEmails, decryptToken, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
+import { listImapUnread } from '../../_lib/imap-runtime';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -29,6 +30,9 @@ interface EmailSummary {
   date: string;
   classification: 'urgent' | 'needs_response' | 'informational' | 'spam';
   draftReply?: string;
+  // Story 2.3 — privacy classification at the boundary
+  privacyClass: 'business' | 'personal' | 'uncertain';
+  privacyConfidence: number; // 0-1
 }
 
 export async function GET(request: Request) {
@@ -71,10 +75,10 @@ export async function GET(request: Request) {
   }
 }
 
-/** Fetch active email OAuth connections (Google or Microsoft) */
+/** Fetch active email OAuth connections — Google, Microsoft, Yahoo, generic IMAP */
 async function fetchActiveEmailConnections(): Promise<(OAuthConnection & { phone_number: string })[]> {
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/oauth_connections?service=eq.email&status=eq.active&provider=in.(google,microsoft)&select=*`,
+    `${SUPABASE_URL}/rest/v1/oauth_connections?service=eq.email&status=eq.active&provider=in.(google,microsoft,yahoo,imap)&select=*`,
     {
       headers: {
         apikey: SUPABASE_KEY!,
@@ -95,23 +99,125 @@ async function processCustomer(
     access_token: await decryptToken(conn.access_token),
     refresh_token: conn.refresh_token ? await decryptToken(conn.refresh_token) : undefined,
   };
-  const result = await listEmails(decrypted, 10);
+  // Yahoo + generic IMAP go through the local app runtime (the shared
+  // router can't bundle imapflow); Google + Microsoft go through the
+  // shared router as before.
+  const result = (decrypted.provider === 'yahoo' || decrypted.provider === 'imap')
+    ? await listImapUnread(decrypted as any, 10)
+    : await listEmails(decrypted, 10);
   if (!result.success || !result.data?.length) {
+    // Story 2.2: still log a 'no new mail' signal so the timeline shows
+    // the cron ran. Skip if the underlying call failed entirely (we don't
+    // want to noise up agent_runs with infra errors).
+    if (result.success) {
+      await logEmailSignal(conn.phone_number, decrypted.provider, [], 0);
+    }
     return { processed: 0, actionable: 0 };
   }
 
   const emails = result.data;
   const processed = await classifyAndDraft(emails);
-  const actionable = processed.filter(
+
+  // Story 2.3 — privacy boundary: only business mail flows through to
+  // actionable processing. Personal mail stays private (no draft, no
+  // metadata extraction). Uncertain mail is held for the morning briefing
+  // (Story 2.6).
+  const businessOnly = processed.filter((e) => e.privacyClass === 'business');
+  const actionable = businessOnly.filter(
     (e) => e.classification === 'urgent' || e.classification === 'needs_response',
   );
+  const personalCount = processed.filter((e) => e.privacyClass === 'personal').length;
+  const uncertainCount = processed.filter((e) => e.privacyClass === 'uncertain').length;
 
   if (actionable.length > 0) {
     await sendEmailSummary(conn.phone_number, actionable);
     await storePendingDrafts(conn.phone_number, actionable);
   }
 
+  // Story 2.2 + 2.3 — log this batch as a 'signal' run with privacy counts.
+  await logEmailSignal(conn.phone_number, decrypted.provider, processed, actionable.length, { personalCount, uncertainCount });
+
   return { processed: emails.length, actionable: actionable.length };
+}
+
+/**
+ * Story 2.2 — log one 'signal' row per email batch on the agent that owns
+ * email for this tenant (operations/support/orchestrator, in that order of
+ * preference). Lets the orchestrator see new inbox activity in its tick
+ * context and surface it in the next digest.
+ */
+async function logEmailSignal(tenantPhone: string, provider: string, emails: EmailSummary[], actionable: number, privacy?: { personalCount: number; uncertainCount: number }): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  try {
+    // Find which agent owns email — by category preference. Uses the
+    // category we set in Story 1.11/categories.
+    const cfgRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=id,agent_name,config`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+    );
+    if (!cfgRes.ok) return;
+    const configs = await cfgRes.json();
+    if (configs.length === 0) return;
+
+    // Preference order: support → operations → orchestrator → first agent
+    const pref = ['support', 'operations', 'orchestrator'];
+    let owner = null;
+    for (const cat of pref) {
+      owner = configs.find((c: any) => c.config?.category === cat);
+      if (owner) break;
+    }
+    if (!owner) owner = configs[0];
+
+    // Look up the matching agent_instance for the owner config
+    const instRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/agent_instances?agent_config_id=eq.${owner.id}&select=id,status`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+    );
+    const instRows = instRes.ok ? await instRes.json() : [];
+    const instance = instRows[0];
+    if (!instance) return; // No instance = nothing to log against
+
+    const privacySuffix = privacy && (privacy.personalCount > 0 || privacy.uncertainCount > 0)
+      ? ` (${privacy.personalCount} personal kept private, ${privacy.uncertainCount} uncertain held for review)`
+      : '';
+    const summary = emails.length === 0
+      ? `Polled ${provider} inbox — no new unread mail.`
+      : `Polled ${provider} inbox — ${emails.length} new email${emails.length > 1 ? 's' : ''}, ${actionable} actionable${privacySuffix}.`;
+
+    await fetch(`${SUPABASE_URL}/rest/v1/agent_runs`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({
+        tenant_phone: tenantPhone,
+        agent_instance_id: instance.id,
+        trigger: 'signal',
+        phase: 'observe',
+        outcome: emails.length === 0 ? 'no_op' : actionable > 0 ? 'proposed' : 'observed',
+        input_summary: `Email-sift cron polled ${provider}.`,
+        output_summary: summary,
+        metadata: {
+          source: 'email-sift',
+          provider,
+          email_count: emails.length,
+          actionable_count: actionable,
+          // Story 2.3 — privacy boundary, only business subjects flow up
+          subjects: emails
+            .filter((e) => e.privacyClass === 'business')
+            .slice(0, 5)
+            .map((e) => e.subject),
+          personal_count: privacy?.personalCount ?? 0,
+          uncertain_count: privacy?.uncertainCount ?? 0,
+        },
+      }),
+    });
+  } catch (err) {
+    console.warn('[email-sift] signal log failed:', err);
+  }
 }
 
 async function classifyAndDraft(emails: EmailMessage[]): Promise<EmailSummary[]> {
@@ -124,6 +230,8 @@ async function classifyAndDraft(emails: EmailMessage[]): Promise<EmailSummary[]>
       preview: e.bodyPreview ?? e.body.slice(0, 100),
       date: e.date,
       classification: 'informational' as const,
+      privacyClass: 'uncertain' as const,
+      privacyConfidence: 0,
     }));
   }
 
@@ -148,7 +256,29 @@ async function classifyAndDraft(emails: EmailMessage[]): Promise<EmailSummary[]>
         system: [
           {
             type: 'text',
-            text: `You classify emails and draft replies. Return ONLY a valid JSON array. Each item: { "index": number, "classification": "urgent"|"needs_response"|"informational"|"spam", "draftReply": "reply text or null" }. Draft replies should be professional and concise. Only draft replies for urgent and needs_response emails.`,
+            text: `You are an email classifier with two responsibilities — privacy classification (FIRST, defense-in-depth) and action classification (only for business mail).
+
+Return ONLY a valid JSON array. Each item:
+{
+  "index": number,
+  "privacyClass": "business" | "personal" | "uncertain",
+  "privacyConfidence": 0..1,
+  "classification": "urgent" | "needs_response" | "informational" | "spam",
+  "draftReply": "reply text or null"
+}
+
+PRIVACY RULES (defense-in-depth — Story 2.3):
+- "business": work-related (clients, vendors, internal collaboration, professional newsletters). Full processing allowed.
+- "personal": friends, family, personal admin (banking, healthcare, dating, hobbies, social plans not tied to work). DO NOT generate a draft reply. Set classification to "informational". Set draftReply to null. The message body MUST stay private — your job here is JUST to flag the boundary.
+- "uncertain": ambiguous (e.g. could be a client or could be a friend). Set classification to "informational". Set draftReply to null. The system surfaces these to the owner for clarification.
+- privacyConfidence: how confident you are in the privacy classification. Below 0.7 → use "uncertain".
+
+ACTION RULES (only when privacyClass is "business"):
+- urgent: time-sensitive, deadlines, escalations
+- needs_response: requires reply but not urgent
+- informational: FYI, no action
+- spam: unsolicited, marketing
+- Draft reply ONLY for urgent + needs_response. Professional, concise.`,
             cache_control: { type: 'ephemeral' },
           },
         ],
@@ -166,20 +296,27 @@ async function classifyAndDraft(emails: EmailMessage[]): Promise<EmailSummary[]>
     const data = await response.json();
     const text = data.content?.[0]?.text ?? '[]';
     const jsonMatch = text.match(/\[[\s\S]*\]/);
-    const results: { index: number; classification: string; draftReply: string | null }[] = jsonMatch
+    const results: { index: number; classification: string; draftReply: string | null; privacyClass?: string; privacyConfidence?: number }[] = jsonMatch
       ? JSON.parse(jsonMatch[0])
       : [];
 
     return emails.map((e, i) => {
       const result = results.find((r) => r.index === i + 1);
+      const privacyClass = (result?.privacyClass ?? 'uncertain') as EmailSummary['privacyClass'];
+      const privacyConfidence = result?.privacyConfidence ?? 0.5;
+      // Story 2.3 — privacy boundary: personal mail gets minimal metadata
+      // and never carries body content into agent_runs / extraction.
+      const isPrivate = privacyClass === 'personal' || privacyClass === 'uncertain';
       return {
         id: e.id,
         from: e.fromName ? `${e.fromName} <${e.from}>` : e.from,
-        subject: e.subject,
-        preview: (e.body || e.bodyPreview).slice(0, 100),
+        subject: isPrivate ? '(private — held for review)' : e.subject,
+        preview: isPrivate ? '' : (e.body || e.bodyPreview).slice(0, 100),
         date: e.date,
         classification: (result?.classification ?? 'informational') as EmailSummary['classification'],
-        draftReply: result?.draftReply ?? undefined,
+        draftReply: isPrivate ? undefined : (result?.draftReply ?? undefined),
+        privacyClass,
+        privacyConfidence,
       };
     });
   } catch (error) {
@@ -191,6 +328,8 @@ async function classifyAndDraft(emails: EmailMessage[]): Promise<EmailSummary[]>
       preview: e.bodyPreview,
       date: e.date,
       classification: 'informational' as const,
+      privacyClass: 'uncertain' as const,
+      privacyConfidence: 0,
     }));
   }
 }
