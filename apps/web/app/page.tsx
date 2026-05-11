@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Background,
   WisdomLockup,
@@ -54,11 +54,9 @@ const DEMO_TEAM: HierarchyAgent[] = [
 
 const TIER_PRICE = { Haiku: 19, Sonnet: 39, Opus: 79 };
 
-const PROPOSALS = [
-  { id: 'p1', agent: 'Vega', sev: 'high' as const, title: 'Reduce Tuesday wasted capacity by 31%', impact: '+€7,200/mo', confidence: 0.86 },
-  { id: 'p2', agent: 'Juno + Atlas', sev: 'med' as const, title: 'Re-warm 12 dormant accounts before Q3', impact: '+€34k pipe', confidence: 0.74 },
-  { id: 'p3', agent: 'Cedar', sev: 'low' as const, title: 'Standardise contractor MSAs on v4', impact: 'Risk ↓', confidence: 0.93 },
-];
+// Approval cards source from real agent_runs (escalations + proposed actions)
+// instead of hardcoded placeholders. Dismiss is a local hide for now;
+// approve routes through WhatsApp / Sophia.
 
 const INITIAL_MESSAGES = [
   { from: 'iris' as const, text: 'Good morning. I closed 1,284 small decisions while you slept. Three things genuinely need you today.' },
@@ -67,6 +65,29 @@ const INITIAL_MESSAGES = [
 
 type SidebarMode = 'briefing' | 'approvals' | 'activity' | 'agent';
 type ViewMode = 'overview' | 'team' | 'activity' | 'connections';
+
+/** Render markdown-flavored org documentation. Handles #/## headings,
+ * - bullets, **bold**, and blank-line spacing without pulling in a
+ * markdown library (just need this one spot). */
+function renderOrgDoc(text: string): React.ReactNode {
+  if (!text) return null;
+  const renderInline = (line: string): React.ReactNode => {
+    const parts = line.split(/(\*\*[^*]+\*\*)/);
+    return parts.map((p, i) =>
+      p.startsWith('**') && p.endsWith('**')
+        ? <strong key={i} style={{ fontWeight: 600 }}>{p.slice(2, -2)}</strong>
+        : <React.Fragment key={i}>{p}</React.Fragment>,
+    );
+  };
+  return text.split('\n').map((line, i) => {
+    if (line.startsWith('# ')) return <div key={i} style={{ fontSize: 14, fontWeight: 600, marginTop: i > 0 ? 12 : 0, marginBottom: 6, color: 'var(--text)' }}>{renderInline(line.slice(2))}</div>;
+    if (line.startsWith('## ')) return <div key={i} style={{ fontSize: 12.5, fontWeight: 600, marginTop: 10, marginBottom: 4, color: 'var(--text)' }}>{renderInline(line.slice(3))}</div>;
+    if (line.startsWith('### ')) return <div key={i} style={{ fontSize: 12, fontWeight: 600, marginTop: 8, marginBottom: 3, color: 'var(--text)' }}>{renderInline(line.slice(4))}</div>;
+    if (line.startsWith('- ')) return <div key={i} style={{ marginLeft: 8, marginBottom: 2 }}>• {renderInline(line.slice(2))}</div>;
+    if (line.trim() === '') return <div key={i} style={{ height: 6 }} />;
+    return <div key={i} style={{ marginBottom: 2 }}>{renderInline(line)}</div>;
+  });
+}
 
 export default function CommandDeck() {
   const [team, setTeam] = useState<HierarchyAgent[]>(DEMO_TEAM);
@@ -77,6 +98,8 @@ export default function CommandDeck() {
   const [messages, setMessages] = useState<any[]>(INITIAL_MESSAGES);
   const [chatInput, setChatInput] = useState('');
   const [actions, setActions] = useState<ActionCardData[]>([]);
+  /** Locally dismissed approval ids (until backend dismissal lands) */
+  const [dismissedApprovals, setDismissedApprovals] = useState<Set<string>>(new Set());
   const [priceDiff, setPriceDiff] = useState<{ delta: number; total: number } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -457,7 +480,25 @@ export default function CommandDeck() {
 
         <div style={{ flex: 1 }} />
 
-        <span className="pill info">{tenantData?.pendingEmailDrafts?.length ?? 0} pending</span>
+        <button
+          type="button"
+          className="pill info"
+          onClick={() => setSidebar('approvals')}
+          style={{ cursor: 'pointer', border: 0, fontFamily: 'inherit' }}
+          title="Open approvals"
+        >
+          {(() => {
+            const runs: any[] = tenantData?.agentRuns ?? [];
+            const approvals = runs.filter((r) =>
+              !dismissedApprovals.has(r.agentId + '|' + r.startedAt) &&
+              (r.outcome === 'proposed' || r.outcome === 'escalated' ||
+                r.escalationPriority === 'high' || r.escalationPriority === 'medium'),
+            );
+            const drafts = tenantData?.pendingEmailDrafts?.length ?? 0;
+            const total = approvals.length + drafts;
+            return `${total} pending`;
+          })()}
+        </button>
         <button
           onClick={async () => {
             if (!phoneNumber || tickBusy) return;
@@ -590,7 +631,7 @@ export default function CommandDeck() {
               </div>
             </div>
             <div>
-              <div className="eyebrow" style={{ marginBottom: 4 }}>Iris messages</div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>{team[0]?.label ?? 'Assistant'} messages</div>
               <div className="num-md" style={{ fontSize: 28, fontWeight: 300 }}>{tenantData?.messageCount ?? 0}</div>
               <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>via WhatsApp</div>
             </div>
@@ -680,7 +721,7 @@ export default function CommandDeck() {
                   {tenantData?.user?.businessName ?? (loadingTenant ? '…' : 'Welcome')}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>
-                  Chat with Iris on the right. Open <span style={{ color: 'var(--accent-deep)', fontWeight: 500 }}>Team</span> to dive into any agent.
+                  Chat with {team[0]?.label ?? 'your assistant'} on the right. Open <span style={{ color: 'var(--accent-deep)', fontWeight: 500 }}>Team</span> to dive into any agent.
                 </div>
               </div>
               <div style={{ flex: tenantData?.documentation ? 'none' : 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -703,8 +744,8 @@ export default function CommandDeck() {
               {tenantData?.documentation?.text && (
                 <div className="glass" style={{ padding: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
                   <div className="eyebrow" style={{ marginBottom: 8 }}>Org documentation</div>
-                  <div style={{ fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-dim)', whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
-                    {tenantData.documentation.text}
+                  <div style={{ fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-dim)', fontFamily: 'inherit' }}>
+                    {renderOrgDoc(tenantData.documentation.text)}
                   </div>
                 </div>
               )}
@@ -1078,8 +1119,8 @@ export default function CommandDeck() {
                   ✦
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>Iris</div>
-                  <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>Personal · also on WhatsApp</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{team[0]?.label ?? 'Assistant'}</div>
+                  <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{team[0]?.role ?? 'Personal assistant'} · also on WhatsApp</div>
                 </div>
               </header>
               <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0 }}>
@@ -1140,29 +1181,81 @@ export default function CommandDeck() {
             </>
           )}
 
-          {sidebar === 'approvals' && (
-            <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {PROPOSALS.map((p) => (
-                <div key={p.id} style={{ padding: 14, background: 'rgba(255,255,255,0.5)', border: '1px solid var(--glass-border)', borderRadius: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                    <span className={`pill ${p.sev === 'high' ? 'warn' : p.sev === 'med' ? 'info' : 'ok'}`}>
-                      {p.sev.toUpperCase()}
-                    </span>
-                    <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{p.agent.toUpperCase()}</span>
+          {sidebar === 'approvals' && (() => {
+            // Source from real agent_runs (escalations + proposed actions),
+            // filtered to non-dismissed. Hardcoded PROPOSALS gone.
+            const runs: any[] = tenantData?.agentRuns ?? [];
+            const approvals = runs
+              .filter((r) =>
+                !dismissedApprovals.has(r.agentId + '|' + r.startedAt) &&
+                (r.outcome === 'proposed' || r.outcome === 'escalated' ||
+                  r.escalationPriority === 'high' || r.escalationPriority === 'medium'),
+              )
+              .slice(0, 20);
+
+            return (
+              <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {approvals.length === 0 ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: '12px 4px', lineHeight: 1.5 }}>
+                    No pending approvals. When your agents flag something or propose an action, it'll surface here for review.
                   </div>
-                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6, lineHeight: 1.4 }}>{p.title}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
-                    <span className="mono" style={{ fontSize: 11, color: 'var(--accent-deep)' }}>{p.impact}</span>
-                    <span className="mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>{Math.round(p.confidence * 100)}%</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button className="btn ghost" style={{ flex: 1, fontSize: 11, padding: '5px 8px', justifyContent: 'center' }}>Dismiss</button>
-                    <button className="btn primary" style={{ flex: 1, fontSize: 11, padding: '5px 8px', justifyContent: 'center' }}>Approve</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+                ) : (
+                  approvals.map((p, i) => {
+                    const id = p.agentId + '|' + p.startedAt;
+                    const sevLabel = p.escalationPriority === 'high' ? 'HIGH'
+                      : p.escalationPriority === 'medium' ? 'MED'
+                      : p.outcome === 'escalated' ? 'HIGH' : 'LOW';
+                    const sevTone = sevLabel === 'HIGH' ? 'warn' : sevLabel === 'MED' ? 'info' : 'ok';
+                    const title = p.recommendation || p.proposedAction || p.summary || `${p.agentName} action`;
+                    return (
+                      <div key={id + '-' + i} style={{ padding: 14, background: 'rgba(255,255,255,0.5)', border: '1px solid var(--glass-border)', borderRadius: 12 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <span className={`pill ${sevTone}`}>{sevLabel}</span>
+                          <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{(p.agentName || '?').toUpperCase()}</span>
+                          {p.delegatedToLane && (
+                            <span className="mono" style={{ fontSize: 10, color: 'var(--accent-deep)' }}>→ {p.delegatedToLane}</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6, lineHeight: 1.4 }}>{title}</div>
+                        {p.summary && p.summary !== title && (
+                          <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginBottom: 10, lineHeight: 1.5 }}>{p.summary}</div>
+                        )}
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            className="btn ghost"
+                            style={{ flex: 1, fontSize: 11, padding: '5px 8px', justifyContent: 'center' }}
+                            onClick={() => setDismissedApprovals((prev) => new Set(prev).add(id))}
+                          >
+                            Dismiss
+                          </button>
+                          <button
+                            className="btn primary"
+                            style={{ flex: 1, fontSize: 11, padding: '5px 8px', justifyContent: 'center' }}
+                            onClick={() => {
+                              // First-stage approval: route back to the agent via WhatsApp.
+                              // Full backend wiring (approval gate → agent action) lands once
+                              // project_connections + write tools ship.
+                              setDismissedApprovals((prev) => new Set(prev).add(id));
+                              setMessages((m) => [...m, {
+                                from: 'user' as const,
+                                text: `Approve: ${title}`,
+                              }, {
+                                from: 'iris' as const,
+                                text: `Got it. Routing approval to ${p.agentName} — they'll work on it and surface the result back here for final review.`,
+                              }]);
+                              setSidebar('briefing');
+                            }}
+                          >
+                            Approve
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            );
+          })()}
 
           {sidebar === 'activity' && (
             <div className="scroll" style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
