@@ -525,10 +525,10 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
       '',
       'STOP REPEATING YOURSELF',
       `You have raised this exact observation in ${repeating[1]} of your last ${recents.length} ticks: "${recents[0]?.output_summary?.slice(0, 120) ?? ''}".`,
-      'The owner has heard it. Do ONE of the following — never the same observation a third time:',
-      '  (a) If you can propose a CONCRETE solution that unblocks the situation, do so via solution_brief and set escalation_priority appropriately.',
-      '  (b) If you cannot, return outcome implicitly as "observed" with escalation_priority "none" and a TERSE observation that just acknowledges no change ("still blocked on Au7o baseline, no new info"). Do NOT re-explain the situation.',
-      '  (c) If absolutely nothing new happened, you may set requires_action=false and escalation_priority="none" with a 1-sentence observation. The cost guard will treat this as a no-op.',
+      'The owner has heard it. The DEFAULT response is now option (c) — silence. Do ONE of the following:',
+      '  (a) ONLY if you have NEW evidence since last tick AND a specific concrete solution backed by data, you may emit a solution_brief. This is rare — re-read the BMAD SOLUTION BRIEF rules below; if you don\'t cleanly pass ALL six conditions, skip to (b).',
+      '  (b) Return a TERSE one-sentence observation that acknowledges no change ("still blocked on Au7o baseline, no new info") with escalation_priority "none" and requires_action=false. Do NOT re-explain the situation.',
+      '  (c) DEFAULT — if absolutely nothing new happened, return a near-empty observation ("no change") with escalation_priority "none" and requires_action=false. The owner will appreciate the silence over filler.',
     ].join('\n');
   })();
 
@@ -580,8 +580,20 @@ DELEGATION RULES:
 - Orchestrator: use the PLURAL delegations array (1+ entries) when work needs multi-lane input. Use the singular when it's a clean single-lane handoff. Use neither when you can resolve it yourself.
 - Either way: do NOT delegate to your own lane.
 
-BMAD SOLUTION BRIEF (rare — only when justified):
-If you spot a RECURRING pattern, anomaly, or systemic improvement opportunity in your domain (NOT a one-off issue), populate solution_brief with: the problem, your proposed solution, expected impact (concrete metric), your confidence 0-1, and risk level. Otherwise leave solution_brief null. Don't generate one every tick — only when you see something actually worth surfacing as a structured proposal for the owner.`;
+BMAD SOLUTION BRIEF — HARD RULES (default: solution_brief = null):
+Producing a solution_brief is the EXCEPTION, not the rule. A real brief takes the owner ~5 minutes to read; a sloppy one wastes their attention. Hold to this bar.
+
+You may ONLY emit a non-null solution_brief when ALL of these are true:
+  1. You have CONCRETE EVIDENCE from your own recent ticks, connections, or assigned project — at least one specific observation you can quote (a commit, an email pattern, a deploy error, a metric). No evidence = no brief.
+  2. The pattern is RECURRING (seen at minimum twice in your tick history) or it's a meaningful one-shot that demands a structured proposal (e.g. a deploy is failing repeatedly, a client has gone silent across 3+ threads).
+  3. You have a SPECIFIC proposed solution — concrete steps, not a directional suggestion. "Improve X" doesn't count. "Add retry logic to /api/foo with exponential backoff 1s/2s/4s" counts.
+  4. expected_impact is MEASURABLE with a number ("+€500/mo", "30% fewer support tickets", "deploy time -2 min"). "Improved efficiency" fails this rule.
+  5. confidence >= 0.7. If you're guessing, set it null instead.
+  6. You have NOT emitted a brief in your last 3 ticks. Owners shouldn't get back-to-back briefs from the same agent.
+
+If ANY of these fail, return solution_brief: null. The owner is FAR more annoyed by spam briefs than by missing one — defaulting to null is the safer choice.
+
+When starved (no external connections, no project, no delegations in your inbox), solution_brief is BANNED. You don't have enough information to propose anything structured. Stay in observation mode.`;
 }
 
 async function callAnthropicForTick(model: string, systemPrompt: string): Promise<{ result: ReasoningResult; tokensIn: number; tokensOut: number; raw: string }> {
@@ -700,6 +712,33 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
       ? result.delegate_to_lane
       : null;
 
+    // Server-side guard on solution_brief — agents had been producing them
+    // at ~28% of all ticks despite the prompt saying "rare". Enforce the
+    // hard rules here so even a verbose model can't flood the field:
+    //   - confidence >= 0.7 (else null)
+    //   - all four fields populated (problem/proposed_solution/expected_impact + risk)
+    //   - banned when agent has no external signal (starvation)
+    //   - cooldown: if any of the last 3 runs already had a brief, drop this one
+    let sanitizedBrief: any = null;
+    const brief = result.solution_brief;
+    if (brief && typeof brief === 'object') {
+      const recentBriefCount = ctx.recentRunsForAgent.slice(0, 3)
+        .filter((r: any) => r?.metadata?.solution_brief != null).length;
+      const passes =
+        typeof brief.confidence === 'number' && brief.confidence >= 0.7 &&
+        typeof brief.problem === 'string' && brief.problem.length > 20 &&
+        typeof brief.proposed_solution === 'string' && brief.proposed_solution.length > 20 &&
+        typeof brief.expected_impact === 'string' && /[0-9%€$+\-]/.test(brief.expected_impact) &&
+        ['low', 'medium', 'high'].includes(brief.risk) &&
+        hasExternalSignal &&
+        recentBriefCount === 0;
+      if (passes) {
+        sanitizedBrief = brief;
+      } else {
+        console.log(`[agent-runtime] dropped solution_brief from ${config.agent_name}: failed guard (recent=${recentBriefCount}, ext=${hasExternalSignal}, conf=${brief.confidence})`);
+      }
+    }
+
     const runId = await logRun({
       tenant_phone: instance.tenant_phone,
       agent_instance_id: instance.id,
@@ -725,8 +764,9 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
         escalation_priority: result.escalation_priority,
         proposed_action: result.proposed_action,
         delegations_handled: ctx.pendingDelegations.map((d) => d.id),
-        // Story 2.11 — keep BMAD solution briefs as a structured payload
-        solution_brief: result.solution_brief ?? null,
+        // Story 2.11 — keep BMAD solution briefs as a structured payload.
+        // Only stored if the brief passed the hard rules above; otherwise null.
+        solution_brief: sanitizedBrief,
         applied_skill_signature: result.applied_skill_signature ?? null,
       },
     }, true);
