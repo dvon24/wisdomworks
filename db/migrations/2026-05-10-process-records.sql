@@ -71,7 +71,6 @@ AS $$
       ai.agent_config_id,
       ac.agent_role,
       ar.outcome,
-      -- Normalize the summary by stripping numbers/dates so 'sent invoice for $400 due 2026-05-09' and 'sent invoice for $250 due 2026-05-10' become the same signature.
       regexp_replace(
         regexp_replace(LOWER(COALESCE(ar.output_summary, '')), '[0-9]+', 'N', 'g'),
         '(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+N', 'M-N', 'gi'
@@ -82,18 +81,23 @@ AS $$
     JOIN agent_configs ac ON ac.id = ai.agent_config_id
     WHERE ar.tenant_phone = p_tenant_phone
       AND ar.started_at >= now() - (p_lookback_days || ' days')::interval
-      AND ar.outcome IN ('acted', 'proposed', 'observed')
+      -- Only ACTED runs - the agent actually did something worth
+      -- automating. 'observed'/'proposed' produced too much noise
+      -- ("polled inbox", "still blocked", agent status reports).
+      AND ar.outcome = 'acted'
       AND COALESCE(LENGTH(ar.output_summary), 0) > 20
+      -- Filter out noise summaries that describe NON-activity. These
+      -- aren't workflows to automate; they're agents reporting quiet.
+      AND LOWER(ar.output_summary) NOT SIMILAR TO
+        '%(remains|remain|still blocked|no new|no activity|no progress|no change|continue to|continues to|completely silent|completely inactive|completely dormant|stable at)%'
   ),
   signatures AS (
     SELECT
-      LEFT(agent_role || ':' || outcome || ':' || LEFT(norm_summary, 80), 200) AS signature,
+      LEFT(agent_role || ':' || LEFT(norm_summary, 80), 200) AS signature,
       COUNT(*) AS occurrences,
       MIN(started_at) AS first_seen,
       MAX(started_at) AS last_seen,
       MIN(norm_summary) AS sample_summary,
-      -- LIMIT inside ARRAY_AGG isn't supported in Postgres; slice the
-      -- aggregated array down to 5 after the fact.
       (ARRAY_AGG(id ORDER BY started_at))[1:5] AS example_run_ids
     FROM normalized
     GROUP BY 1
