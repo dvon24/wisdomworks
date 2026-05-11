@@ -612,15 +612,17 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
     const ownLaneForCtx = config.config?.category;
     const ctx = await loadTickContext(instance.tenant_phone, instance.id, ownLaneForCtx, config.id);
 
-    // COST GUARD — if the agent has no connected services to observe AND
-    // no recent activity AND no pending delegations, log a no_op instead
-    // of burning tokens. Pending delegations always justify a tick. The
-    // orchestrator (Iris) is exempt because she always has signal from
-    // the conversation history.
+    // COST GUARD — only EXTERNAL signal counts. Previously an agent's own
+    // past escalations passed this check, creating a self-fueling feedback
+    // loop where a single "I see no progress" observation kept that agent
+    // reasoning forever even with zero real input (Alex/Au7o was the
+    // canonical example: escalated once with no data, then re-escalated
+    // every tick thereafter).
     const isOrchestrator = /orchestrat|coordinator|personal/i.test(config.agent_role);
-    const hasSignal = ctx.connections.length > 0
-      || ctx.recentRunsForAgent.some((r) => r.outcome !== 'no_op')
-      || ctx.pendingDelegations.length > 0;
+    const hasExternalSignal = ctx.connections.length > 0
+      || ctx.pendingDelegations.length > 0
+      || ctx.projects.length > 0;
+    const hasSignal = hasExternalSignal;
     if (!isOrchestrator && !hasSignal) {
       await logRun({
         tenant_phone: instance.tenant_phone,
@@ -629,8 +631,8 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
         phase: 'observe',
         outcome: 'no_op',
         duration_ms: Date.now() - start,
-        output_summary: `Skipped reasoning — no connected services or recent activity in ${config.agent_name}'s domain yet.`,
-        metadata: { autonomy, cost_guard: 'no_signal' },
+        output_summary: `${config.agent_name} is waiting on a data source — no connected services, no assigned project, no incoming delegations. Will stay quiet until something to work with arrives.`,
+        metadata: { autonomy, cost_guard: 'starved' },
       });
       return;
     }

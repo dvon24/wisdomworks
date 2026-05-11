@@ -1215,6 +1215,28 @@ export default function CommandDeck() {
                     No pending approvals. When your agents flag something or propose an action, it'll surface here for review.
                   </div>
                 ) : (
+                  <>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 4, borderBottom: '1px solid var(--glass-border)', marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                        {approvals.length} pending
+                      </span>
+                      <button
+                        className="btn ghost"
+                        style={{ fontSize: 10.5, padding: '4px 10px' }}
+                        onClick={() => {
+                          setDismissedApprovals((prev) => {
+                            const next = new Set(prev);
+                            for (const p of approvals) next.add(p.agentId + '|' + p.startedAt);
+                            return next;
+                          });
+                        }}
+                      >
+                        Dismiss all
+                      </button>
+                    </div>
+                  </>
+                )}
+                {approvals.length > 0 && (
                   approvals.map((p, i) => {
                     const id = p.agentId + '|' + p.startedAt;
                     const sevLabel = p.escalationPriority === 'high' ? 'HIGH'
