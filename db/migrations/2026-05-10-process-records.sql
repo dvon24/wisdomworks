@@ -92,7 +92,9 @@ AS $$
       MIN(started_at) AS first_seen,
       MAX(started_at) AS last_seen,
       MIN(norm_summary) AS sample_summary,
-      ARRAY_AGG(id ORDER BY started_at LIMIT 5) AS example_run_ids
+      -- LIMIT inside ARRAY_AGG isn't supported in Postgres; slice the
+      -- aggregated array down to 5 after the fact.
+      (ARRAY_AGG(id ORDER BY started_at))[1:5] AS example_run_ids
     FROM normalized
     GROUP BY 1
   )
