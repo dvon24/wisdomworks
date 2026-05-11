@@ -238,6 +238,23 @@ interface TickContext {
   pendingDelegations: PendingDelegation[];
   /** Story 2.15 — proven techniques the lane has learned */
   appliedSkills: AppliedSkill[];
+  /** Au7o-style project connections this agent owns + their latest snapshot summaries */
+  projects: AssignedProject[];
+}
+
+interface AssignedProject {
+  connection_id: string;
+  project_name: string;
+  provider: string;
+  capability_tier: number;
+  deploy_url?: string;
+  repo_url?: string;
+  summary?: string;
+  diff_summary?: string;
+  taken_at?: string;
+  /** Number of ticks since the agent was assigned this project — drives the
+   * "first 3 ticks = investigate" guidance in the prompt. */
+  ticks_since_assignment?: number;
 }
 
 // Story 2.10 — periodic snapshots after each successful tick.
@@ -246,6 +263,8 @@ import { saveSnapshot } from './state-recovery';
 import { isMuted } from './mute-state';
 // Notification queue — bundle all proactive items into scheduled digests
 import { enqueueNotification } from './notifications';
+// Project connections — agents see the latest snapshot of their assigned projects
+import { loadConnectionsForAgent, loadLatestSnapshot } from './project-sync';
 // Story 2.15 — skill formation + cross-agent learning.
 import {
   topSkillsForLane,
@@ -290,10 +309,10 @@ async function markDelegationsDone(ids: string[]): Promise<void> {
   );
 }
 
-async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string): Promise<TickContext> {
+async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string, agentConfigId?: string): Promise<TickContext> {
   const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [] };
+    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [] };
   }
 
   // Three small queries in parallel — context tab kept tight on purpose.
@@ -317,6 +336,33 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
   // the prompt tight; the RPC ranks new skills first to give them a shot.
   const appliedSkills = ownLane ? await topSkillsForLane(tenantPhone, ownLane, 5) : [];
 
+  // Au7o / project-connections — if this agent owns any external projects
+  // (Vercel + GitHub, Wix, etc.), pull the latest snapshot summary for each.
+  // For "ticks_since_assignment" we use the count of recent ticks since the
+  // connection was created (approximate — drives first-3-ticks investigation).
+  let projects: AssignedProject[] = [];
+  if (agentConfigId) {
+    try {
+      const conns = await loadConnectionsForAgent(agentConfigId);
+      for (const c of conns) {
+        const snap = await loadLatestSnapshot(c.id);
+        projects.push({
+          connection_id: c.id,
+          project_name: c.project_name,
+          provider: c.provider,
+          capability_tier: c.capability_tier,
+          deploy_url: c.metadata?.deploy_url,
+          repo_url: c.metadata?.repo_url,
+          summary: snap?.summary,
+          diff_summary: snap?.diff_summary,
+          taken_at: snap?.taken_at,
+        });
+      }
+    } catch (err) {
+      console.warn('[agent-runtime] project context fetch failed:', err);
+    }
+  }
+
   return {
     orgName: ctxRows[0]?.business_name ?? '',
     orgIndustry: ctxRows[0]?.business_type ?? '',
@@ -326,6 +372,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     cadence,
     pendingDelegations,
     appliedSkills,
+    projects,
   };
 }
 
@@ -402,6 +449,27 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
   // Story 2.15 — proven techniques the lane has learned
   const skillsBlock = renderSkillsForPrompt(ctx.appliedSkills);
 
+  // Au7o / project-connections — the agent's assigned external projects.
+  // Substantive baseline so the agent talks about what's actually happening
+  // on the project instead of asking for context every tick.
+  const projectsBlock = (() => {
+    if (!ctx.projects || ctx.projects.length === 0) return '';
+    const lines: string[] = ['', 'YOUR ASSIGNED PROJECT(S)'];
+    for (const p of ctx.projects) {
+      lines.push(`  ▸ ${p.project_name} (${p.provider}, tier ${p.capability_tier})`);
+      if (p.deploy_url) lines.push(`    Production: ${p.deploy_url}`);
+      if (p.repo_url) lines.push(`    Repo: ${p.repo_url}`);
+      if (p.summary) lines.push(`    Status: ${p.summary}`);
+      if (p.diff_summary) lines.push(`    Change since last sync: ${p.diff_summary}`);
+      if (p.taken_at) lines.push(`    Snapshot taken: ${new Date(p.taken_at).toISOString().slice(0, 16).replace('T', ' ')} UTC`);
+    }
+    lines.push('');
+    lines.push('DISCOVERY MODE');
+    lines.push('You have on-demand tools to investigate the project beyond the summary above: get_project_status, list_recent_commits, list_open_issues, read_repo_file, list_repo_tree, fetch_deployed_page. Use them to actually look at the code, the deployed site, the issues. Do not speculate about the project — read it.');
+    lines.push('On your first 1-3 ticks after being assigned, prioritize INVESTIGATION: read the README, scan recent commits, hit the deployed site, identify the design system and obvious gaps. After that, transition to monitoring + targeted improvement proposals.');
+    return lines.join('\n');
+  })();
+
   // Don't-repeat-yourself guard. If the agent's last 3 ticks all surfaced
   // the same kind of observation (e.g. Alex flagging "no Au7o baseline"
   // every single tick), call it out so it either escalates to a SOLUTION
@@ -436,7 +504,7 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
-${recentRuns}${inbox}${skillsBlock}${repeatBlock}
+${recentRuns}${inbox}${skillsBlock}${repeatBlock}${projectsBlock}
 
 ${cadenceGuide}
 
@@ -542,7 +610,7 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
 
   try {
     const ownLaneForCtx = config.config?.category;
-    const ctx = await loadTickContext(instance.tenant_phone, instance.id, ownLaneForCtx);
+    const ctx = await loadTickContext(instance.tenant_phone, instance.id, ownLaneForCtx, config.id);
 
     // COST GUARD — if the agent has no connected services to observe AND
     // no recent activity AND no pending delegations, log a no_op instead

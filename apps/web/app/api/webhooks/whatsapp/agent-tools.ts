@@ -27,6 +27,15 @@ import { listPendingFollowups, markFollowupSent, markFollowupDeclined } from '..
 import { decryptToken } from '@wisdomworks/shared';
 import { setMute, clearMute, isMuted, formatMuteUntil } from '../../_lib/mute-state';
 import {
+  loadActiveConnections,
+  loadLatestSnapshot,
+  fetchGitHubCommits,
+  fetchGitHubIssues,
+  fetchGitHubFile,
+  fetchGitHubTree,
+  fetchVercelDeployments,
+} from '../../_lib/project-sync';
+import {
   generateWordDoc,
   generatePowerPoint,
   generateExcel,
@@ -404,6 +413,88 @@ const TOOL_DECLINE_FOLLOWUP: AnthropicTool = {
   },
 };
 
+// ─── Project discovery tools (Au7o / connected external projects) ───
+const TOOL_GET_PROJECT_STATUS: AnthropicTool = {
+  name: 'get_project_status',
+  description:
+    "Get the current state of one of the user's connected external projects (Au7o, WisdomWorks itself, customer sites). Returns the latest snapshot: production deploy URL, build status, recent commits, open issues, recent build errors, README excerpt. Use when an agent assigned to a project wants to know what's going on. If project_name omitted, returns all connected projects.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      project_name: { type: 'string', description: "Optional. Exact project_name (e.g. 'Au7o'). Omit to see all projects connected to the user." },
+    },
+  },
+};
+
+const TOOL_LIST_RECENT_COMMITS: AnthropicTool = {
+  name: 'list_recent_commits',
+  description:
+    "List the most recent commits on a connected project's repo. Use when investigating recent changes or wanting to know what just shipped.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      project_name: { type: 'string' },
+      limit: { type: 'number', description: 'Default 10.' },
+    },
+    required: ['project_name'],
+  },
+};
+
+const TOOL_LIST_OPEN_ISSUES: AnthropicTool = {
+  name: 'list_open_issues',
+  description:
+    "List open issues and pull requests on a connected project's GitHub repo. Use when investigating outstanding work or what needs review.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      project_name: { type: 'string' },
+    },
+    required: ['project_name'],
+  },
+};
+
+const TOOL_READ_REPO_FILE: AnthropicTool = {
+  name: 'read_repo_file',
+  description:
+    "Read a specific file from a connected project's GitHub repo. Use when investigating the codebase to understand how something works or identify gaps.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      project_name: { type: 'string' },
+      path: { type: 'string', description: "File path relative to repo root (e.g. 'README.md', 'app/page.tsx', 'package.json')." },
+    },
+    required: ['project_name', 'path'],
+  },
+};
+
+const TOOL_LIST_REPO_TREE: AnthropicTool = {
+  name: 'list_repo_tree',
+  description:
+    "List files and directories at a path in a connected project's repo. Use to navigate the codebase structure before reading specific files.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      project_name: { type: 'string' },
+      path: { type: 'string', description: "Directory path, or empty string for repo root." },
+    },
+    required: ['project_name'],
+  },
+};
+
+const TOOL_FETCH_DEPLOYED_PAGE: AnthropicTool = {
+  name: 'fetch_deployed_page',
+  description:
+    "HTTP GET on a page of the project's live deployment. Returns response status + body excerpt + content-type. Use to actually see what the deployed site looks like, check for broken pages, or verify a recent fix.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      project_name: { type: 'string' },
+      path: { type: 'string', description: "Path on the deploy URL, e.g. '/', '/pricing', '/api/health'. Defaults to '/'." },
+    },
+    required: ['project_name'],
+  },
+};
+
 const TOOL_FIND_CONTACT: AnthropicTool = {
   name: 'find_contact',
   description:
@@ -581,6 +672,12 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_ANALYZE_WEBSITE);
   tools.push(TOOL_DRAFT_EMAIL);
   tools.push(TOOL_FIND_CONTACT);
+  tools.push(TOOL_GET_PROJECT_STATUS);
+  tools.push(TOOL_LIST_RECENT_COMMITS);
+  tools.push(TOOL_LIST_OPEN_ISSUES);
+  tools.push(TOOL_READ_REPO_FILE);
+  tools.push(TOOL_LIST_REPO_TREE);
+  tools.push(TOOL_FETCH_DEPLOYED_PAGE);
   tools.push(TOOL_MUTE);
   tools.push(TOOL_UNMUTE);
   tools.push(TOOL_LIST_FOLLOWUPS);
@@ -1196,6 +1293,119 @@ export async function executeTool(
         return ok
           ? { content: `Skipped. Won't re-prompt about ${matches[0]!.recipient_name ?? matches[0]!.recipient_address} for that thread.`, success: true }
           : { content: 'Decline failed.', success: false };
+      }
+
+      // ─── Project discovery tools (Au7o etc.) ───
+      case 'get_project_status':
+      case 'list_recent_commits':
+      case 'list_open_issues':
+      case 'read_repo_file':
+      case 'list_repo_tree':
+      case 'fetch_deployed_page': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const allConns = await loadActiveConnections();
+        const tenantConns = allConns.filter((c) => c.tenant_phone === cleanPhone);
+        if (tenantConns.length === 0) {
+          return { content: 'No projects connected yet. Connect a project from the Command Deck → agent detail → Connect Project.', success: false };
+        }
+
+        const projectName = call.input.project_name as string | undefined;
+        const conn = projectName
+          ? tenantConns.find((c) => c.project_name.toLowerCase() === projectName.toLowerCase())
+          : (call.name === 'get_project_status' ? null : tenantConns[0]);
+
+        if (call.name === 'get_project_status' && !projectName) {
+          // List all connected projects
+          const lines = tenantConns.map((c) => `- ${c.project_name} (${c.provider}, tier ${c.capability_tier}, status=${c.status})`);
+          return { content: `${tenantConns.length} connected project${tenantConns.length === 1 ? '' : 's'}:\n${lines.join('\n')}\n\nUse get_project_status with project_name to see details on any one.`, success: true };
+        }
+
+        if (!conn) {
+          const names = tenantConns.map((c) => c.project_name).join(', ');
+          return { content: `No connected project matches "${projectName}". Available: ${names}.`, success: false };
+        }
+
+        const { decryptToken } = await import('@wisdomworks/shared');
+
+        try {
+          if (call.name === 'get_project_status') {
+            const snap = await loadLatestSnapshot(conn.id);
+            if (!snap) return { content: `${conn.project_name}: connected but no snapshot yet. Run the project-sync cron or wait until the next 2-hour drain.`, success: true };
+            const d = snap.snapshot_data ?? {};
+            const lines = [
+              `${conn.project_name} (${conn.provider})`,
+              `Status: ${snap.summary ?? '(no summary)'}`,
+              snap.diff_summary ? `Change: ${snap.diff_summary}` : '',
+              d.deploy_url ? `Production: ${d.deploy_url}` : '',
+              `Last sync: ${snap.taken_at ? new Date(snap.taken_at).toISOString().slice(0, 16).replace('T', ' ') : '?'} UTC`,
+              d.recent_errors?.length ? `Recent build errors: ${d.recent_errors.length}` : '',
+            ].filter(Boolean);
+            return { content: lines.join('\n'), success: true };
+          }
+
+          if (call.name === 'list_recent_commits') {
+            if (conn.provider !== 'vercel-github') return { content: `Commits aren't available for provider ${conn.provider}.`, success: false };
+            const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 30) : 10;
+            const gtoken = await decryptToken(conn.credentials.github_token);
+            const commits = await fetchGitHubCommits(gtoken, conn.credentials.github_owner, conn.credentials.github_repo, limit, conn.credentials.github_branch);
+            if (commits.length === 0) return { content: `${conn.project_name}: no recent commits found.`, success: true };
+            const lines = commits.map((c) => `- ${c.sha.slice(0, 7)} ${c.message.split('\n')[0]?.slice(0, 100)} (${c.author}, ${c.date.slice(0, 10)})`);
+            return { content: `${conn.project_name} — last ${commits.length} commit${commits.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
+          }
+
+          if (call.name === 'list_open_issues') {
+            if (conn.provider !== 'vercel-github') return { content: `Issues aren't available for provider ${conn.provider}.`, success: false };
+            const gtoken = await decryptToken(conn.credentials.github_token);
+            const issues = await fetchGitHubIssues(gtoken, conn.credentials.github_owner, conn.credentials.github_repo, 30);
+            if (issues.length === 0) return { content: `${conn.project_name}: no open issues or PRs.`, success: true };
+            const lines = issues.map((i) => `${i.is_pr ? 'PR' : 'Issue'} #${i.number}: ${i.title}${i.labels.length ? ` [${i.labels.join(', ')}]` : ''}`);
+            return { content: `${conn.project_name} — ${issues.length} open:\n${lines.join('\n')}`, success: true };
+          }
+
+          if (call.name === 'read_repo_file') {
+            if (conn.provider !== 'vercel-github') return { content: `File read isn't available for provider ${conn.provider}.`, success: false };
+            const path = String(call.input.path ?? '').trim();
+            if (!path) return { content: 'path required.', success: false };
+            const gtoken = await decryptToken(conn.credentials.github_token);
+            const content = await fetchGitHubFile(gtoken, conn.credentials.github_owner, conn.credentials.github_repo, path, conn.credentials.github_branch);
+            if (content === null) return { content: `Could not read ${path} from ${conn.project_name}. Check path + permissions.`, success: false };
+            const truncated = content.length > 8000 ? `${content.slice(0, 8000)}\n\n... [truncated, file is ${content.length} chars]` : content;
+            return { content: `${conn.project_name}:${path}\n\n${truncated}`, success: true };
+          }
+
+          if (call.name === 'list_repo_tree') {
+            if (conn.provider !== 'vercel-github') return { content: `Tree listing isn't available for provider ${conn.provider}.`, success: false };
+            const path = String(call.input.path ?? '').trim();
+            const gtoken = await decryptToken(conn.credentials.github_token);
+            const entries = await fetchGitHubTree(gtoken, conn.credentials.github_owner, conn.credentials.github_repo, path, conn.credentials.github_branch);
+            if (entries.length === 0) return { content: `${conn.project_name}:${path || '/'} is empty or path not found.`, success: false };
+            const lines = entries.map((e) => `${e.type === 'dir' ? '📁' : '📄'} ${e.name}`);
+            return { content: `${conn.project_name}:${path || '/'}\n${lines.join('\n')}`, success: true };
+          }
+
+          if (call.name === 'fetch_deployed_page') {
+            const path = String(call.input.path ?? '/').trim() || '/';
+            const baseUrl = conn.metadata?.deploy_url;
+            if (!baseUrl) return { content: `${conn.project_name}: no deploy URL on record.`, success: false };
+            const fullUrl = baseUrl.replace(/\/$/, '') + (path.startsWith('/') ? path : `/${path}`);
+            try {
+              const res = await fetch(fullUrl, { redirect: 'follow' });
+              const text = await res.text();
+              const excerpt = text.slice(0, 4000);
+              return {
+                content: `${fullUrl} → HTTP ${res.status} (${res.headers.get('content-type') ?? 'unknown'})\n\n${excerpt}${text.length > 4000 ? '\n\n... [truncated]' : ''}`,
+                success: res.ok,
+              };
+            } catch (err: any) {
+              return { content: `Fetch failed: ${err?.message ?? err}`, success: false };
+            }
+          }
+        } catch (err: any) {
+          return { content: `Project tool error: ${err?.message ?? err}`, success: false };
+        }
+
+        return { content: 'Unknown project tool path.', success: false };
       }
 
       case 'find_contact': {
