@@ -78,40 +78,54 @@ export function discoverIntegrations(
   structured: any,
   connections: ConnectionLite[],
 ): IntegrationSpec[] {
+  // Keys are normalized lowercase to dedup across (a) connected providers,
+  // (b) AI-mentioned strings, and (c) spec entries. Previously each layer
+  // used its own casing so "WhatsApp" / "whatsapp" / "WHATSAPP" all got
+  // their own row.
   const seen = new Map<string, IntegrationSpec>();
+  const norm = (s: string) => s.toLowerCase().trim();
+
+  // A 'service' bucket — "yahoo/email" should subsume a plain "email" mention.
+  // Track which generic services are already covered by a configured connection
+  // so duplicate generic mentions get skipped.
+  const coveredServices = new Set<string>();
 
   // 1. Anything the user has actually authorised counts as 'configured'
   for (const conn of connections ?? []) {
     if (!conn.provider || !conn.service) continue;
-    const key = `${conn.provider}/${conn.service}`;
+    const key = norm(`${conn.provider}/${conn.service}`);
     const capabilities = PROVIDER_CAPABILITIES[conn.provider]?.[conn.service] ?? [];
     seen.set(key, {
-      type: key,
+      type: `${conn.provider}/${conn.service}`,
       config: {
         account: conn.account_email,
         capabilities,
       },
       status: 'configured',
     });
+    coveredServices.add(norm(conn.service)); // 'email', 'calendar', etc.
   }
 
   // 2. Tools mentioned during onboarding but not connected → 'pending'
   for (const mention of structured?.detectedIntegrations ?? []) {
-    const key = mention.toString().toLowerCase();
-    if (!seen.has(key)) {
-      seen.set(key, {
-        type: key,
-        config: { source: 'mentioned_during_onboarding' },
-        status: 'pending',
-      });
-    }
+    const key = norm(mention.toString());
+    if (seen.has(key)) continue;
+    // Skip generic service names already covered by a configured provider
+    // ("email" mention is redundant when "yahoo/email" is configured)
+    if (coveredServices.has(key)) continue;
+    seen.set(key, {
+      type: key,
+      config: { source: 'mentioned_during_onboarding' },
+      status: 'pending',
+    });
   }
 
   // 3. Anything the spec already named that didn't show up above
   for (const existing of spec.integrations ?? []) {
-    if (!seen.has(existing.type)) {
-      seen.set(existing.type, existing);
-    }
+    const key = norm(existing.type);
+    if (seen.has(key)) continue;
+    if (coveredServices.has(key)) continue;
+    seen.set(key, existing);
   }
 
   return Array.from(seen.values());
@@ -163,21 +177,34 @@ export function documentOrganization(
 ): OntologyEntity {
   const orgName = spec.organization?.name ?? 'Unknown';
   const tools = integrations.map((i) => `${i.type} (${i.status})`).join(', ');
-  const orchestrator = configs.find((c) => /orchestrat|coordinator|personal assistant/i.test(c.agent_role));
+  // Primary contact: prefer the agent flagged category=orchestrator (BMAD
+  // categorization), fall back to role-regex with "personal assistant"
+  // matched BEFORE "coordinator" so Sophia beats Riley when both exist.
+  const orchestrator =
+    configs.find((c) => (c.config as any)?.category === 'orchestrator') ??
+    configs.find((c) => /personal assistant|chief of staff/i.test(c.agent_role)) ??
+    configs.find((c) => /orchestrat/i.test(c.agent_role)) ??
+    configs.find((c) => /coordinator|assistant/i.test(c.agent_role));
   const teamSummary = configs.map((c) => `- ${c.agent_name} (${c.agent_role})`).join('\n');
   const painPoints = (structured?.painPoints ?? []).slice(0, 5).join('; ') || 'none captured';
+
+  const industry = spec.organization?.industry ?? 'business';
+  // Mission line: avoid the awkward "X operates as a Y" template that produces
+  // ungrammatical output for compound names ("WisdomWorks and Au7o operates
+  // as a Solo entrepreneur"). Use a neutral noun-phrase layout instead.
+  const missionLine = structured?.businessName
+    ? `${structured.businessName} — ${industry}.`
+    : `Operations within the ${industry} space.`;
 
   const text = [
     `# ${orgName}`,
     ``,
-    `**Industry**: ${spec.organization?.industry ?? 'unknown'}`,
+    `**Industry**: ${industry}`,
     `**Size**: ${spec.organization?.size ?? 'unknown'}`,
     `**Plan**: ${spec.blueprint} (${spec.template})`,
     ``,
     `## Mission`,
-    structured?.businessName
-      ? `${structured.businessName} operates as a ${spec.organization?.industry ?? 'business'}.`
-      : `Operations within the ${spec.organization?.industry ?? 'business'} space.`,
+    missionLine,
     ``,
     `## Team`,
     teamSummary || '(no agents yet)',
