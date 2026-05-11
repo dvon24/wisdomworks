@@ -100,6 +100,21 @@ export default function CommandDeck() {
   const [actions, setActions] = useState<ActionCardData[]>([]);
   /** Locally dismissed approval ids (until backend dismissal lands) */
   const [dismissedApprovals, setDismissedApprovals] = useState<Set<string>>(new Set());
+  /** Connect-a-project modal (Au7o → Alex, WisdomWorks → Marcus, etc.) */
+  const [connectProjectOpen, setConnectProjectOpen] = useState(false);
+  const [connectForm, setConnectForm] = useState({
+    project_name: '',
+    vercel_token: '',
+    vercel_project_id: '',
+    vercel_team_id: '',
+    github_token: '',
+    github_owner: '',
+    github_repo: '',
+    github_branch: 'main',
+  });
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [connectSuccess, setConnectSuccess] = useState<string | null>(null);
   const [priceDiff, setPriceDiff] = useState<{ delta: number; total: number } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -1466,6 +1481,24 @@ export default function CommandDeck() {
 
               <button
                 onClick={() => {
+                  // Default project_name based on agent — Au7o for Alex, etc.
+                  const guess =
+                    /au7o/i.test(selectedAgent.label) ? 'Au7o' :
+                    /wisdom/i.test(selectedAgent.label) ? 'WisdomWorks' :
+                    '';
+                  setConnectForm((f) => ({ ...f, project_name: guess || f.project_name }));
+                  setConnectError(null);
+                  setConnectSuccess(null);
+                  setConnectProjectOpen(true);
+                }}
+                className="btn primary"
+                style={{ fontSize: 11, justifyContent: 'center' }}
+              >
+                Connect Project
+              </button>
+
+              <button
+                onClick={() => {
                   setSelectedAgent(null);
                   setSidebar('briefing');
                 }}
@@ -1488,6 +1521,157 @@ export default function CommandDeck() {
           currencySymbol="€"
           onDismiss={() => setPriceDiff(null)}
         />
+      )}
+
+      {/* Connect-a-project modal — assigns a Vercel + GitHub project to an agent */}
+      {connectProjectOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15,15,20,0.5)',
+            backdropFilter: 'blur(6px)',
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 24,
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setConnectProjectOpen(false); }}
+        >
+          <div className="glass-strong" style={{ width: '100%', maxWidth: 520, padding: 24, borderRadius: 16, maxHeight: '90vh', overflow: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+              <div style={{ fontSize: 17, fontWeight: 600 }}>Connect a project</div>
+              <button
+                onClick={() => setConnectProjectOpen(false)}
+                style={{ background: 'transparent', border: 0, fontSize: 18, cursor: 'pointer', color: 'var(--text-faint)' }}
+                aria-label="Close"
+              >×</button>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 16, lineHeight: 1.5 }}>
+              Assign an external project to {selectedAgent?.label ?? 'this agent'}. They'll investigate the deploy + repo on every tick and surface what's changed.
+            </div>
+
+            {connectSuccess ? (
+              <div style={{ padding: 12, background: 'rgba(80,180,120,0.1)', border: '1px solid rgba(80,180,120,0.3)', borderRadius: 8, fontSize: 12.5, color: 'var(--text)', marginBottom: 12 }}>
+                {connectSuccess}
+              </div>
+            ) : null}
+
+            {connectError ? (
+              <div style={{ padding: 12, background: 'rgba(200,80,80,0.1)', border: '1px solid rgba(200,80,80,0.3)', borderRadius: 8, fontSize: 12.5, color: 'var(--text)', marginBottom: 12 }}>
+                {connectError}
+              </div>
+            ) : null}
+
+            {(['project_name', 'vercel_token', 'vercel_project_id', 'vercel_team_id', 'github_token', 'github_owner', 'github_repo', 'github_branch'] as const).map((field) => {
+              const labels: Record<string, { label: string; hint: string; secret?: boolean; optional?: boolean }> = {
+                project_name: { label: 'Project name', hint: "Short label, e.g. 'Au7o' or 'WisdomWorks'." },
+                vercel_token: { label: 'Vercel API token', hint: 'Create at vercel.com/account/tokens. Stored encrypted.', secret: true },
+                vercel_project_id: { label: 'Vercel project ID', hint: "Found at vercel.com/<team>/<project>/settings (prj_xxx)." },
+                vercel_team_id: { label: 'Vercel team ID', hint: 'Optional. Only needed for team projects.', optional: true },
+                github_token: { label: 'GitHub personal access token', hint: 'Create at github.com/settings/tokens (classic) with `repo` scope. Stored encrypted.', secret: true },
+                github_owner: { label: 'GitHub owner', hint: "e.g. 'dvon24' (username) or 'wisdomworks' (org)." },
+                github_repo: { label: 'GitHub repo name', hint: "Just the repo name, no slashes." },
+                github_branch: { label: 'GitHub branch', hint: 'Defaults to main.', optional: true },
+              };
+              const meta = labels[field]!;
+              return (
+                <div key={field} style={{ marginBottom: 12 }}>
+                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>
+                    {meta.label}{meta.optional ? ' (optional)' : ''}
+                  </label>
+                  <input
+                    type={meta.secret ? 'password' : 'text'}
+                    value={(connectForm as any)[field]}
+                    onChange={(e) => setConnectForm((f) => ({ ...f, [field]: e.target.value }))}
+                    placeholder={meta.hint}
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      fontSize: 12.5,
+                      border: '1px solid var(--glass-border)',
+                      borderRadius: 8,
+                      background: 'rgba(255,255,255,0.7)',
+                      fontFamily: 'inherit',
+                      boxSizing: 'border-box',
+                    }}
+                    autoComplete="off"
+                    disabled={connectBusy}
+                  />
+                  <div style={{ fontSize: 10.5, color: 'var(--text-faint)', marginTop: 3 }}>{meta.hint}</div>
+                </div>
+              );
+            })}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button
+                className="btn ghost"
+                style={{ flex: 1, fontSize: 12, justifyContent: 'center' }}
+                onClick={() => setConnectProjectOpen(false)}
+                disabled={connectBusy}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn primary"
+                style={{ flex: 2, fontSize: 12, justifyContent: 'center' }}
+                disabled={connectBusy || !connectForm.project_name || !connectForm.vercel_token || !connectForm.vercel_project_id || !connectForm.github_token || !connectForm.github_owner || !connectForm.github_repo}
+                onClick={async () => {
+                  if (!phoneNumber) {
+                    setConnectError('No tenant phone in context — open the deck via the Open Command Deck button on the website first.');
+                    return;
+                  }
+                  setConnectBusy(true);
+                  setConnectError(null);
+                  setConnectSuccess(null);
+                  try {
+                    const agentConfigId = tenantData?.agentDetails?.[selectedAgent?.id ?? '']?.configId;
+                    const res = await fetch('/api/connections/project', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        phone: phoneNumber,
+                        project_name: connectForm.project_name,
+                        agent_config_id: agentConfigId,
+                        provider: 'vercel-github',
+                        vercel_token: connectForm.vercel_token,
+                        vercel_project_id: connectForm.vercel_project_id,
+                        vercel_team_id: connectForm.vercel_team_id || undefined,
+                        github_token: connectForm.github_token,
+                        github_owner: connectForm.github_owner,
+                        github_repo: connectForm.github_repo,
+                        github_branch: connectForm.github_branch || 'main',
+                      }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) {
+                      setConnectError(data?.error ?? `HTTP ${res.status}`);
+                    } else {
+                      setConnectSuccess(data?.message ?? 'Connected.');
+                      setConnectForm({
+                        project_name: '',
+                        vercel_token: '',
+                        vercel_project_id: '',
+                        vercel_team_id: '',
+                        github_token: '',
+                        github_owner: '',
+                        github_repo: '',
+                        github_branch: 'main',
+                      });
+                    }
+                  } catch (err: any) {
+                    setConnectError(err?.message ?? String(err));
+                  } finally {
+                    setConnectBusy(false);
+                  }
+                }}
+              >
+                {connectBusy ? 'Verifying credentials…' : 'Connect'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

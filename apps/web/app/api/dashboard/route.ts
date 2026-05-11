@@ -233,6 +233,7 @@ export async function GET(request: Request) {
       const inst = instanceByConfigId.get(cfg.id);
       const proto = inst?.metadata?.operating_protocol ?? {};
       agentDetails[key] = {
+        configId: cfg.id,
         agentName: cfg.agent_name,
         agentRole: cfg.agent_role,
         configStatus: cfg.status,
