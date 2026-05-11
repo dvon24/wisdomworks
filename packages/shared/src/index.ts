@@ -184,6 +184,7 @@ export {
   analyzeWebsite,
   encryptToken,
   decryptToken,
+  assertEncryptionConfigured,
   loadConnectionsForPhone,
   getConnectionForPhone,
 } from './integrations';

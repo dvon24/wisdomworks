@@ -1326,7 +1326,14 @@ export async function executeTool(
           return { content: `No connected project matches "${projectName}". Available: ${names}.`, success: false };
         }
 
-        const { decryptToken } = await import('@wisdomworks/shared');
+        const { auditedDecrypt } = await import('../../_lib/credential-audit');
+        const auditCtx = (subTool: string) => ({
+          tenantPhone: cleanPhone,
+          connectionType: 'project_connection' as const,
+          connectionId: conn!.id,
+          caller: `tool:${call.name}`,
+          callerContext: `${conn!.project_name} ${subTool}`,
+        });
 
         try {
           if (call.name === 'get_project_status') {
@@ -1347,7 +1354,7 @@ export async function executeTool(
           if (call.name === 'list_recent_commits') {
             if (conn.provider !== 'vercel-github') return { content: `Commits aren't available for provider ${conn.provider}.`, success: false };
             const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 30) : 10;
-            const gtoken = await decryptToken(conn.credentials.github_token);
+            const gtoken = await auditedDecrypt(conn.credentials.github_token, auditCtx('github'));
             const commits = await fetchGitHubCommits(gtoken, conn.credentials.github_owner, conn.credentials.github_repo, limit, conn.credentials.github_branch);
             if (commits.length === 0) return { content: `${conn.project_name}: no recent commits found.`, success: true };
             const lines = commits.map((c) => `- ${c.sha.slice(0, 7)} ${c.message.split('\n')[0]?.slice(0, 100)} (${c.author}, ${c.date.slice(0, 10)})`);
@@ -1356,7 +1363,7 @@ export async function executeTool(
 
           if (call.name === 'list_open_issues') {
             if (conn.provider !== 'vercel-github') return { content: `Issues aren't available for provider ${conn.provider}.`, success: false };
-            const gtoken = await decryptToken(conn.credentials.github_token);
+            const gtoken = await auditedDecrypt(conn.credentials.github_token, auditCtx('github'));
             const issues = await fetchGitHubIssues(gtoken, conn.credentials.github_owner, conn.credentials.github_repo, 30);
             if (issues.length === 0) return { content: `${conn.project_name}: no open issues or PRs.`, success: true };
             const lines = issues.map((i) => `${i.is_pr ? 'PR' : 'Issue'} #${i.number}: ${i.title}${i.labels.length ? ` [${i.labels.join(', ')}]` : ''}`);
@@ -1367,7 +1374,7 @@ export async function executeTool(
             if (conn.provider !== 'vercel-github') return { content: `File read isn't available for provider ${conn.provider}.`, success: false };
             const path = String(call.input.path ?? '').trim();
             if (!path) return { content: 'path required.', success: false };
-            const gtoken = await decryptToken(conn.credentials.github_token);
+            const gtoken = await auditedDecrypt(conn.credentials.github_token, auditCtx('github'));
             const content = await fetchGitHubFile(gtoken, conn.credentials.github_owner, conn.credentials.github_repo, path, conn.credentials.github_branch);
             if (content === null) return { content: `Could not read ${path} from ${conn.project_name}. Check path + permissions.`, success: false };
             const truncated = content.length > 8000 ? `${content.slice(0, 8000)}\n\n... [truncated, file is ${content.length} chars]` : content;
@@ -1377,7 +1384,7 @@ export async function executeTool(
           if (call.name === 'list_repo_tree') {
             if (conn.provider !== 'vercel-github') return { content: `Tree listing isn't available for provider ${conn.provider}.`, success: false };
             const path = String(call.input.path ?? '').trim();
-            const gtoken = await decryptToken(conn.credentials.github_token);
+            const gtoken = await auditedDecrypt(conn.credentials.github_token, auditCtx('github'));
             const entries = await fetchGitHubTree(gtoken, conn.credentials.github_owner, conn.credentials.github_repo, path, conn.credentials.github_branch);
             if (entries.length === 0) return { content: `${conn.project_name}:${path || '/'} is empty or path not found.`, success: false };
             const lines = entries.map((e) => `${e.type === 'dir' ? '📁' : '📄'} ${e.name}`);

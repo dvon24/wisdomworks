@@ -50,5 +50,5 @@ export * as customerStripe from './stripe';
 export type { StripeCustomerSummary } from './stripe';
 
 // Token encryption + connection loading
-export { encryptToken, decryptToken } from './crypto';
+export { encryptToken, decryptToken, assertEncryptionConfigured } from './crypto';
 export { loadConnectionsForPhone, getConnectionForPhone } from './connections';

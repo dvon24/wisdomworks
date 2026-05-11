@@ -42,12 +42,39 @@ async function getKey(): Promise<CryptoKey | null> {
 }
 
 /**
- * Encrypt a string. Returns the original value if encryption is disabled.
+ * Assert that encryption is configured. Call this at the top of any
+ * code path that's about to handle a fresh secret (token entry, OAuth
+ * callback, etc.) so we refuse to save credentials when the key isn't
+ * set instead of silently storing plaintext.
+ *
+ * Throws if TOKEN_ENCRYPTION_KEY is missing or malformed.
+ */
+export async function assertEncryptionConfigured(): Promise<void> {
+  const key = await getKey();
+  if (!key) {
+    throw new Error(
+      `${ENCRYPTION_KEY_ENV} not configured — refusing to store credentials in plaintext. ` +
+      `Set the env var to a 32-byte base64 key (generate with: openssl rand -base64 32).`,
+    );
+  }
+}
+
+/**
+ * Encrypt a string. Throws if encryption isn't configured — historically
+ * this fell back to plaintext with a console warning, which silently
+ * exposed credentials when the env var wasn't set. Callers can use
+ * encryptTokenOrFallback() for legacy paths that still need the soft
+ * behavior.
  */
 export async function encryptToken(plaintext: string): Promise<string> {
   if (!plaintext) return plaintext;
   const key = await getKey();
-  if (!key) return plaintext;
+  if (!key) {
+    throw new Error(
+      `${ENCRYPTION_KEY_ENV} not configured — refusing to encrypt. ` +
+      `Set the env var to a 32-byte base64 key.`,
+    );
+  }
 
   try {
     const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
@@ -62,7 +89,7 @@ export async function encryptToken(plaintext: string): Promise<string> {
     return PREFIX + Buffer.from(combined).toString('base64');
   } catch (err) {
     console.error('[crypto] Encryption failed:', err);
-    return plaintext;
+    throw err;
   }
 }
 

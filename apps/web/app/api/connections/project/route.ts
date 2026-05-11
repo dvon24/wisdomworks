@@ -19,7 +19,7 @@
  *   }
  */
 
-import { encryptToken } from '@wisdomworks/shared';
+import { encryptToken, assertEncryptionConfigured } from '@wisdomworks/shared';
 import { fetchVercelProject, fetchGitHubReadme, syncConnection } from '../../_lib/project-sync';
 
 export const dynamic = 'force-dynamic';
@@ -35,6 +35,14 @@ export async function POST(request: Request) {
   }
 
   try {
+    // Refuse to accept any credentials if encryption isn't configured.
+    // Better to surface a hard error than silently store plaintext tokens.
+    try {
+      await assertEncryptionConfigured();
+    } catch (err: any) {
+      return Response.json({ error: err.message }, { status: 503 });
+    }
+
     const body = await request.json();
     const {
       phone,

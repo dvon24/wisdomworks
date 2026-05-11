@@ -6,7 +6,7 @@
  * (Apple, Yahoo, etc.) without bouncing the user back to onboarding.
  */
 
-import { encryptToken } from '@wisdomworks/shared';
+import { encryptToken, assertEncryptionConfigured } from '@wisdomworks/shared';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -37,6 +37,13 @@ export async function saveConnection(conn: ConnectionInput): Promise<SaveResult>
     const msg = 'Supabase URL or service role key not set in env';
     console.warn(`[connections] ${msg}`);
     return { ok: false, error: msg };
+  }
+  // Refuse to save if encryption isn't configured — would otherwise store
+  // tokens in plaintext with only a console warning.
+  try {
+    await assertEncryptionConfigured();
+  } catch (err: any) {
+    return { ok: false, error: err.message };
   }
   const encrypted = {
     ...conn,

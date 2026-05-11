@@ -1567,10 +1567,10 @@ export default function CommandDeck() {
             {(['project_name', 'vercel_token', 'vercel_project_id', 'vercel_team_id', 'github_token', 'github_owner', 'github_repo', 'github_branch'] as const).map((field) => {
               const labels: Record<string, { label: string; hint: string; secret?: boolean; optional?: boolean }> = {
                 project_name: { label: 'Project name', hint: "Short label, e.g. 'Au7o' or 'WisdomWorks'." },
-                vercel_token: { label: 'Vercel API token', hint: 'Create at vercel.com/account/tokens. Stored encrypted.', secret: true },
+                vercel_token: { label: 'Vercel API token', hint: 'vercel.com/account/tokens. Use a scoped token (specific project only) with 90-day expiration. Stored AES-256-GCM encrypted.', secret: true },
                 vercel_project_id: { label: 'Vercel project ID', hint: "Found at vercel.com/<team>/<project>/settings (prj_xxx)." },
                 vercel_team_id: { label: 'Vercel team ID', hint: 'Optional. Only needed for team projects.', optional: true },
-                github_token: { label: 'GitHub personal access token', hint: 'Create at github.com/settings/tokens (classic) with `repo` scope. Stored encrypted.', secret: true },
+                github_token: { label: 'GitHub personal access token', hint: 'Use a FINE-GRAINED PAT at github.com/settings/personal-access-tokens (not classic) scoped to just this repo with Contents+Pull+Issues read perms. 90-day expiration recommended. Stored AES-256-GCM encrypted.', secret: true },
                 github_owner: { label: 'GitHub owner', hint: "e.g. 'dvon24' (username) or 'wisdomworks' (org)." },
                 github_repo: { label: 'GitHub repo name', hint: "Just the repo name, no slashes." },
                 github_branch: { label: 'GitHub branch', hint: 'Defaults to main.', optional: true },

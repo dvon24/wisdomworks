@@ -13,6 +13,7 @@
  */
 
 import { decryptToken } from '@wisdomworks/shared';
+import { auditedDecrypt, type AuditContext } from './credential-audit';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -198,9 +199,17 @@ interface VercelGithubCreds {
   github_branch?: string;
 }
 
-export async function syncVercelGithub(creds: VercelGithubCreds, previousSnapshot?: any): Promise<SyncResult> {
-  const vtoken = await decryptToken(creds.vercel_token);
-  const gtoken = await decryptToken(creds.github_token);
+export async function syncVercelGithub(creds: VercelGithubCreds, previousSnapshot?: any, auditCtx?: Omit<AuditContext, 'connectionType'>): Promise<SyncResult> {
+  // Audit every credential decryption — see credential-audit.ts
+  const baseCtx = auditCtx
+    ? { ...auditCtx, connectionType: 'project_connection' as const }
+    : undefined;
+  const vtoken = baseCtx
+    ? await auditedDecrypt(creds.vercel_token, { ...baseCtx, callerContext: `${baseCtx.callerContext ?? ''} vercel`.trim() })
+    : await decryptToken(creds.vercel_token);
+  const gtoken = baseCtx
+    ? await auditedDecrypt(creds.github_token, { ...baseCtx, callerContext: `${baseCtx.callerContext ?? ''} github`.trim() })
+    : await decryptToken(creds.github_token);
 
   const [project, deployments, commits, issues, readme] = await Promise.all([
     fetchVercelProject(vtoken, creds.vercel_project_id, creds.vercel_team_id),
@@ -382,13 +391,18 @@ export async function markConnectionSynced(connectionId: string, error?: string)
  * Top-level sync entrypoint — picks the right adapter by provider, runs it,
  * persists the snapshot. Returns whether anything was persisted.
  */
-export async function syncConnection(conn: ProjectConnection): Promise<{ ok: boolean; error?: string }> {
+export async function syncConnection(conn: ProjectConnection, callerLabel = 'cron:project-sync'): Promise<{ ok: boolean; error?: string }> {
   try {
     const prev = await loadLatestSnapshot(conn.id);
     let result: SyncResult;
 
     if (conn.provider === 'vercel-github') {
-      result = await syncVercelGithub(conn.credentials as VercelGithubCreds, prev?.snapshot_data);
+      result = await syncVercelGithub(conn.credentials as VercelGithubCreds, prev?.snapshot_data, {
+        tenantPhone: conn.tenant_phone,
+        connectionId: conn.id,
+        caller: callerLabel,
+        callerContext: conn.project_name,
+      });
     } else {
       const err = `provider ${conn.provider} not implemented yet`;
       await markConnectionSynced(conn.id, err);
