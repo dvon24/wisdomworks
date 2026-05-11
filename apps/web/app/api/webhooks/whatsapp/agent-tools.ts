@@ -26,6 +26,7 @@ import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, t
 import { listPendingFollowups, markFollowupSent, markFollowupDeclined } from '../../_lib/email-followup';
 import { decryptToken } from '@wisdomworks/shared';
 import { setMute, clearMute, isMuted, formatMuteUntil } from '../../_lib/mute-state';
+import { definePerson, listKnownPeople, forgetPerson } from '../../_lib/known-people';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -413,6 +414,41 @@ const TOOL_DECLINE_FOLLOWUP: AnthropicTool = {
   },
 };
 
+// ─── Entity registry (disambiguate "Ron the attorney" from "Alex the agent") ───
+const TOOL_DEFINE_PERSON: AnthropicTool = {
+  name: 'define_person',
+  description:
+    "Record that someone is in the owner's personal/business network so agents stop confusing real humans with teammates. Use whenever the owner says 'Ron is my attorney', 'Sarah is my CPA', 'the Andersons are my clients', or similar. Future ticks will see this person in the agents' prompt so they don't conflate names.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      display_name: { type: 'string', description: "Full name as it should appear, e.g. 'Ron Beaman'." },
+      role: { type: 'string', description: "Relationship/role: 'attorney', 'accountant', 'client', 'spouse', 'partner at Acme Corp', etc." },
+      notes: { type: 'string', description: 'Optional 1-2 sentences of context.' },
+      email: { type: 'string', description: "Optional email address to cross-reference with contact records." },
+    },
+    required: ['display_name'],
+  },
+};
+
+const TOOL_LIST_KNOWN_PEOPLE: AnthropicTool = {
+  name: 'list_known_people',
+  description:
+    "List everyone in the owner's personal/business network the assistant has been told about (manually or auto-mined). Use when the owner asks 'who do you know?', 'what do you have for me?', or when you need to look someone up before drafting an email or making a recommendation.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_FORGET_PERSON: AnthropicTool = {
+  name: 'forget_person',
+  description:
+    "Remove someone from the registry. Use when the owner says 'forget about X', 'X is no longer my Y', or corrects an auto-mined entry. The owner usually provides the name; resolve it to an id via list_known_people first.",
+  input_schema: {
+    type: 'object',
+    properties: { person_id: { type: 'string', description: 'The id from list_known_people.' } },
+    required: ['person_id'],
+  },
+};
+
 // ─── Project discovery tools (Au7o / connected external projects) ───
 const TOOL_GET_PROJECT_STATUS: AnthropicTool = {
   name: 'get_project_status',
@@ -672,6 +708,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_ANALYZE_WEBSITE);
   tools.push(TOOL_DRAFT_EMAIL);
   tools.push(TOOL_FIND_CONTACT);
+  tools.push(TOOL_DEFINE_PERSON);
+  tools.push(TOOL_LIST_KNOWN_PEOPLE);
+  tools.push(TOOL_FORGET_PERSON);
   tools.push(TOOL_GET_PROJECT_STATUS);
   tools.push(TOOL_LIST_RECENT_COMMITS);
   tools.push(TOOL_LIST_OPEN_ISSUES);
@@ -1293,6 +1332,61 @@ export async function executeTool(
         return ok
           ? { content: `Skipped. Won't re-prompt about ${matches[0]!.recipient_name ?? matches[0]!.recipient_address} for that thread.`, success: true }
           : { content: 'Decline failed.', success: false };
+      }
+
+      case 'define_person': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const displayName = String(call.input.display_name ?? '').trim();
+        if (!displayName) return { content: 'Missing display_name.', success: false };
+        const id = await definePerson({
+          tenantPhone: cleanPhone,
+          displayName,
+          role: call.input.role ? String(call.input.role) : undefined,
+          notes: call.input.notes ? String(call.input.notes) : undefined,
+          email: call.input.email ? String(call.input.email) : undefined,
+          source: 'owner_defined',
+        });
+        if (!id) return { content: `Could not save ${displayName}.`, success: false };
+        const roleStr = call.input.role ? ` (${call.input.role})` : '';
+        return {
+          content: `Got it — ${displayName}${roleStr} stored. From now on every agent will know who that is and won't confuse the name with anyone on the team.`,
+          success: true,
+        };
+      }
+
+      case 'list_known_people': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const people = await listKnownPeople(cleanPhone);
+        if (people.length === 0) {
+          return { content: "I don't know anyone in your network yet. Tell me about people you work with (attorney, accountant, key clients) and I'll remember.", success: true };
+        }
+        const lines = people.map((p, i) => {
+          const role = p.role ? ` — ${p.role}` : '';
+          const email = p.email ? ` (${p.email})` : '';
+          const source = p.source === 'owner_defined' ? '' : ` [auto]`;
+          return `${i + 1}. [${p.id.slice(0, 8)}] ${p.display_name}${role}${email}${source}`;
+        });
+        return { content: `${people.length} known:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'forget_person': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const personId = String(call.input.person_id ?? '').trim();
+        if (!personId) return { content: 'Missing person_id.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        // Tolerate 8-char prefix lookup
+        let resolvedId = personId;
+        if (personId.length === 8) {
+          const all = await listKnownPeople(cleanPhone);
+          const match = all.find((p) => p.id.startsWith(personId.toLowerCase()));
+          if (match) resolvedId = match.id;
+        }
+        const ok = await forgetPerson(resolvedId);
+        return ok
+          ? { content: 'Removed. Future ticks won\'t reference that person.', success: true }
+          : { content: 'Forget failed — id not found.', success: false };
       }
 
       // ─── Project discovery tools (Au7o etc.) ───

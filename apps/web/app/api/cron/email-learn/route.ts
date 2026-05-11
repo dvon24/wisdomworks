@@ -13,6 +13,8 @@ import { NextResponse } from 'next/server';
 import { decryptToken } from '@wisdomworks/shared';
 import { listImapSent, listImapSeen } from '../../_lib/imap-runtime';
 import { ingestSentEmails, ingestSeenInbox, refreshVoiceProfile } from '../../_lib/email-intelligence';
+import { extractPeopleFromEmails, definePerson } from '../../_lib/known-people';
+import { listImapInboxSince } from '../../_lib/imap-runtime';
 
 // Make sure NFT picks up these deps in the Vercel lambda.
 import 'imapflow';
@@ -55,6 +57,7 @@ export async function GET(request: Request) {
     let voiceBuilt = 0;
     let totalSent = 0;
     let totalSeen = 0;
+    let peopleMined = 0;
     let failures = 0;
 
     for (const conn of imapConns) {
@@ -95,17 +98,44 @@ export async function GET(request: Request) {
           const ing = await ingestSeenInbox(conn.phone_number, seen.data);
           totalSeen += ing.contacts;
         }
+
+        // Auto-mine known_people from recent inbox messages (signatures).
+        // One Haiku call per tenant per day. Confidence 0.6 so manually
+        // owner-defined entries (1.0) always win in case of conflict.
+        const inboxForMining = await listImapInboxSince({
+          provider: conn.provider,
+          service: conn.service,
+          account_email: conn.account_email,
+          access_token: password,
+          metadata: conn.metadata,
+        }, 14);
+        if (inboxForMining.success && inboxForMining.data && inboxForMining.data.length > 0) {
+          const mined = await extractPeopleFromEmails(inboxForMining.data.slice(0, 15));
+          for (const person of mined) {
+            const id = await definePerson({
+              tenantPhone: conn.phone_number,
+              displayName: person.display_name,
+              role: person.role,
+              notes: person.notes,
+              email: person.email,
+              source: 'auto:email_signature',
+              confidence: 0.6,
+            });
+            if (id) peopleMined++;
+          }
+        }
       } catch (err) {
         failures++;
         console.warn(`[email-learn] tenant ${conn.phone_number} failed:`, err);
       }
     }
 
-    console.log(`[email-learn] tenants=${imapConns.length} voiceBuilt=${voiceBuilt} sentRecipients=${totalSent} seenContacts=${totalSeen} failures=${failures}`);
+    console.log(`[email-learn] tenants=${imapConns.length} voiceBuilt=${voiceBuilt} sentRecipients=${totalSent} seenContacts=${totalSeen} peopleMined=${peopleMined} failures=${failures}`);
     return NextResponse.json({
       ok: true,
       tenants: imapConns.length,
       voiceBuilt,
+      peopleMined,
       sentRecipients: totalSent,
       seenContacts: totalSeen,
       failures,

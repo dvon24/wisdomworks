@@ -240,6 +240,10 @@ interface TickContext {
   appliedSkills: AppliedSkill[];
   /** Au7o-style project connections this agent owns + their latest snapshot summaries */
   projects: AssignedProject[];
+  /** Real humans the owner has told us about + auto-mined from email signatures */
+  knownPeople: KnownPerson[];
+  /** Names of every agent on this tenant's team — used to disambiguate "Alex the agent" vs "Alex the person" */
+  teammateNames: string[];
 }
 
 interface AssignedProject {
@@ -265,6 +269,8 @@ import { isMuted } from './mute-state';
 import { enqueueNotification } from './notifications';
 // Project connections — agents see the latest snapshot of their assigned projects
 import { loadConnectionsForAgent, loadLatestSnapshot } from './project-sync';
+// Known people registry — disambiguates "Ron the attorney" from "Alex the agent"
+import { listKnownPeople, renderKnownPeopleForPrompt, type KnownPerson } from './known-people';
 // Story 2.15 — skill formation + cross-agent learning.
 import {
   topSkillsForLane,
@@ -312,7 +318,7 @@ async function markDelegationsDone(ids: string[]): Promise<void> {
 async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string, agentConfigId?: string): Promise<TickContext> {
   const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [] };
+    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [] };
   }
 
   // Three small queries in parallel — context tab kept tight on purpose.
@@ -363,6 +369,17 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     }
   }
 
+  // Known people registry + teammate names — disambiguation context for
+  // every agent's tick prompt
+  const [knownPeople, teammates] = await Promise.all([
+    listKnownPeople(tenantPhone),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=agent_name`,
+      { headers: headers() },
+    ).then((r) => r.ok ? r.json() : []).catch(() => []),
+  ]);
+  const teammateNames: string[] = (teammates ?? []).map((t: any) => t.agent_name).filter(Boolean);
+
   return {
     orgName: ctxRows[0]?.business_name ?? '',
     orgIndustry: ctxRows[0]?.business_type ?? '',
@@ -373,6 +390,8 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     pendingDelegations,
     appliedSkills,
     projects,
+    knownPeople,
+    teammateNames,
   };
 }
 
@@ -449,6 +468,24 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
   // Story 2.15 — proven techniques the lane has learned
   const skillsBlock = renderSkillsForPrompt(ctx.appliedSkills);
 
+  // Entity disambiguation — list of agent teammates (so we don't confuse
+  // "Alex the agent" with "Alex the human") + known people in the owner's
+  // network (attorney, accountant, clients, etc.)
+  const peopleBlock = (() => {
+    const blocks: string[] = [];
+    if (ctx.teammateNames.length > 0) {
+      blocks.push(
+        '',
+        'YOUR TEAMMATES (these are AGENTS, not humans — never assume the owner is talking about one of these when a name comes up in their email or messages):',
+        `  ${ctx.teammateNames.join(', ')}`,
+      );
+    }
+    const peopleText = renderKnownPeopleForPrompt(ctx.knownPeople);
+    if (peopleText) blocks.push(peopleText);
+    if (blocks.length === 0) return '';
+    return blocks.join('\n') + '\n\nWHEN A NAME APPEARS: check the YOUR TEAMMATES list first — if it matches, it\'s a teammate. Otherwise check PEOPLE YOU KNOW. If neither matches, treat it as an unknown human and ask the owner who they are (use define_person to remember after they tell you).';
+  })();
+
   // Au7o / project-connections — the agent's assigned external projects.
   // Substantive baseline so the agent talks about what's actually happening
   // on the project instead of asking for context every tick.
@@ -504,7 +541,7 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
-${recentRuns}${inbox}${skillsBlock}${repeatBlock}${projectsBlock}
+${recentRuns}${inbox}${skillsBlock}${repeatBlock}${peopleBlock}${projectsBlock}
 
 ${cadenceGuide}
 
