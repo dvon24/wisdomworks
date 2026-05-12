@@ -64,7 +64,7 @@ const INITIAL_MESSAGES = [
 ];
 
 type SidebarMode = 'briefing' | 'approvals' | 'activity' | 'agent';
-type ViewMode = 'overview' | 'team' | 'activity' | 'connections';
+type ViewMode = 'overview' | 'team' | 'activity' | 'connections' | 'clients';
 
 /** Render markdown-flavored org documentation. Handles #/## headings,
  * - bullets, **bold**, and blank-line spacing without pulling in a
@@ -504,7 +504,7 @@ export default function CommandDeck() {
 
         {/* View tabs */}
         <nav style={{ display: 'flex', gap: 4, marginLeft: 32 }}>
-          {(['overview', 'team', 'activity', 'connections'] as ViewMode[]).map((v) => (
+          {(['overview', 'team', 'clients', 'activity', 'connections'] as ViewMode[]).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -886,6 +886,73 @@ export default function CommandDeck() {
               )}
             </div>
           )}
+
+          {view === 'clients' && (() => {
+            const clients: any[] = tenantData?.clients ?? [];
+            const fmtDate = (iso: string | null) => iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+            const daysSince = (iso: string | null) => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24)) : null;
+            return (
+              <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <div>
+                    <div className="eyebrow">Clients</div>
+                    <div style={{ fontSize: 22, fontWeight: 300, marginTop: 4 }}>
+                      {clients.length === 0 ? 'No client profiles yet' : `${clients.length} ${clients.length === 1 ? 'client' : 'clients'}`}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+                    Tell your assistant about a customer to add one.
+                  </div>
+                </div>
+
+                {clients.length === 0 ? (
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
+                    <div style={{ textAlign: 'center', maxWidth: 480 }}>
+                      Try it from WhatsApp: <strong>"Just finished Sarah's balayage, she's coming back in 6 weeks"</strong>. Sophia will capture Sarah's profile, preferences, and visit automatically.
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1, overflow: 'auto' }}>
+                    {clients.map((c: any) => {
+                      const since = daysSince(c.lastVisitAt);
+                      const lapsed = since !== null && since > 60;
+                      const prefEntries = c.preferences ? Object.entries(c.preferences).slice(0, 3) : [];
+                      return (
+                        <div key={c.id} className="glass" style={{ padding: 14, display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
+                              <span style={{ fontSize: 15, fontWeight: 500 }}>{c.displayName}</span>
+                              {c.tags?.includes('VIP') && <span style={{ fontSize: 10, padding: '1px 6px', background: 'rgba(180, 83, 9, 0.15)', color: '#b45309', borderRadius: 4 }}>VIP</span>}
+                              {lapsed && <span style={{ fontSize: 10, padding: '1px 6px', background: 'rgba(220, 100, 50, 0.15)', color: '#c2410c', borderRadius: 4 }}>lapsed</span>}
+                              {c.source === 'inferred' && <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>(unconfirmed)</span>}
+                            </div>
+                            {prefEntries.length > 0 && (
+                              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
+                                {prefEntries.map(([k, v]: any) => (
+                                  <span key={k} style={{ marginRight: 10 }}>
+                                    <span style={{ opacity: 0.6 }}>{k}:</span> {typeof v === 'string' ? v : JSON.stringify(v)}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {c.notes && (
+                              <div style={{ fontSize: 12, color: 'var(--text-dim)', fontStyle: 'italic' }}>
+                                {c.notes.slice(0, 140)}{c.notes.length > 140 ? '…' : ''}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ textAlign: 'right', fontSize: 11, color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>
+                            <div>{c.visitCount} visit{c.visitCount === 1 ? '' : 's'}</div>
+                            <div>last: {fmtDate(c.lastVisitAt)}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {view === 'activity' && (() => {
             // Group enriched agent_runs by agent. Each group becomes a

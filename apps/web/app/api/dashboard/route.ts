@@ -14,6 +14,7 @@
 import { NextResponse } from 'next/server';
 import { computeMonthlyUsage, evaluateBudget, recordOverageIfExceeded } from '../_lib/usage-tracker';
 import { requireOwnerAuth } from '../_lib/api-auth';
+import { listClients } from '../_lib/client-profiles';
 
 export const dynamic = 'force-dynamic';
 
@@ -327,6 +328,28 @@ export async function GET(request: Request) {
       }
     }
 
+    // Story 2b.1 — load recent client profiles (best-effort, non-fatal)
+    let clients: any[] = [];
+    try {
+      const rows = await listClients(cleanPhone, 50);
+      clients = rows.map((c) => ({
+        id: c.id,
+        displayName: c.display_name,
+        phone: c.phone,
+        email: c.email,
+        preferences: c.preferences,
+        notes: c.notes,
+        visitCount: c.visit_count,
+        firstVisitAt: c.first_visit_at,
+        lastVisitAt: c.last_visit_at,
+        satisfactionSignal: c.satisfaction_signal,
+        tags: c.tags,
+        source: c.source,
+      }));
+    } catch (err) {
+      console.warn('[dashboard] client profiles fetch failed:', err);
+    }
+
     return NextResponse.json({
       user: {
         phone: cleanPhone,
@@ -336,6 +359,7 @@ export async function GET(request: Request) {
         isOwner: ctx.is_owner,
       },
       verticalTemplate: profile.vertical_template ?? null,
+      clients,
       connections: connections.map((c: any) => ({
         provider: c.provider,
         service: c.service,

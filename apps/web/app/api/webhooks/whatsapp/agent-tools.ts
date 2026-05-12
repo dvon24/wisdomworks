@@ -32,6 +32,14 @@ import { computeMonthlyUsage, evaluateBudget } from '../../_lib/usage-tracker';
 import { createLinkCode, type Channel } from '../../_lib/messaging-adapters';
 import { signSessionToken } from '../../_lib/api-auth';
 import {
+  upsertClientProfile,
+  recordClientVisit,
+  lookupClients,
+  listClients,
+  getClientProfile,
+  listClientVisits,
+} from '../../_lib/client-profiles';
+import {
   loadActiveConnections,
   loadLatestSnapshot,
   fetchGitHubCommits,
@@ -569,6 +577,90 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+// ─── Client Profiles (Story 2b.1) ────────────────────────────────────────
+
+const TOOL_ADD_UPDATE_CLIENT: AnthropicTool = {
+  name: 'add_or_update_client_profile',
+  description:
+    "Capture or update a CUSTOMER of the owner's business (NOT the owner's personal contacts — those use define_person/known_people). Use whenever the owner mentions one of their clients/customers/patients/guests by name: 'just finished Sarah's balayage', 'Mike was in for a #2 fade', 'Linda's wiring is done', 'table for Johnson party of 4'. Captures preferences and notes so the next interaction can pull personalized context. Returns the profile_id (use it to record a visit immediately if the mention describes a completed service).",
+  input_schema: {
+    type: 'object',
+    properties: {
+      display_name: { type: 'string', description: 'The client\'s name as the owner refers to them.' },
+      phone: { type: 'string', description: 'Phone number if known.' },
+      email: { type: 'string' },
+      preferences: {
+        type: 'object',
+        description: 'Free-form key/value preferences (haircut: "#2 fade", color: "balayage 9V", allergies: ["PPD"], table: "window booth"). Merges with existing.',
+      },
+      notes: { type: 'string', description: 'Sticky note about this client (not visit-specific).' },
+      tags: { type: 'array', items: { type: 'string' }, description: 'Tags: VIP, regular, lapsed, allergy, etc.' },
+      source: {
+        type: 'string',
+        enum: ['owner_defined', 'inferred'],
+        description: "'owner_defined' when the owner explicitly confirmed; 'inferred' (default) when you extracted from chat.",
+      },
+    },
+    required: ['display_name'],
+  },
+};
+
+const TOOL_RECORD_CLIENT_VISIT: AnthropicTool = {
+  name: 'record_client_visit',
+  description:
+    "Log a completed interaction with a client (job done, service rendered, appointment kept). Bumps visit_count + last_visit_at on the profile. Pair this with add_or_update_client_profile whenever the owner reports finishing work for a customer.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      client_profile_id: { type: 'string', description: 'Returned by add_or_update_client_profile.' },
+      summary: { type: 'string', description: 'One-line description: "Balayage + toner 9V", "Replaced 20A GFCI in kitchen", "Dinner — table 4, 2 mains + dessert".' },
+      channel: { type: 'string', enum: ['in_person', 'phone', 'whatsapp', 'video', 'email', 'remote'] },
+      satisfaction: { type: 'string', enum: ['positive', 'neutral', 'negative'] },
+      notes: { type: 'string', description: 'Visit-specific notes.' },
+      revenue_usd: { type: 'number', description: 'Revenue from this visit if the owner mentioned an amount.' },
+    },
+    required: ['client_profile_id', 'summary'],
+  },
+};
+
+const TOOL_LOOKUP_CLIENT: AnthropicTool = {
+  name: 'lookup_client',
+  description:
+    "Find a client by name or phone substring before logging a visit. Use BEFORE add_or_update_client_profile when the owner mentions someone who might already exist — prevents duplicates and surfaces existing preferences so you can reference them.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Partial name or phone (e.g. "Sarah", "0123").' },
+    },
+    required: ['query'],
+  },
+};
+
+const TOOL_LIST_MY_CLIENTS: AnthropicTool = {
+  name: 'list_my_clients',
+  description:
+    "List the owner's recent clients (sorted by last visit). Use when the owner asks 'who came in this week', 'show me my regulars', 'who haven't I seen in a while'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Default 20.' },
+    },
+  },
+};
+
+const TOOL_LIST_CLIENT_HISTORY: AnthropicTool = {
+  name: 'list_client_history',
+  description:
+    "Show the full visit history for one client (last 25 visits). Use when the owner asks 'when was Sarah last in', 'what did we do for Mike last time', 'show me Linda's history'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      client_profile_id: { type: 'string', description: 'Profile id (use lookup_client first to resolve from name).' },
+    },
+    required: ['client_profile_id'],
+  },
+};
+
 const TOOL_GET_CHANNEL_LINK_CODE: AnthropicTool = {
   name: 'get_channel_link_code',
   description:
@@ -841,6 +933,11 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_GET_SPEND_BREAKDOWN);
   tools.push(TOOL_GET_CHANNEL_LINK_CODE);
   tools.push(TOOL_ISSUE_DECK_LOGIN);
+  tools.push(TOOL_ADD_UPDATE_CLIENT);
+  tools.push(TOOL_RECORD_CLIENT_VISIT);
+  tools.push(TOOL_LOOKUP_CLIENT);
+  tools.push(TOOL_LIST_MY_CLIENTS);
+  tools.push(TOOL_LIST_CLIENT_HISTORY);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1611,6 +1708,97 @@ export async function executeTool(
           ...sortedModels.map((m) => `  • ${m.model}: $${m.costUsd.toFixed(2)} (${(m.tokensIn + m.tokensOut).toLocaleString()} tokens)`),
         ];
         return { content: lines.join('\n'), success: true };
+      }
+
+      case 'add_or_update_client_profile': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const displayName = String(call.input.display_name ?? '').trim();
+        if (!displayName) return { content: 'Missing display_name.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const verticalLabel = (user.profile as any)?.vertical_template?.label ?? null;
+        const id = await upsertClientProfile({
+          tenantPhone: cleanPhone,
+          displayName,
+          phone: call.input.phone ? String(call.input.phone) : undefined,
+          email: call.input.email ? String(call.input.email) : undefined,
+          preferences: typeof call.input.preferences === 'object' ? call.input.preferences : undefined,
+          notes: call.input.notes ? String(call.input.notes) : undefined,
+          verticalLabel: verticalLabel ?? undefined,
+          source: (call.input.source as any) ?? 'inferred',
+          tags: Array.isArray(call.input.tags) ? call.input.tags.map(String) : undefined,
+        });
+        if (!id) return { content: 'Could not save client profile.', success: false };
+        return { content: `Saved. Client profile_id=${id}.`, success: true };
+      }
+
+      case 'record_client_visit': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const profileId = String(call.input.client_profile_id ?? '').trim();
+        const summary = String(call.input.summary ?? '').trim();
+        if (!profileId || !summary) return { content: 'Missing client_profile_id or summary.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const visitId = await recordClientVisit({
+          tenantPhone: cleanPhone,
+          clientProfileId: profileId,
+          summary,
+          channel: call.input.channel ? String(call.input.channel) : undefined,
+          satisfaction: call.input.satisfaction as any,
+          notes: call.input.notes ? String(call.input.notes) : undefined,
+          revenueUsd: typeof call.input.revenue_usd === 'number' ? call.input.revenue_usd : undefined,
+        });
+        if (!visitId) return { content: 'Could not record visit.', success: false };
+        return { content: `Visit logged. visit_id=${visitId}.`, success: true };
+      }
+
+      case 'lookup_client': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const query = String(call.input.query ?? '').trim();
+        if (!query) return { content: 'Missing query.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const results = await lookupClients({ tenantPhone: cleanPhone, query });
+        if (results.length === 0) return { content: `No client matches "${query}".`, success: true };
+        const lines = results.slice(0, 10).map((c) => {
+          const last = c.last_visit_at ? new Date(c.last_visit_at).toISOString().slice(0, 10) : 'never';
+          const prefs = Object.keys(c.preferences).length > 0
+            ? ` · ${Object.entries(c.preferences).slice(0, 3).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ')}`
+            : '';
+          return `[${c.id.slice(0, 8)}] ${c.display_name} (${c.visit_count} visit${c.visit_count === 1 ? '' : 's'}, last ${last}${prefs})`;
+        });
+        return { content: `${results.length} match${results.length === 1 ? '' : 'es'}:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'list_my_clients': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const limit = typeof call.input.limit === 'number' ? Math.min(50, call.input.limit) : 20;
+        const all = await listClients(cleanPhone, limit);
+        if (all.length === 0) return { content: "No client profiles yet. Mention a customer's name during chat and I'll capture them.", success: true };
+        const lines = all.map((c) => {
+          const last = c.last_visit_at ? new Date(c.last_visit_at).toISOString().slice(0, 10) : 'no visits';
+          return `${c.display_name} — ${c.visit_count} visits, last ${last}`;
+        });
+        return { content: `${all.length} client${all.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'list_client_history': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const profileId = String(call.input.client_profile_id ?? '').trim();
+        if (!profileId) return { content: 'Missing client_profile_id.', success: false };
+        const profile = await getClientProfile(profileId);
+        if (!profile) return { content: 'Client not found.', success: false };
+        const visits = await listClientVisits(profileId);
+        if (visits.length === 0) {
+          return { content: `${profile.display_name}: no visits logged yet.`, success: true };
+        }
+        const lines = visits.map((v) => {
+          const date = new Date(v.occurred_at).toISOString().slice(0, 10);
+          const sat = v.satisfaction ? ` (${v.satisfaction})` : '';
+          return `  ${date}: ${v.summary}${sat}`;
+        });
+        return {
+          content: `${profile.display_name} — ${visits.length} visit${visits.length === 1 ? '' : 's'}:\n${lines.join('\n')}`,
+          success: true,
+        };
       }
 
       case 'issue_deck_login': {
