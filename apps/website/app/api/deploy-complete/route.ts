@@ -479,6 +479,7 @@ export async function POST(request: Request) {
       agents,
       structured,
       collectedData,
+      stripeSessionId,
     } = body as {
       phoneNumber: string;
       businessName?: string;
@@ -487,10 +488,52 @@ export async function POST(request: Request) {
       agents?: any[];
       structured?: any;
       collectedData?: OnboardingData;
+      stripeSessionId?: string;
     };
 
     if (!phoneNumber) {
       return Response.json({ error: 'No phone number' }, { status: 400 });
+    }
+
+    // Story 6.1 follow-up — gate tenant provisioning behind a verified
+    // Stripe checkout session. Without this, anyone can POST here and
+    // create a tenant for any phone number. We accept the request only if
+    // the Stripe session_id is valid, paid, and references this phone
+    // number in its metadata.
+    //
+    // Bypass: OWNER_API_TOKEN bearer for admin/automation use.
+    const auth = request.headers.get('authorization');
+    const ownerToken = process.env.OWNER_API_TOKEN;
+    const isAdmin = ownerToken && auth?.startsWith('Bearer ') && auth.slice(7) === ownerToken;
+
+    if (!isAdmin) {
+      const stripeSecret = process.env.STRIPE_SECRET_KEY;
+      if (!stripeSecret) {
+        return Response.json({ error: 'unauthorized: stripe not configured' }, { status: 503 });
+      }
+      if (!stripeSessionId) {
+        return Response.json({ error: 'unauthorized: stripe_session_id required' }, { status: 401 });
+      }
+      try {
+        const Stripe = (await import('stripe')).default;
+        const stripe = new Stripe(stripeSecret, { apiVersion: '2026-04-22.dahlia' });
+        const session = await stripe.checkout.sessions.retrieve(stripeSessionId);
+        const paid = session.payment_status === 'paid' || session.payment_status === 'no_payment_required';
+        if (!paid) {
+          return Response.json({ error: 'unauthorized: checkout not paid' }, { status: 401 });
+        }
+        // If the session metadata pins a phone, enforce it. (Older checkout
+        // sessions may not have it — accept those if status is paid since
+        // the alternative is locking out legitimate customers.)
+        const pinnedPhone = (session.metadata?.phoneNumber ?? '').replace(/[\s\-+()]/g, '');
+        const requestedPhone = phoneNumber.replace(/[\s\-+()]/g, '');
+        if (pinnedPhone && pinnedPhone !== requestedPhone) {
+          return Response.json({ error: 'unauthorized: phone mismatch' }, { status: 403 });
+        }
+      } catch (err: any) {
+        console.error('[deploy-complete] stripe verify failed:', err?.message ?? err);
+        return Response.json({ error: 'unauthorized: stripe verification failed' }, { status: 401 });
+      }
     }
 
     const cleanPhone = phoneNumber.replace(/[\s\-\+\(\)]/g, '');

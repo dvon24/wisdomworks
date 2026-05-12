@@ -240,6 +240,12 @@ export default function HomePage() {
         console.error('Failed to restore onboarding data:', e);
       }
 
+      // Stash the Stripe checkout session_id so deploy-complete can verify it
+      const sid = params.get('session_id');
+      if (sid) {
+        try { localStorage.setItem('wisdomworks_stripe_session', sid); } catch {}
+      }
+
       // Stripe + OAuth flows both happen post-payment, so always treat as paid
       setHasPaid(true);
       setShowConnectTools(true);
@@ -1151,6 +1157,10 @@ export default function HomePage() {
                         };
                       });
 
+                      const stripeSessionId = (() => {
+                        try { return localStorage.getItem('wisdomworks_stripe_session') || undefined; }
+                        catch { return undefined; }
+                      })();
                       await fetch('/api/deploy-complete', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -1160,6 +1170,7 @@ export default function HomePage() {
                           businessType: s.businessType,
                           agentCount: agents.length,
                           agents: enrichedAgents,
+                          stripeSessionId,
                           // Stories 1.7+ persistence pipeline runs server-side from these:
                           structured: structuredData,
                           collectedData: {

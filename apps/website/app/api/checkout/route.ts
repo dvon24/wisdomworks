@@ -24,11 +24,13 @@ export async function POST(request: Request) {
       businessName,
       agentCount,
       currency = 'usd',
+      phoneNumber,
     } = body as {
       monthlyPrice: number;
       businessName: string;
       agentCount: number;
       currency: string;
+      phoneNumber?: string;
     };
 
     if (!monthlyPrice || monthlyPrice < 1) {
@@ -57,6 +59,7 @@ export async function POST(request: Request) {
         businessName,
         agentCount: String(agentCount),
         monthlyPrice: String(monthlyPrice),
+        ...(phoneNumber ? { phoneNumber: phoneNumber.replace(/[\s\-+()]/g, '') } : {}),
       },
       success_url: `${getBaseUrl(request)}?paid=true&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${getBaseUrl(request)}?cancelled=true`,
