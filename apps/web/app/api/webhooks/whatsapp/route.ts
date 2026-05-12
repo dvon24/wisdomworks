@@ -13,6 +13,7 @@
 import { NextResponse } from 'next/server';
 import { loadUserContext, type UserContext } from './context-store';
 import { generateIrisReply } from './iris-brain';
+import { claimMessage } from '../../_lib/message-idempotency';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -93,6 +94,16 @@ export async function POST(request: Request) {
 
     if (!text) {
       return NextResponse.json({ status: 'ok' });
+    }
+
+    // Idempotency claim — Meta retries the webhook if we don't return 200
+    // within ~20s, and tool-heavy replies can take 30-60s. If this message
+    // ID has been seen, bail with 200 so Meta stops retrying. Without this
+    // guard, the brain re-runs the same prompt and fires tools N times.
+    const claimed = await claimMessage(message.id, 'whatsapp', from);
+    if (!claimed) {
+      console.log(`[whatsapp] Duplicate delivery (${message.id}), already processing — bailing`);
+      return NextResponse.json({ status: 'ok', deduplicated: true });
     }
 
     console.log(`[whatsapp] Message from ${name} (${from}): ${text.slice(0, 100)}`);

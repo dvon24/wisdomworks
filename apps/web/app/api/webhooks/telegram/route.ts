@@ -16,6 +16,7 @@ import { NextResponse } from 'next/server';
 import { loadUserContext } from '../whatsapp/context-store';
 import { generateIrisReply } from '../whatsapp/iris-brain';
 import { resolveTenantForChannel, redeemLinkCode, sendOnChannel, touchChannel } from '../../_lib/messaging-adapters';
+import { claimMessage } from '../../_lib/message-idempotency';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -53,6 +54,14 @@ export async function POST(request: Request) {
 
     const chatId = String(message.chat?.id ?? '');
     if (!chatId) return NextResponse.json({ ok: true });
+
+    // Idempotency claim — Telegram retries on slow responses too
+    const tgMessageId = `tg-${chatId}-${message.message_id}`;
+    const claimed = await claimMessage(tgMessageId, 'telegram', chatId);
+    if (!claimed) {
+      console.log(`[telegram] Duplicate delivery (${tgMessageId}), bailing`);
+      return NextResponse.json({ ok: true, deduplicated: true });
+    }
 
     const text = sanitize(message.text);
     const fromName = sanitize(
