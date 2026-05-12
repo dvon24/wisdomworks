@@ -27,6 +27,7 @@ import { listPendingFollowups, markFollowupSent, markFollowupDeclined } from '..
 import { decryptToken } from '@wisdomworks/shared';
 import { setMute, clearMute, isMuted, formatMuteUntil } from '../../_lib/mute-state';
 import { definePerson, listKnownPeople, forgetPerson } from '../../_lib/known-people';
+import { listAllAtoms, archiveAtom, confirmAtom, upsertAtom, type AtomKind } from '../../_lib/knowledge-atoms';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -463,6 +464,56 @@ const TOOL_GET_PROJECT_STATUS: AnthropicTool = {
   },
 };
 
+// ─── Phase 1A — Knowledge atom recall / management ───
+const TOOL_RECALL_ATOMS: AnthropicTool = {
+  name: 'recall_atoms',
+  description:
+    "Show what the team has learned about the owner from their messages — competitors flagged, goals stated, preferences, constraints, recent events. Use when the user asks 'what do you remember about me' / 'what do you know about my business' / 'show me my preferences' or when an agent needs to refresh context beyond what's in the tick prompt.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      kind: { type: 'string', enum: ['competitor', 'goal', 'preference', 'constraint', 'person', 'event', 'fact'], description: 'Optional filter by kind.' },
+    },
+  },
+};
+
+const TOOL_CONFIRM_ATOM: AnthropicTool = {
+  name: 'confirm_atom',
+  description:
+    "Mark an auto-extracted atom as owner-confirmed (locks confidence at 1.0, never gets overwritten by future extraction). Use when the owner explicitly endorses or corrects something the team has learned.",
+  input_schema: {
+    type: 'object',
+    properties: { atom_id: { type: 'string', description: 'The 8-char prefix or full UUID from recall_atoms.' } },
+    required: ['atom_id'],
+  },
+};
+
+const TOOL_ARCHIVE_ATOM: AnthropicTool = {
+  name: 'archive_atom',
+  description:
+    "Archive an atom that's wrong, stale, or no longer applies. Removes it from agent prompts. Use when owner says 'no, that's not right' / 'forget about X'.",
+  input_schema: {
+    type: 'object',
+    properties: { atom_id: { type: 'string' } },
+    required: ['atom_id'],
+  },
+};
+
+const TOOL_REMEMBER_THIS: AnthropicTool = {
+  name: 'remember_this',
+  description:
+    "Explicitly remember something the owner just told you, with owner_confirmed=true. Use when the owner makes a clear declarative statement worth durable storage ('we don't email after 7pm', 'my main competitor is X', 'my goal this quarter is Y').",
+  input_schema: {
+    type: 'object',
+    properties: {
+      kind: { type: 'string', enum: ['competitor', 'goal', 'preference', 'constraint', 'person', 'event', 'fact'] },
+      content: { type: 'string', description: 'Third-person factual statement — e.g. "Owner does not want emails sent after 7pm local time."' },
+      tags: { type: 'array', items: { type: 'string' }, description: 'Optional lowercase tags for filtering — lanes, topic keywords.' },
+    },
+    required: ['kind', 'content'],
+  },
+};
+
 // ─── Phase 2 — Research / competitive intelligence ───
 const TOOL_REQUEST_RESEARCH: AnthropicTool = {
   name: 'request_research',
@@ -747,6 +798,10 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LIST_ALL_PROJECTS);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
+  tools.push(TOOL_RECALL_ATOMS);
+  tools.push(TOOL_CONFIRM_ATOM);
+  tools.push(TOOL_ARCHIVE_ATOM);
+  tools.push(TOOL_REMEMBER_THIS);
   tools.push(TOOL_LIST_RECENT_COMMITS);
   tools.push(TOOL_LIST_OPEN_ISSUES);
   tools.push(TOOL_READ_REPO_FILE);
@@ -1422,6 +1477,69 @@ export async function executeTool(
         return ok
           ? { content: 'Removed. Future ticks won\'t reference that person.', success: true }
           : { content: 'Forget failed — id not found.', success: false };
+      }
+
+      case 'recall_atoms': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const kindArg = call.input.kind ? String(call.input.kind) as AtomKind : undefined;
+        const atoms = await listAllAtoms(cleanPhone, kindArg);
+        if (atoms.length === 0) {
+          return { content: kindArg ? `Nothing remembered yet under ${kindArg}.` : "I haven't picked up any durable facts yet. Tell me about your business, goals, competitors, preferences, or constraints and I'll remember.", success: true };
+        }
+        const lines = atoms.slice(0, 25).map((a) => {
+          const mark = a.owner_confirmed ? '✓' : '·';
+          return `${mark} [${a.id.slice(0, 8)}] ${a.kind}: ${a.content.slice(0, 140)}`;
+        });
+        return { content: `${atoms.length} remembered${kindArg ? ` (${kindArg})` : ''}:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'confirm_atom': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const idIn = String(call.input.atom_id ?? '').trim();
+        if (!idIn) return { content: 'Missing atom_id.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const all = await listAllAtoms(cleanPhone);
+        const match = idIn.length === 8 ? all.find((a) => a.id.startsWith(idIn.toLowerCase())) : all.find((a) => a.id === idIn);
+        if (!match) return { content: `No atom matches ${idIn}.`, success: false };
+        const ok = await confirmAtom(match.id);
+        return ok
+          ? { content: `Confirmed. "${match.content.slice(0, 80)}" is now locked at high confidence.`, success: true }
+          : { content: 'Confirm failed.', success: false };
+      }
+
+      case 'archive_atom': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const idIn = String(call.input.atom_id ?? '').trim();
+        if (!idIn) return { content: 'Missing atom_id.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const all = await listAllAtoms(cleanPhone);
+        const match = idIn.length === 8 ? all.find((a) => a.id.startsWith(idIn.toLowerCase())) : all.find((a) => a.id === idIn);
+        if (!match) return { content: `No atom matches ${idIn}.`, success: false };
+        const ok = await archiveAtom(match.id);
+        return ok
+          ? { content: `Archived. Won't surface again.`, success: true }
+          : { content: 'Archive failed.', success: false };
+      }
+
+      case 'remember_this': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const kind = call.input.kind as AtomKind;
+        const content = String(call.input.content ?? '').trim();
+        if (!content) return { content: 'Missing content.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const id = await upsertAtom({
+          tenantPhone: cleanPhone,
+          kind,
+          content,
+          source: 'owner_confirmed',
+          confidence: 1.0,
+          ownerConfirmed: true,
+          tags: Array.isArray(call.input.tags) ? call.input.tags.map(String) : [],
+        });
+        return id
+          ? { content: `Got it. Every agent will know: "${content.slice(0, 100)}".`, success: true }
+          : { content: 'Could not save.', success: false };
       }
 
       case 'request_research': {

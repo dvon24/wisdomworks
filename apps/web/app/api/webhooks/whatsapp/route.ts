@@ -100,6 +100,27 @@ export async function POST(request: Request) {
     // Load persistent user context (survives Vercel cold starts)
     const user = await loadUserContext(from, name);
 
+    // Phase 1A — fire-and-forget knowledge atom extraction. Don't block
+    // the reply on this; just mine durable facts from what the owner said
+    // and store them so every agent's next tick benefits.
+    const cleanPhoneForAtoms = from.replace(/[\s\-+()]/g, '');
+    (async () => {
+      try {
+        const { extractAtomsFromMessage } = await import('../../_lib/knowledge-atoms');
+        const recentHistory = (user as any)?.conversationHistory?.slice(-6)
+          ?.map((m: any) => `${m.role ?? 'user'}: ${(m.content ?? '').slice(0, 200)}`)
+          .join('\n');
+        await extractAtomsFromMessage({
+          tenantPhone: cleanPhoneForAtoms,
+          messageText: text,
+          messageId: message.id,
+          conversationContext: recentHistory,
+        });
+      } catch (err) {
+        console.warn('[whatsapp] atom extraction failed (non-blocking):', err);
+      }
+    })();
+
     // Generate AI response with full context (shared brain — same path as Command Deck)
     const agentResponse = await generateIrisReply(text, user, 'whatsapp');
 

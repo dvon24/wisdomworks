@@ -244,6 +244,8 @@ interface TickContext {
   knownPeople: KnownPerson[];
   /** Names of every agent on this tenant's team — used to disambiguate "Alex the agent" vs "Alex the person" */
   teammateNames: string[];
+  /** Phase 1A — atoms mined from the owner's WhatsApp messages */
+  knowledgeAtoms: KnowledgeAtom[];
 }
 
 interface AssignedProject {
@@ -271,6 +273,8 @@ import { enqueueNotification } from './notifications';
 import { loadConnectionsForAgent, loadLatestSnapshot } from './project-sync';
 // Known people registry — disambiguates "Ron the attorney" from "Alex the agent"
 import { listKnownPeople, renderKnownPeopleForPrompt, type KnownPerson } from './known-people';
+// Phase 1A — conversation atoms mined from owner's WhatsApp messages
+import { recentAtomsForPrompt, renderAtomsForPrompt, type KnowledgeAtom } from './knowledge-atoms';
 // Story 2.15 — skill formation + cross-agent learning.
 import {
   topSkillsForLane,
@@ -318,7 +322,7 @@ async function markDelegationsDone(ids: string[]): Promise<void> {
 async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string, agentConfigId?: string): Promise<TickContext> {
   const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [] };
+    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [], knowledgeAtoms: [] };
   }
 
   // Three small queries in parallel — context tab kept tight on purpose.
@@ -370,13 +374,14 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
   }
 
   // Known people registry + teammate names — disambiguation context for
-  // every agent's tick prompt
-  const [knownPeople, teammates] = await Promise.all([
+  // every agent's tick prompt. Plus Phase 1A atoms mined from owner chat.
+  const [knownPeople, teammates, knowledgeAtoms] = await Promise.all([
     listKnownPeople(tenantPhone),
     fetch(
       `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=agent_name`,
       { headers: headers() },
     ).then((r) => r.ok ? r.json() : []).catch(() => []),
+    recentAtomsForPrompt(tenantPhone, ownLane, 15),
   ]);
   const teammateNames: string[] = (teammates ?? []).map((t: any) => t.agent_name).filter(Boolean);
 
@@ -392,6 +397,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     projects,
     knownPeople,
     teammateNames,
+    knowledgeAtoms,
   };
 }
 
@@ -468,6 +474,11 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
   // Story 2.15 — proven techniques the lane has learned
   const skillsBlock = renderSkillsForPrompt(ctx.appliedSkills);
 
+  // Phase 1A — atoms mined from owner's WhatsApp messages (competitors,
+  // goals, preferences, constraints, etc.) so every agent has the owner's
+  // perspective without re-reading the chat history.
+  const atomsBlock = renderAtomsForPrompt(ctx.knowledgeAtoms);
+
   // Entity disambiguation — list of agent teammates (so we don't confuse
   // "Alex the agent" with "Alex the human") + known people in the owner's
   // network (attorney, accountant, clients, etc.)
@@ -541,7 +552,7 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
-${recentRuns}${inbox}${skillsBlock}${repeatBlock}${peopleBlock}${projectsBlock}
+${recentRuns}${inbox}${skillsBlock}${repeatBlock}${peopleBlock}${atomsBlock}${projectsBlock}
 
 ${cadenceGuide}
 
