@@ -41,7 +41,7 @@ import {
 } from '../../_lib/client-profiles';
 import { loadEmailPrefs, saveEmailPrefs } from '../../_lib/email-notifications';
 import { listOpenInsights, getInsightById, setInsightStatus } from '../../_lib/business-insights';
-import { emitTeamGapInsight, loadCurrentTeam } from '../../_lib/team-gap-detector';
+import { emitTeamGapInsight, loadCurrentTeam, loadLatestOpenTeamGap } from '../../_lib/team-gap-detector';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -589,6 +589,20 @@ const TOOL_LIST_MY_TEAM: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+const TOOL_APPROVE_LATEST_PROPOSAL: AnthropicTool = {
+  name: 'approve_latest_team_proposal',
+  description:
+    "Approve the MOST RECENT open team-gap proposal for this owner without needing an 8-char code. Use when you just proposed adding an agent and the owner replies affirmatively ('yes', 'do it', 'go ahead', 'sounds good', 'add them', 'let's do it'). The owner is a tradesperson on the move — never make them type a code or open the deck.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_DISMISS_LATEST_PROPOSAL: AnthropicTool = {
+  name: 'dismiss_latest_team_proposal',
+  description:
+    "Dismiss the most recent open team-gap proposal. Use when the owner replies negatively to your suggestion ('no thanks', 'skip', 'not now', 'maybe later'). Doesn't bug them again with the same proposal.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 const TOOL_PROPOSE_TEAM_ADDITION: AnthropicTool = {
   name: 'propose_team_addition',
   description:
@@ -1046,6 +1060,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_DISMISS_INSIGHT);
   tools.push(TOOL_LIST_MY_TEAM);
   tools.push(TOOL_PROPOSE_TEAM_ADDITION);
+  tools.push(TOOL_APPROVE_LATEST_PROPOSAL);
+  tools.push(TOOL_DISMISS_LATEST_PROPOSAL);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1825,6 +1841,60 @@ export async function executeTool(
         if (team.length === 0) return { content: 'No active agents on the team yet.', success: true };
         const lines = team.map((m) => `  • ${m.name} — ${m.role}${m.category ? ` (${m.category})` : ''}${m.status ? ` [${m.status}]` : ''}`);
         return { content: `${team.length} agent${team.length === 1 ? '' : 's'} on the team:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'approve_latest_team_proposal': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const insight = await loadLatestOpenTeamGap(cleanPhone);
+        if (!insight) return { content: "There's no open team-gap proposal to approve.", success: false };
+        const p = insight.payload ?? {};
+        // Mirror the team_gap execution path used in approve_insight
+        const team = user.profile?.team ?? [];
+        const id = String(p.agent_name).toLowerCase().replace(/\s+/g, '-');
+        const tier = ['Haiku', 'Sonnet', 'Opus'].includes(p.tier) ? p.tier : 'Sonnet';
+        const newAgent: any = {
+          id,
+          name: p.agent_name,
+          role: p.agent_role,
+          tier,
+          description: p.description,
+          tools: [],
+          channels: [],
+        };
+        const parent = (p.parent_agent_name ?? '').toString().toLowerCase();
+        if (parent) {
+          const manager = team.find((a: any) => a.name?.toLowerCase() === parent || a.id?.toLowerCase() === parent);
+          if (manager) {
+            const sub = manager.subTeam ?? { count: 0, label: `${manager.name}'s team`, agents: [] };
+            sub.agents.push({ id: `${manager.id ?? id}-${id}`, name: p.agent_name, role: p.agent_role, tier });
+            sub.count = sub.agents.length;
+            manager.subTeam = sub;
+          } else {
+            team.push(newAgent);
+          }
+        } else {
+          team.push(newAgent);
+        }
+        user.profile = user.profile ?? { preferences: {}, activeTopics: [] } as any;
+        user.profile.team = team;
+        await saveUserContext(user);
+        await setInsightStatus(insight.id, 'executed');
+        return {
+          content: `✓ Added ${p.agent_name} (${p.agent_role}) to your team. They'll start on the next agent tick — no further action needed.`,
+          success: true,
+        };
+      }
+
+      case 'dismiss_latest_team_proposal': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const insight = await loadLatestOpenTeamGap(cleanPhone);
+        if (!insight) return { content: "There's no open team-gap proposal to dismiss.", success: false };
+        const ok = await setInsightStatus(insight.id, 'dismissed');
+        if (!ok) return { content: 'Could not update the proposal.', success: false };
+        const p = insight.payload ?? {};
+        return { content: `Got it. Skipping ${p.agent_name ?? 'that agent'} for now. I'll keep watching for the gap and bring it back if it gets worse.`, success: true };
       }
 
       case 'propose_team_addition': {

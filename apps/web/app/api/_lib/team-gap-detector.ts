@@ -56,6 +56,23 @@ export async function loadCurrentTeam(tenantPhone: string): Promise<CurrentTeamM
   }
 }
 
+/** Find the most recent open team_gap insight for this tenant. */
+export async function loadLatestOpenTeamGap(tenantPhone: string): Promise<any | null> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/business_insights?tenant_phone=eq.${cleanPhone}&detector=eq.team_gap&status=eq.proposed&order=detected_at.desc&limit=1&select=*`,
+      { headers: headers() },
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export interface TeamGapProposal {
   tenantPhone: string;
   /** Friendly name for the proposed agent (e.g. "Riley") */
