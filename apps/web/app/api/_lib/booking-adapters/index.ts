@@ -80,6 +80,7 @@ export interface BookingAdapter {
   createBooking?(accessToken: string, input: CreateBookingInput, opts?: { merchantId?: string }): Promise<CreatedBooking | null>;
 }
 
-// Square adapter is the first implementation; export it here for the
-// register-as-default flow. Future providers wire in the same way.
+// Adapter registry — add new providers here as they ship.
 export { squareAdapter } from './square';
+export { calendlyAdapter } from './calendly';
+export { mindbodyAdapter } from './mindbody';

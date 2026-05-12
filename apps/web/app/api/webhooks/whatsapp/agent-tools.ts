@@ -43,7 +43,7 @@ import { loadEmailPrefs, saveEmailPrefs } from '../../_lib/email-notifications';
 import { listOpenInsights, getInsightById, setInsightStatus } from '../../_lib/business-insights';
 import { emitTeamGapInsight, loadCurrentTeam, loadLatestOpenTeamGap } from '../../_lib/team-gap-detector';
 import { loadActiveBookingConnections, syncCustomersFromConnection } from '../../_lib/booking-adapters/customer-sync';
-import { squareAdapter } from '../../_lib/booking-adapters/square';
+import { squareAdapter, calendlyAdapter, mindbodyAdapter } from '../../_lib/booking-adapters';
 import {
   createEvent as createManagedEvent,
   cancelEvent as cancelManagedEvent,
@@ -657,14 +657,14 @@ const TOOL_CANCEL_EVENT: AnthropicTool = {
 const TOOL_CONNECT_BOOKING_SYSTEM: AnthropicTool = {
   name: 'connect_booking_system',
   description:
-    "Generate a one-tap link to connect a booking system (Square Appointments first; Mindbody/Calendly/etc. later). Use when owner says 'connect Square', 'I use Square for bookings', 'pull my client list from <booking system>', or any time the owner mentions they already have a booking platform. Returns the secure OAuth URL — when they tap it, we pull their entire customer list into client_profiles automatically.",
+    "Generate a one-tap link to connect a booking system. Use when owner says 'connect Square/Calendly/Mindbody', 'I use X for bookings', 'pull my client list from <booking system>', or any time the owner mentions they already have a booking platform. Returns the secure OAuth URL — when they tap it, we pull their customer list + appointment history into client_profiles + client_visits automatically. Square = retail/salon/trades. Calendly = consulting/coaching/services. Mindbody = fitness/yoga/spa.",
   input_schema: {
     type: 'object',
     properties: {
       provider: {
         type: 'string',
-        enum: ['square'],
-        description: 'Which booking system to connect. Today only square is wired up.',
+        enum: ['square', 'calendly', 'mindbody'],
+        description: 'Which booking system to connect.',
       },
     },
     required: ['provider'],
@@ -2022,17 +2022,35 @@ export async function executeTool(
       case 'connect_booking_system': {
         if (!user) return { content: 'Internal: user context required.', success: false };
         const provider = String(call.input.provider ?? '').toLowerCase();
-        if (provider !== 'square') {
-          return { content: `${provider} isn't wired up yet. Square Appointments is the first booking integration; more land soon.`, success: false };
-        }
-        if (!process.env.SQUARE_APP_ID) {
-          return { content: 'Square integration not configured yet (admin needs to set SQUARE_APP_ID).', success: false };
-        }
-        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
         const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
-        const link = `${base}/api/oauth/square?phone=${encodeURIComponent(cleanPhone)}`;
+        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const providerLabels: Record<string, { label: string; envVar: string; description: string }> = {
+          square: {
+            label: 'Square Appointments',
+            envVar: 'SQUARE_APP_ID',
+            description: 'I\'ll pull your entire customer list + appointment history into client profiles. Your existing scheduling stays in Square — we sync the data so your team can act on it.',
+          },
+          calendly: {
+            label: 'Calendly',
+            envVar: 'CALENDLY_CLIENT_ID',
+            description: 'I\'ll pull your invitee roster from scheduled events + map past appointments into client profiles. Calendly stays your booking page — we add memory + follow-up.',
+          },
+          mindbody: {
+            label: 'Mindbody',
+            envVar: 'MINDBODY_API_KEY',
+            description: 'I\'ll pull your client roster + class/appointment history. Mindbody stays your front-of-house — we add insight layer + WhatsApp ops.',
+          },
+        };
+        const config = providerLabels[provider];
+        if (!config) {
+          return { content: `${provider} isn't wired up yet. Today: square, calendly, mindbody.`, success: false };
+        }
+        if (!process.env[config.envVar]) {
+          return { content: `${config.label} integration not yet configured (admin needs to set ${config.envVar}).`, success: false };
+        }
+        const link = `${base}/api/oauth/${provider}?phone=${encodeURIComponent(cleanPhone)}`;
         return {
-          content: `Tap to connect Square:\n\n${link}\n\nAfter you approve, I'll pull your entire customer list into your client profiles automatically. Your existing scheduling stays in Square — we just sync the customer roster + visit history so your team can act on it.`,
+          content: `Tap to connect ${config.label}:\n\n${link}\n\n${config.description}`,
           success: true,
         };
       }
@@ -2048,9 +2066,11 @@ export async function executeTool(
         let totalUpserted = 0;
         let totalAppts = 0;
         let totalVisits = 0;
+        const adapters: Record<string, any> = { square: squareAdapter, calendly: calendlyAdapter, mindbody: mindbodyAdapter };
         for (const conn of conns) {
-          if (conn.provider !== 'square') continue;
-          const res = await syncCustomersFromConnection(conn, squareAdapter);
+          const adapter = adapters[conn.provider];
+          if (!adapter) continue;
+          const res = await syncCustomersFromConnection(conn, adapter);
           totalFetched += res.fetched;
           totalUpserted += res.upserted;
           totalAppts += res.appointmentsFetched;

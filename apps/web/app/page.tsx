@@ -1251,7 +1251,7 @@ export default function CommandDeck() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
                 {(() => {
                   const renderProviderCard = (
-                    provider: 'yahoo' | 'apple' | 'google' | 'microsoft' | 'square',
+                    provider: 'yahoo' | 'apple' | 'google' | 'microsoft' | 'square' | 'calendly' | 'mindbody',
                     label: string,
                     icon: string,
                     sub: string,
@@ -1297,6 +1297,8 @@ export default function CommandDeck() {
                       {renderProviderCard('google', 'Google', '🟦', 'Gmail + Calendar via OAuth (one click).', 'email', () => {}, phoneNumber ? `${oauthBase}/api/oauth/google?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                       {renderProviderCard('microsoft', 'Microsoft', '🟧', 'Outlook + Calendar via OAuth.', 'email', () => {}, phoneNumber ? `${oauthBase}/api/oauth/microsoft?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                       {renderProviderCard('square', 'Square Appointments', '🟫', 'Bookings + customer roster sync. One-click OAuth.', 'booking', () => {}, phoneNumber ? `${oauthBase}/api/oauth/square?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                      {renderProviderCard('calendly', 'Calendly', '🔵', 'Pulls invitee roster + scheduled events.', 'booking', () => {}, phoneNumber ? `${oauthBase}/api/oauth/calendly?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                      {renderProviderCard('mindbody', 'Mindbody', '🟢', 'Fitness/spa: client roster + class history.', 'booking', () => {}, phoneNumber ? `${oauthBase}/api/oauth/mindbody?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                     </>
                   );
                 })()}

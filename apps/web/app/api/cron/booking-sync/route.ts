@@ -10,7 +10,7 @@
 
 import { NextResponse } from 'next/server';
 import { loadActiveBookingConnections, syncCustomersFromConnection } from '../../_lib/booking-adapters/customer-sync';
-import { squareAdapter } from '../../_lib/booking-adapters/square';
+import { squareAdapter, calendlyAdapter, mindbodyAdapter } from '../../_lib/booking-adapters';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,6 +18,8 @@ export const maxDuration = 300;
 
 const ADAPTERS = {
   square: squareAdapter,
+  calendly: calendlyAdapter,
+  mindbody: mindbodyAdapter,
 } as const;
 
 export async function GET(request: Request) {
