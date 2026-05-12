@@ -14,6 +14,8 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
+const TAVILY_URL = 'https://api.tavily.com/search';
 
 const headers = () => ({
   apikey: SUPABASE_KEY!,
@@ -137,45 +139,224 @@ export interface ResearchBrief {
   confidence: number;
 }
 
-/**
- * Run a single research query using Anthropic's web_search tool. Returns
- * a structured brief or null on failure. The model decides whether to
- * search and how many times — we cap at 3 searches per request.
- */
-export async function runResearch(req: { topic: string; reason?: string; kind: ResearchKind; ownerContext?: string }): Promise<{ brief: ResearchBrief | null; searchesUsed: number; tokensUsed: number; error?: string }> {
-  if (!ANTHROPIC_API_KEY) return { brief: null, searchesUsed: 0, tokensUsed: 0, error: 'ANTHROPIC_API_KEY not set' };
+interface TavilyResult {
+  title: string;
+  url: string;
+  content: string;
+  score?: number;
+  published_date?: string;
+}
 
+interface TavilyResponse {
+  query: string;
+  answer?: string;
+  results: TavilyResult[];
+  response_time?: number;
+}
+
+/**
+ * Call Tavily Search API. Tavily is purpose-built for AI agents — returns
+ * pre-cleaned text content + an optional synthesized answer. We use
+ * search_depth='advanced' which does multi-query internally for richer
+ * results on a single call.
+ */
+async function tavilySearch(query: string, opts?: { depth?: 'basic' | 'advanced'; maxResults?: number; includeDomains?: string[] }): Promise<{ results: TavilyResult[]; answer?: string; error?: string }> {
+  if (!TAVILY_API_KEY) return { results: [], error: 'TAVILY_API_KEY not set' };
+  try {
+    const res = await fetch(TAVILY_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TAVILY_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        search_depth: opts?.depth ?? 'advanced',
+        max_results: opts?.maxResults ?? 8,
+        include_answer: true,
+        include_raw_content: false,
+        include_domains: opts?.includeDomains,
+      }),
+    });
+    if (!res.ok) {
+      return { results: [], error: `Tavily ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    }
+    const data: TavilyResponse = await res.json();
+    return { results: data.results ?? [], answer: data.answer };
+  } catch (err: any) {
+    return { results: [], error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * Run research using Anthropic's native web_search tool (preferred when
+ * admin-enabled in the Claude Console — one API call, native citations).
+ * Tool version: web_search_20250305 (basic, no dynamic filtering).
+ */
+async function runResearchAnthropicNative(req: { topic: string; reason?: string; kind: ResearchKind; ownerContext?: string }): Promise<{ brief: ResearchBrief | null; searchesUsed: number; tokensUsed: number; error?: string }> {
   const kindGuidance: Record<ResearchKind, string> = {
-    competitor_analysis: 'Look up the competitor\'s site + pricing + positioning + reviews. Identify what they do well, what they\'re missing, and what we (WisdomWorks — an AI agent platform for non-desk workers on WhatsApp/mobile, NOT Slack/Teams) should do differently.',
-    market_research: 'Find the current state of the market, who the players are, what users actually want, what\'s shifting. Be specific with numbers and dates where possible.',
-    best_practices: 'Find the most cited / well-evidenced practices in this area. Cite sources. Prefer recent (2024+).',
-    fact_check: 'Verify a specific claim. Cite the source. Note disagreement if sources conflict.',
-    general: 'Investigate the topic and produce a structured brief.',
+    competitor_analysis: "Identify what they do well, what they're missing, and what WisdomWorks (a mobile-first AI agent platform for non-desk workers — solo electricians, restaurant owners, side-hustle founders, NOT Slack/Teams users) should do differently. Surface their pricing model, their wedge, one specific thing to adopt, one to reject.",
+    market_research: 'Capture the current state of the market: players, sizes if available, what users actually want, recent shifts. Specific numbers and dates.',
+    best_practices: 'Pull the most cited / well-evidenced practices in this area. Prefer 2024+ sources.',
+    fact_check: 'Verify the specific claim against the sources. Note disagreement if sources conflict.',
+    general: 'Investigate the topic and produce a structured brief grounded in concrete sources.',
   };
 
-  const system = `You are a senior research analyst working for the owner of WisdomWorks (a mobile-first AI agent platform). Your job is to research the topic below, using web_search 1-3 times maximum, then produce a structured JSON brief.
+  const system = `You are a senior research analyst working for the owner of WisdomWorks (a mobile-first AI agent platform for non-desk workers). Search the web (1-3 times max) and synthesize a structured JSON brief.
 
 Topic kind: ${req.kind}
 Guidance: ${kindGuidance[req.kind]}
 ${req.ownerContext ? `\nOwner context: ${req.ownerContext}` : ''}
 
 After your searches, return ONLY a JSON object in this exact shape:
-
 {
-  "summary": "2-3 sentences capturing the essence of what you found.",
-  "key_findings": ["5-8 specific factual findings, each one sentence, each citing a source if applicable"],
+  "summary": "2-3 sentences capturing the essence.",
+  "key_findings": ["5-8 specific factual findings, each one sentence"],
   "sources": [{ "url": "https://...", "title": "..." }],
-  "recommendations": ["2-4 concrete action items for the owner based on the findings"],
+  "recommendations": ["2-4 concrete action items grounded in WisdomWorks' mobile-first non-desk wedge"],
   "confidence": 0.0-1.0
 }
 
 Hard rules:
 - Search no more than 3 times.
-- Recommendations must be specific to WisdomWorks' wedge (mobile-first, non-desk workers, WhatsApp). Don't recommend things that contradict that positioning.
-- If you can't find enough info, set confidence < 0.5 and say so in summary.
-- Return ONLY the JSON, no preamble or markdown fences.`;
+- Every key_finding must come from search results, not training data.
+- Recommendations must align with WisdomWorks' wedge (mobile-first, non-desk workers). Reject anything like "build a Slack integration" or "target enterprise teams."
+- Return ONLY the JSON. No markdown fences. No commentary.`;
 
-  const userPrompt = `Research: ${req.topic}${req.reason ? `\n\nWhy this matters: ${req.reason}` : ''}`;
+  const userPrompt = `Topic: ${req.topic}${req.reason ? `\nWhy: ${req.reason}` : ''}`;
+
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+        messages: [{ role: 'user', content: userPrompt }],
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return { brief: null, searchesUsed: 0, tokensUsed: 0, error: `Anthropic native ${res.status}: ${errText.slice(0, 300)}` };
+    }
+
+    const data = await res.json();
+    const content: any[] = data.content ?? [];
+    const searchesUsed = data.usage?.server_tool_use?.web_search_requests ?? content.filter((c) => c.type === 'server_tool_use' && c.name === 'web_search').length;
+
+    const finalText = content.filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();
+    const jsonMatch = finalText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return { brief: null, searchesUsed, tokensUsed: (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0), error: 'No JSON in Anthropic native response' };
+    }
+    const parsed = JSON.parse(jsonMatch[0]);
+    const brief: ResearchBrief = {
+      topic: req.topic,
+      kind: req.kind,
+      summary: String(parsed.summary ?? '').slice(0, 1000),
+      key_findings: Array.isArray(parsed.key_findings) ? parsed.key_findings.map(String).slice(0, 12) : [],
+      sources: Array.isArray(parsed.sources) ? parsed.sources.slice(0, 10) : [],
+      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String).slice(0, 6) : [],
+      confidence: typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5,
+    };
+    return { brief, searchesUsed, tokensUsed: (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0) };
+  } catch (err: any) {
+    return { brief: null, searchesUsed: 0, tokensUsed: 0, error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * Run a research query. Provider preference:
+ *   1. Anthropic native web_search (preferred — no extra API key, native citations)
+ *   2. Tavily fallback (if TAVILY_API_KEY set and Anthropic native fails)
+ *
+ * To use Anthropic native: enable web search in the Claude Console (admin action).
+ * To use Tavily: set TAVILY_API_KEY env var (free tier 1000 searches/mo).
+ */
+export async function runResearch(req: { topic: string; reason?: string; kind: ResearchKind; ownerContext?: string }): Promise<{ brief: ResearchBrief | null; searchesUsed: number; tokensUsed: number; error?: string }> {
+  if (!ANTHROPIC_API_KEY) return { brief: null, searchesUsed: 0, tokensUsed: 0, error: 'ANTHROPIC_API_KEY not set' };
+
+  // Try Anthropic native first
+  const native = await runResearchAnthropicNative(req);
+  if (native.brief) return native;
+
+  // If native failed AND Tavily is configured, fall back. Otherwise return
+  // the native error so the user knows to enable web search in the Console.
+  if (!TAVILY_API_KEY) {
+    return {
+      brief: null,
+      searchesUsed: 0,
+      tokensUsed: native.tokensUsed,
+      error: `${native.error ?? 'Anthropic native web_search failed'}. Either enable Web search in Claude Console (claude.com/settings → tools), OR set TAVILY_API_KEY env var (free tier at tavily.com).`,
+    };
+  }
+
+  console.log(`[research] Anthropic native failed (${native.error}); falling back to Tavily`);
+
+  // 1. Search the web via Tavily
+  const search = await tavilySearch(req.topic, { depth: 'advanced', maxResults: 8 });
+  if (search.error) return { brief: null, searchesUsed: 0, tokensUsed: 0, error: search.error };
+  if (search.results.length === 0) {
+    return {
+      brief: {
+        topic: req.topic,
+        kind: req.kind,
+        summary: 'No relevant results found for this query.',
+        key_findings: [],
+        sources: [],
+        recommendations: ['Try a more specific search query, or verify the topic is publicly indexed.'],
+        confidence: 0.1,
+      },
+      searchesUsed: 1,
+      tokensUsed: 0,
+    };
+  }
+
+  // 2. Synthesize via Sonnet
+  const kindGuidance: Record<ResearchKind, string> = {
+    competitor_analysis: "Identify what they do well, what they're missing, and what WisdomWorks (a mobile-first AI agent platform for non-desk workers — solo electricians, restaurant owners, side-hustle founders, NOT Slack/Teams users) should do differently. Surface their pricing model, their wedge, and one specific feature/positioning to adopt and one to reject.",
+    market_research: 'Capture the current state of the market: players, sizes if available, what users actually want, recent shifts. Be specific with numbers and dates.',
+    best_practices: 'Pull the most cited / well-evidenced practices in this area. Prefer 2024+ sources.',
+    fact_check: 'Verify the specific claim against the sources. Note disagreement if sources conflict.',
+    general: 'Investigate the topic and produce a structured brief grounded in concrete sources.',
+  };
+
+  const sourcesBlock = search.results.map((r, i) =>
+    `[${i + 1}] ${r.title}\n    URL: ${r.url}\n    Content: ${r.content.slice(0, 600)}`,
+  ).join('\n\n');
+
+  const tavilyAnswer = search.answer ? `\nTAVILY'S AUTO-ANSWER (use as a starting point, verify against sources):\n${search.answer}\n` : '';
+
+  const system = `You are a senior research analyst working for the owner of WisdomWorks (a mobile-first AI agent platform for non-desk workers). Synthesize the web search results below into a structured brief.
+
+Topic kind: ${req.kind}
+Guidance: ${kindGuidance[req.kind]}
+${req.ownerContext ? `\nOwner context: ${req.ownerContext}` : ''}
+
+Return ONLY a JSON object in this exact shape, no preamble:
+
+{
+  "summary": "2-3 sentences capturing the essence of what you found.",
+  "key_findings": ["5-8 specific factual findings, each one sentence, each citable to a source in the results"],
+  "sources": [{ "url": "https://...", "title": "..." }],
+  "recommendations": ["2-4 concrete action items grounded in WisdomWorks' wedge (mobile-first, non-desk workers). For competitor_analysis: one to adopt, one to reject."],
+  "confidence": 0.0-1.0
+}
+
+Hard rules:
+- Every key_finding must be grounded in a result below — no hallucinations.
+- Recommendations must align with WisdomWorks' mobile-first non-desk wedge. Reject anything that says "build a Slack integration" or "target enterprise teams."
+- If the results are sparse or off-topic, set confidence < 0.5 and say so in summary.
+- Return ONLY the JSON. No markdown fences. No commentary.`;
+
+  const userPrompt = `Topic: ${req.topic}${req.reason ? `\nWhy: ${req.reason}` : ''}\n\nWEB SEARCH RESULTS (${search.results.length}):\n${sourcesBlock}${tavilyAnswer}`;
 
   try {
     const res = await fetch(ANTHROPIC_URL, {
@@ -189,31 +370,21 @@ Hard rules:
         model: 'claude-sonnet-4-20250514',
         max_tokens: 2000,
         system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
-        tools: [{
-          type: 'web_search_20250915',
-          name: 'web_search',
-          max_uses: 3,
-        }],
         messages: [{ role: 'user', content: userPrompt }],
       }),
     });
 
     if (!res.ok) {
       const errText = await res.text();
-      return { brief: null, searchesUsed: 0, tokensUsed: 0, error: `Anthropic ${res.status}: ${errText.slice(0, 300)}` };
+      return { brief: null, searchesUsed: 1, tokensUsed: 0, error: `Anthropic ${res.status}: ${errText.slice(0, 300)}` };
     }
 
     const data = await res.json();
     const content: any[] = data.content ?? [];
-
-    // Count tool uses to track search budget
-    const searchesUsed = content.filter((c) => c.type === 'tool_use' && c.name === 'web_search').length;
-
-    // Final text block is the JSON brief
     const finalText = content.filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();
     const jsonMatch = finalText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      return { brief: null, searchesUsed, tokensUsed: data.usage?.input_tokens + data.usage?.output_tokens || 0, error: 'No JSON in response' };
+      return { brief: null, searchesUsed: 1, tokensUsed: (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0), error: 'No JSON in synthesis response' };
     }
 
     const parsed = JSON.parse(jsonMatch[0]);
@@ -222,18 +393,21 @@ Hard rules:
       kind: req.kind,
       summary: String(parsed.summary ?? '').slice(0, 1000),
       key_findings: Array.isArray(parsed.key_findings) ? parsed.key_findings.map(String).slice(0, 12) : [],
-      sources: Array.isArray(parsed.sources) ? parsed.sources.slice(0, 10) : [],
+      sources: Array.isArray(parsed.sources) && parsed.sources.length > 0
+        ? parsed.sources.slice(0, 10)
+        // Fall back to Tavily's results if the model didn't echo sources back
+        : search.results.slice(0, 5).map((r) => ({ url: r.url, title: r.title })),
       recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String).slice(0, 6) : [],
       confidence: typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5,
     };
 
     return {
       brief,
-      searchesUsed,
+      searchesUsed: 1,
       tokensUsed: (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0),
     };
   } catch (err: any) {
-    return { brief: null, searchesUsed: 0, tokensUsed: 0, error: err?.message ?? String(err) };
+    return { brief: null, searchesUsed: 1, tokensUsed: 0, error: err?.message ?? String(err) };
   }
 }
 
