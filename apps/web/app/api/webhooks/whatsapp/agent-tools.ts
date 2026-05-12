@@ -28,6 +28,7 @@ import { decryptToken } from '@wisdomworks/shared';
 import { setMute, clearMute, isMuted, formatMuteUntil } from '../../_lib/mute-state';
 import { definePerson, listKnownPeople, forgetPerson } from '../../_lib/known-people';
 import { listAllAtoms, archiveAtom, confirmAtom, upsertAtom, type AtomKind } from '../../_lib/knowledge-atoms';
+import { computeMonthlyUsage, evaluateBudget } from '../../_lib/usage-tracker';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -545,6 +546,20 @@ const TOOL_LIST_ALL_PROJECTS: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+const TOOL_GET_MY_SPEND: AnthropicTool = {
+  name: 'get_my_spend',
+  description:
+    "Report the owner's current month-to-date AI spend and how close they are to the included budget. Use ONLY when the owner explicitly asks about cost / spend / bill / usage / 'how much have I used' / 'what's my burn'. Returns: month-to-date $, monthly budget $, % used, days-to-exhaustion, and breakdown by category (chat vs background agents). Do not proactively cite costs in unrelated replies — only when asked.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_GET_SPEND_BREAKDOWN: AnthropicTool = {
+  name: 'get_spend_breakdown',
+  description:
+    "Detailed per-agent and per-model spend breakdown for the current month. Use when the owner asks 'where's my budget going?', 'which agent costs the most?', 'show me the breakdown'. Returns cost per agent_name and per model_used.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 const TOOL_LIST_RECENT_COMMITS: AnthropicTool = {
   name: 'list_recent_commits',
   description:
@@ -796,6 +811,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_FORGET_PERSON);
   tools.push(TOOL_GET_PROJECT_STATUS);
   tools.push(TOOL_LIST_ALL_PROJECTS);
+  tools.push(TOOL_GET_MY_SPEND);
+  tools.push(TOOL_GET_SPEND_BREAKDOWN);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1477,6 +1494,95 @@ export async function executeTool(
         return ok
           ? { content: 'Removed. Future ticks won\'t reference that person.', success: true }
           : { content: 'Forget failed — id not found.', success: false };
+      }
+
+      case 'get_my_spend': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const usage = await computeMonthlyUsage(cleanPhone);
+        if (!usage) return { content: "Couldn't load usage right now.", success: false };
+        // Look up the budget from the deployment_spec, fall back to $50.
+        let monthlyBudget = 50;
+        if (SUPABASE_URL && SUPABASE_KEY) {
+          try {
+            const specRes = await fetch(
+              `${SUPABASE_URL}/rest/v1/tenant_configs?tenant_phone=eq.${cleanPhone}&config_type=eq.deployment_spec&select=config`,
+              { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+            );
+            const specRows = specRes.ok ? await specRes.json() : [];
+            monthlyBudget = specRows[0]?.config?.pricing?.monthlyBase ?? 50;
+          } catch {}
+        }
+        const budget = evaluateBudget(usage, monthlyBudget);
+        const used = usage.totals.estimatedCostUsd;
+        const cat = usage.byCategory;
+        const lines: string[] = [
+          `Month-to-date: $${used.toFixed(2)} of $${monthlyBudget} (${budget.pctUsed}% used)`,
+          `Status: ${budget.status === 'ok' ? '✅ on track' : budget.status === 'warning' ? '⚠ approaching cap' : '🛑 over budget'}`,
+        ];
+        if (budget.daysToExhaustion !== null && budget.daysToExhaustion < 30) {
+          lines.push(`At current burn (~$${budget.estimatedDailyBurn.toFixed(2)}/day), exhaustion in ~${budget.daysToExhaustion} days.`);
+        }
+        lines.push('');
+        lines.push('By category:');
+        lines.push(`  • Chat with me: $${cat.chat.costUsd.toFixed(2)} (${cat.chat.runs} replies)`);
+        lines.push(`  • Background agents: $${cat.agents.costUsd.toFixed(2)} (${cat.agents.runs} ticks)`);
+        if (cat.research.costUsd > 0) {
+          lines.push(`  • Research: $${cat.research.costUsd.toFixed(2)} (${cat.research.runs} queries)`);
+        }
+        return { content: lines.join('\n'), success: true };
+      }
+
+      case 'get_spend_breakdown': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const usage = await computeMonthlyUsage(cleanPhone);
+        if (!usage) return { content: "Couldn't load usage right now.", success: false };
+
+        // Resolve agent_instance_id keys to human names via agent_configs join.
+        const agentNameById = new Map<string, string>();
+        if (SUPABASE_URL && SUPABASE_KEY) {
+          try {
+            const [instRes, cfgRes] = await Promise.all([
+              fetch(`${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&select=id,agent_config_id`, {
+                headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+              }),
+              fetch(`${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&select=id,agent_name`, {
+                headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+              }),
+            ]);
+            const insts: any[] = instRes.ok ? await instRes.json() : [];
+            const cfgs: any[] = cfgRes.ok ? await cfgRes.json() : [];
+            const cfgById = new Map<string, string>();
+            for (const c of cfgs) cfgById.set(c.id, c.agent_name);
+            for (const i of insts) {
+              const name = cfgById.get(i.agent_config_id);
+              if (name) agentNameById.set(i.id, name);
+            }
+          } catch {}
+        }
+
+        const sortedAgents = Object.entries(usage.byAgent)
+          .map(([key, v]) => ({
+            label: key.startsWith('chat:') ? `Chat (${key.slice(5)})` : agentNameById.get(key) ?? `Agent ${key.slice(0, 8)}`,
+            ...v,
+          }))
+          .sort((a, b) => b.costUsd - a.costUsd);
+
+        const sortedModels = Object.entries(usage.byModel)
+          .map(([k, v]) => ({ model: k, ...v }))
+          .sort((a, b) => b.costUsd - a.costUsd);
+
+        const lines: string[] = [
+          `Total this month: $${usage.totals.estimatedCostUsd.toFixed(2)} across ${usage.totals.runs} runs.`,
+          '',
+          'By agent:',
+          ...sortedAgents.slice(0, 10).map((a) => `  • ${a.label}: $${a.costUsd.toFixed(2)} (${a.runs} runs)`),
+          '',
+          'By model:',
+          ...sortedModels.map((m) => `  • ${m.model}: $${m.costUsd.toFixed(2)} (${(m.tokensIn + m.tokensOut).toLocaleString()} tokens)`),
+        ];
+        return { content: lines.join('\n'), success: true };
       }
 
       case 'recall_atoms': {

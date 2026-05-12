@@ -18,8 +18,19 @@ import {
 } from './context-store';
 import { buildSystemPrompt } from './system-prompt';
 import { buildToolList, executeTool, type ToolCall } from './agent-tools';
+import { recordChatRun } from '../../_lib/chat-cost-tracker';
 
 const MAX_ITERATIONS = 8;
+const SONNET_MODEL = 'claude-sonnet-4-20250514';
+// Anthropic Sonnet 4 published rates per 1M tokens
+const SONNET_IN_PER_M = 3;
+const SONNET_OUT_PER_M = 15;
+const SONNET_CACHED_IN_PER_M = 0.3;
+
+function estimateChatCost(totalIn: number, cachedIn: number, totalOut: number): number {
+  const uncached = Math.max(0, totalIn - cachedIn);
+  return (uncached * SONNET_IN_PER_M + cachedIn * SONNET_CACHED_IN_PER_M + totalOut * SONNET_OUT_PER_M) / 1_000_000;
+}
 
 async function callAnthropic(
   apiKey: string,
@@ -75,9 +86,19 @@ export async function generateIrisReply(
   const messages: any[] = buildContextMessages(user);
   const systemPrompt = buildSystemPrompt(user, connections);
 
+  // Accumulate token + tool usage across every Anthropic round-trip in the loop.
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
+  let totalCachedIn = 0;
+  const toolsUsed: string[] = [];
+  const startedAt = Date.now();
+
   try {
     let iteration = 0;
     let response = await callAnthropic(apiKey, systemPrompt, messages, tools);
+    totalTokensIn += response.usage?.input_tokens ?? 0;
+    totalTokensOut += response.usage?.output_tokens ?? 0;
+    totalCachedIn += response.usage?.cache_read_input_tokens ?? 0;
 
     while (response.stop_reason === 'tool_use' && iteration < MAX_ITERATIONS) {
       iteration++;
@@ -88,6 +109,7 @@ export async function generateIrisReply(
       for (const block of toolUseBlocks) {
         const call: ToolCall = { name: block.name, input: block.input };
         console.log(`[iris-${surface}] Tool call: ${call.name}`, call.input);
+        toolsUsed.push(call.name);
         const result = await executeTool(call, connections, user);
         toolResults.push({
           type: 'tool_result',
@@ -98,6 +120,9 @@ export async function generateIrisReply(
       }
       messages.push({ role: 'user', content: toolResults });
       response = await callAnthropic(apiKey, systemPrompt, messages, tools);
+      totalTokensIn += response.usage?.input_tokens ?? 0;
+      totalTokensOut += response.usage?.output_tokens ?? 0;
+      totalCachedIn += response.usage?.cache_read_input_tokens ?? 0;
     }
 
     // If the loop exited while still in tool_use (hit cap, or model wanted to keep going),
@@ -110,6 +135,9 @@ export async function generateIrisReply(
         content: 'Summarize what you just did in one or two short sentences for the user. No more tool calls.',
       });
       response = await callAnthropic(apiKey, systemPrompt, messages, []);
+      totalTokensIn += response.usage?.input_tokens ?? 0;
+      totalTokensOut += response.usage?.output_tokens ?? 0;
+      totalCachedIn += response.usage?.cache_read_input_tokens ?? 0;
     }
 
     const textBlock = response.content.find((b: any) => b.type === 'text');
@@ -122,11 +150,28 @@ export async function generateIrisReply(
     });
     await saveUserContext(user);
 
-    const cached = response.usage?.cache_read_input_tokens ?? 0;
-    const total = response.usage?.input_tokens ?? 0;
+    const cachedPct = totalTokensIn > 0 ? Math.round((totalCachedIn / totalTokensIn) * 100) : 0;
+    const costUsd = estimateChatCost(totalTokensIn, totalCachedIn, totalTokensOut);
     console.log(
-      `[iris-${surface}] iters=${iteration} | tokens: ${total}in/${response.usage?.output_tokens ?? '?'}out | cached: ${cached} (${total > 0 ? Math.round((cached / total) * 100) : 0}%) | tools: ${tools.length}`,
+      `[iris-${surface}] iters=${iteration} | tokens: ${totalTokensIn}in/${totalTokensOut}out | cached: ${totalCachedIn} (${cachedPct}%) | tools: ${toolsUsed.length} | cost: $${costUsd.toFixed(4)}`,
     );
+
+    // Persist this turn so the dashboard's "usage this month" includes
+    // chat costs (which dominate iris-brain workloads).
+    void recordChatRun({
+      tenantPhone: user.phoneNumber,
+      surface,
+      modelUsed: SONNET_MODEL,
+      iterations: iteration,
+      tokensIn: totalTokensIn,
+      tokensOut: totalTokensOut,
+      cachedTokensIn: totalCachedIn,
+      costUsd,
+      toolsUsed,
+      durationMs: Date.now() - startedAt,
+      userMessagePreview: text.slice(0, 200),
+      assistantReplyPreview: assistantMessage.slice(0, 200),
+    });
 
     return assistantMessage;
   } catch (error) {

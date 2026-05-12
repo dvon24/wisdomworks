@@ -89,6 +89,16 @@ function renderOrgDoc(text: string): React.ReactNode {
   });
 }
 
+function SpendCategory({ label, cost, count, unit }: { label: string; cost: number; count: number; unit: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 300 }}>${cost.toFixed(2)}</div>
+      <div style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>{count} {unit}</div>
+    </div>
+  );
+}
+
 export default function CommandDeck() {
   const [team, setTeam] = useState<HierarchyAgent[]>(DEMO_TEAM);
   const [view, setView] = useState<ViewMode>('team');
@@ -690,6 +700,62 @@ export default function CommandDeck() {
                 Monthly budget exceeded (${tenantData.budget.usedUsd} of ${tenantData.budget.monthlyBudgetUsd}).
                 Agents have been paused. Top up to resume autonomous work.
               </span>
+            </div>
+          )}
+
+          {/* Spend breakdown — what's actually driving the bill */}
+          {view === 'team' && tenantData?.usage?.byCategory && tenantData.usage.totals.estimatedCostUsd > 0 && (
+            <div className="glass" style={{ padding: '12px 16px' }}>
+              <div className="eyebrow" style={{ marginBottom: 8 }}>This month's spend, by category</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                <SpendCategory
+                  label="Chat with you"
+                  cost={tenantData.usage.byCategory.chat.costUsd}
+                  count={tenantData.usage.byCategory.chat.runs}
+                  unit="replies"
+                />
+                <SpendCategory
+                  label="Background agents"
+                  cost={tenantData.usage.byCategory.agents.costUsd}
+                  count={tenantData.usage.byCategory.agents.runs}
+                  unit="ticks"
+                />
+                <SpendCategory
+                  label="Research"
+                  cost={tenantData.usage.byCategory.research.costUsd}
+                  count={tenantData.usage.byCategory.research.runs}
+                  unit="queries"
+                />
+              </div>
+              {Object.keys(tenantData.usage.byAgent ?? {}).length > 0 && (
+                <details style={{ marginTop: 10 }}>
+                  <summary style={{ fontSize: 11.5, color: 'var(--text-dim)', cursor: 'pointer' }}>
+                    Per-agent breakdown
+                  </summary>
+                  <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-dim)' }}>
+                    {Object.entries(tenantData.usage.byAgent)
+                      .map(([key, v]: [string, any]) => ({ key, ...v }))
+                      .sort((a: any, b: any) => b.costUsd - a.costUsd)
+                      .slice(0, 8)
+                      .map((a: any) => {
+                        let label: string;
+                        if (a.key.startsWith('chat:')) {
+                          label = `Chat (${a.key.slice(5)})`;
+                        } else {
+                          const details = tenantData.agentDetails as Record<string, any> | undefined;
+                          const match = details ? Object.values(details).find((d: any) => d?.configId === a.key) as any : null;
+                          label = match?.agentName ?? `Agent ${a.key.slice(0, 8)}`;
+                        }
+                        return (
+                          <div key={a.key} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
+                            <span>{label}</span>
+                            <span>${a.costUsd.toFixed(4)} <span style={{ opacity: 0.5 }}>· {a.runs} runs</span></span>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </details>
+              )}
             </div>
           )}
 

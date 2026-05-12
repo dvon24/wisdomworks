@@ -12,7 +12,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { computeMonthlyUsage, evaluateBudget } from '../_lib/usage-tracker';
+import { computeMonthlyUsage, evaluateBudget, recordOverageIfExceeded } from '../_lib/usage-tracker';
 
 export const dynamic = 'force-dynamic';
 
@@ -299,6 +299,9 @@ export async function GET(request: Request) {
         const monthlyBudget = specRows[0]?.config?.pricing?.monthlyBase ?? 50;
         usage = usageData;
         budget = evaluateBudget(usageData, monthlyBudget);
+        // Emit overage event if we've crossed the included budget. Idempotent
+        // by period — safe to call on every dashboard load.
+        void recordOverageIfExceeded(cleanPhone, usageData, budget);
       }
     } catch (err) {
       console.warn('[dashboard] usage computation failed:', err);

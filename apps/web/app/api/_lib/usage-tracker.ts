@@ -47,6 +47,12 @@ export interface UsagePeriod {
   };
   byModel: Record<string, { tokensIn: number; tokensOut: number; costUsd: number }>;
   byAgent: Record<string, { runs: number; tokensIn: number; tokensOut: number; costUsd: number }>;
+  /** Cost rolled up by category — what the customer sees on the deck. */
+  byCategory: {
+    chat: { runs: number; costUsd: number };
+    agents: { runs: number; costUsd: number };
+    research: { runs: number; costUsd: number };
+  };
 }
 
 /**
@@ -60,12 +66,20 @@ export async function computeMonthlyUsage(tenantPhone: string): Promise<UsagePer
   const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString();
 
   const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&started_at=gte.${periodStart}&started_at=lt.${periodEnd}&select=tokens_in,tokens_out,model_used,agent_instance_id`,
-    { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
-  );
-  if (!res.ok) return null;
-  const rows: any[] = await res.json();
+  const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` };
+  const [runsRes, chatRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&started_at=gte.${periodStart}&started_at=lt.${periodEnd}&select=tokens_in,tokens_out,model_used,agent_instance_id`,
+      { headers },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/chat_runs?tenant_phone=eq.${cleanPhone}&started_at=gte.${periodStart}&started_at=lt.${periodEnd}&select=tokens_in,tokens_out,cached_tokens_in,model_used,cost_usd,surface`,
+      { headers },
+    ),
+  ]);
+  if (!runsRes.ok) return null;
+  const rows: any[] = await runsRes.json();
+  const chatRows: any[] = chatRes.ok ? await chatRes.json() : [];
 
   const period: UsagePeriod = {
     periodStart,
@@ -73,6 +87,11 @@ export async function computeMonthlyUsage(tenantPhone: string): Promise<UsagePer
     totals: { tokensIn: 0, tokensOut: 0, runs: 0, estimatedCostUsd: 0 },
     byModel: {},
     byAgent: {},
+    byCategory: {
+      chat: { runs: 0, costUsd: 0 },
+      agents: { runs: 0, costUsd: 0 },
+      research: { runs: 0, costUsd: 0 },
+    },
   };
 
   for (const r of rows) {
@@ -86,6 +105,8 @@ export async function computeMonthlyUsage(tenantPhone: string): Promise<UsagePer
     period.totals.tokensIn += tIn;
     period.totals.tokensOut += tOut;
     period.totals.estimatedCostUsd += cost;
+    period.byCategory.agents.runs++;
+    period.byCategory.agents.costUsd += cost;
 
     const m = period.byModel[model] ?? { tokensIn: 0, tokensOut: 0, costUsd: 0 };
     m.tokensIn += tIn;
@@ -102,6 +123,36 @@ export async function computeMonthlyUsage(tenantPhone: string): Promise<UsagePer
     period.byAgent[agentKey] = a;
   }
 
+  // Roll in chat_runs (iris-brain). Cost is already pre-computed at insert
+  // time using the chat-cost-tracker's rate table, so trust it as-is.
+  for (const r of chatRows) {
+    const tIn = r.tokens_in ?? 0;
+    const tOut = r.tokens_out ?? 0;
+    const cost = Number(r.cost_usd ?? 0);
+    const model = r.model_used ?? 'unknown';
+
+    period.totals.runs++;
+    period.totals.tokensIn += tIn;
+    period.totals.tokensOut += tOut;
+    period.totals.estimatedCostUsd += cost;
+    period.byCategory.chat.runs++;
+    period.byCategory.chat.costUsd += cost;
+
+    const m = period.byModel[model] ?? { tokensIn: 0, tokensOut: 0, costUsd: 0 };
+    m.tokensIn += tIn;
+    m.tokensOut += tOut;
+    m.costUsd += cost;
+    period.byModel[model] = m;
+
+    const chatKey = `chat:${r.surface ?? 'whatsapp'}`;
+    const a = period.byAgent[chatKey] ?? { runs: 0, tokensIn: 0, tokensOut: 0, costUsd: 0 };
+    a.runs++;
+    a.tokensIn += tIn;
+    a.tokensOut += tOut;
+    a.costUsd += cost;
+    period.byAgent[chatKey] = a;
+  }
+
   // Round display values
   period.totals.estimatedCostUsd = Number(period.totals.estimatedCostUsd.toFixed(4));
   for (const k of Object.keys(period.byModel)) {
@@ -110,6 +161,9 @@ export async function computeMonthlyUsage(tenantPhone: string): Promise<UsagePer
   for (const k of Object.keys(period.byAgent)) {
     period.byAgent[k]!.costUsd = Number(period.byAgent[k]!.costUsd.toFixed(4));
   }
+  period.byCategory.chat.costUsd = Number(period.byCategory.chat.costUsd.toFixed(4));
+  period.byCategory.agents.costUsd = Number(period.byCategory.agents.costUsd.toFixed(4));
+  period.byCategory.research.costUsd = Number(period.byCategory.research.costUsd.toFixed(4));
   return period;
 }
 
@@ -170,4 +224,73 @@ export async function enforceBudgetCap(tenantPhone: string, budget: BudgetStatus
   const rows = await res.json();
   console.log(`[usage] Budget exceeded for ${cleanPhone} — paused ${rows.length} agents`);
   return { pausedCount: rows.length };
+}
+
+/**
+ * Emit an overage_events row for the difference between actual usage and
+ * the included monthly budget — but only once per calendar month per
+ * tenant (idempotent by period_start). The Stripe usage_records push is
+ * a separate concern handled by the metered-billing cron, which reads
+ * unreported rows from this table.
+ */
+export async function recordOverageIfExceeded(
+  tenantPhone: string,
+  usage: UsagePeriod,
+  budget: BudgetStatus,
+): Promise<void> {
+  if (budget.status !== 'exceeded') return;
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  const amountOver = Math.max(0, usage.totals.estimatedCostUsd - budget.monthlyBudgetUsd);
+  if (amountOver <= 0) return;
+
+  try {
+    // Check if an event already exists for this period
+    const existingRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/overage_events?tenant_phone=eq.${cleanPhone}&period_start=eq.${encodeURIComponent(usage.periodStart)}&select=id,amount_usd`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+    );
+    const existing = existingRes.ok ? await existingRes.json() : [];
+
+    if (existing.length === 0) {
+      // First overage of the period — insert.
+      await fetch(`${SUPABASE_URL}/rest/v1/overage_events`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({
+          tenant_phone: cleanPhone,
+          period_start: usage.periodStart,
+          period_end: usage.periodEnd,
+          category: 'ai',
+          amount_usd: amountOver,
+          metadata: { budget_usd: budget.monthlyBudgetUsd, used_usd: usage.totals.estimatedCostUsd },
+        }),
+      });
+    } else if (Number(existing[0].amount_usd) < amountOver) {
+      // Overage has grown — update.
+      await fetch(
+        `${SUPABASE_URL}/rest/v1/overage_events?id=eq.${existing[0].id}&reported_to_stripe=eq.false`,
+        {
+          method: 'PATCH',
+          headers: {
+            apikey: SUPABASE_KEY,
+            Authorization: `Bearer ${SUPABASE_KEY}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            amount_usd: amountOver,
+            metadata: { budget_usd: budget.monthlyBudgetUsd, used_usd: usage.totals.estimatedCostUsd },
+          }),
+        },
+      );
+    }
+  } catch (err) {
+    console.warn('[usage] overage event write failed:', err);
+  }
 }
