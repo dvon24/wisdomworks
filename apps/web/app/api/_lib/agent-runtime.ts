@@ -254,6 +254,17 @@ interface TickContext {
   consultInbox: InboxConsult[];
   /** Phase 1B — answers FROM peers waiting to be folded into this agent's reasoning */
   consultOutbox: OutboxConsult[];
+  /** Lane routing — pending email drafts assigned to this agent's lane */
+  laneInbox: LaneInboxItem[];
+}
+
+export interface LaneInboxItem {
+  id: string;
+  from: string;
+  subject: string;
+  classification: string;
+  draftReply?: string;
+  lane: string;
 }
 
 interface AssignedProject {
@@ -332,10 +343,38 @@ async function markDelegationsDone(ids: string[]): Promise<void> {
   );
 }
 
+/** Pull pending email drafts whose `lane` matches the agent's lane. Drafts
+ *  are written into whatsapp_contexts.profile.pendingEmailDrafts by the
+ *  email-sift cron. */
+async function loadLaneInbox(tenantPhone: string, ownLane?: string): Promise<LaneInboxItem[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !ownLane) return [];
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${tenantPhone}&select=profile`,
+      { headers: headers() },
+    );
+    if (!res.ok) return [];
+    const rows = await res.json();
+    const drafts: any[] = rows[0]?.profile?.pendingEmailDrafts ?? [];
+    return drafts
+      .filter((d: any) => (d.lane ?? 'orchestrator') === ownLane)
+      .map((d: any) => ({
+        id: d.id,
+        from: d.from,
+        subject: d.subject,
+        classification: d.classification ?? 'informational',
+        draftReply: d.draftReply,
+        lane: d.lane ?? 'orchestrator',
+      }));
+  } catch {
+    return [];
+  }
+}
+
 async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string, agentConfigId?: string): Promise<TickContext> {
   const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [], knowledgeAtoms: [], systemState: { connected_projects: [], connected_services: [], team: [], recent_owner_directives: [], pending_approvals_count: 0, last_owner_interaction_at: null }, teamCapabilities: [], consultInbox: [], consultOutbox: [] };
+    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [], knowledgeAtoms: [], systemState: { connected_projects: [], connected_services: [], team: [], recent_owner_directives: [], pending_approvals_count: 0, last_owner_interaction_at: null }, teamCapabilities: [], consultInbox: [], consultOutbox: [], laneInbox: [] };
   }
 
   // Three small queries in parallel — context tab kept tight on purpose.
@@ -389,7 +428,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
   // Known people registry + teammate names — disambiguation context for
   // every agent's tick prompt. Plus Phase 1A atoms mined from owner chat.
   // Plus Phase 1C system state for triage. Plus Phase 1B consult inbox/outbox.
-  const [knownPeople, teammates, knowledgeAtoms, systemState, teamCapabilities, consultInbox, consultOutbox] = await Promise.all([
+  const [knownPeople, teammates, knowledgeAtoms, systemState, teamCapabilities, consultInbox, consultOutbox, laneInbox] = await Promise.all([
     listKnownPeople(tenantPhone),
     fetch(
       `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=agent_name`,
@@ -400,6 +439,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     loadTeamCapabilities(tenantPhone),
     consultInboxForAgent(instanceId),
     consultOutboxForAgent(instanceId, 30),
+    loadLaneInbox(tenantPhone, ownLane),
   ]);
   const teammateNames: string[] = (teammates ?? []).map((t: any) => t.agent_name).filter(Boolean);
 
@@ -420,6 +460,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     teamCapabilities,
     consultInbox,
     consultOutbox,
+    laneInbox,
   };
 }
 
@@ -495,6 +536,19 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
       ctx.pendingDelegations.map((d, i) =>
         `  ${i + 1}. ${d.delegation_reason || '(no reason)'} | context: ${(d.output_summary || '').slice(0, 140)}`,
       ).join('\n')
+    : '';
+
+  // Lane-routed email drafts — every business mail Sophia (or sift) classified
+  // into THIS agent's lane shows up here so this agent can draft / approve /
+  // act on it. The actual draft was already written by the classifier; this
+  // agent reviews it for accuracy + decides to surface it for owner approval.
+  const laneInboxBlock = ctx.laneInbox.length > 0
+    ? `\n\nYOUR LANE INBOX (${ctx.laneInbox.length} email${ctx.laneInbox.length === 1 ? '' : 's'} routed to you):\n` +
+      ctx.laneInbox.slice(0, 8).map((d, i) => {
+        const draftLine = d.draftReply ? ` | DRAFT: ${d.draftReply.slice(0, 120)}` : '';
+        return `  ${i + 1}. [${d.classification}] From ${d.from} — "${d.subject.slice(0, 80)}"${draftLine}`;
+      }).join('\n') +
+      `\n\nFor each item: review the draft (if any), refine if needed, and surface it for owner approval if the action requires their sign-off. If a draft is already accurate and the action is within your autonomy, queue it for send. Do NOT silently send mail — every outbound goes through owner approval until autonomy_level says otherwise.`
     : '';
 
   // Story 2.15 — proven techniques the lane has learned
@@ -613,7 +667,7 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
-${recentRuns}${inbox}${skillsBlock}${repeatBlock}${peopleBlock}${atomsBlock}${systemStateBlock}${capabilityMapBlock}${consultInboxBlock}${consultOutboxBlock}${projectsBlock}
+${recentRuns}${inbox}${laneInboxBlock}${skillsBlock}${repeatBlock}${peopleBlock}${atomsBlock}${systemStateBlock}${capabilityMapBlock}${consultInboxBlock}${consultOutboxBlock}${projectsBlock}
 
 ${cadenceGuide}
 

@@ -42,6 +42,9 @@ interface EmailSummary {
     dates: string[];
     actionItems: string[];
   };
+  /** Lane routing — which agent on the tenant's team owns this email.
+   *  Mirrors the lane categorization used by agent_configs. */
+  lane?: 'scheduler' | 'customer_service' | 'finance' | 'marketing' | 'operations' | 'analytics' | 'orchestrator' | 'specialist';
 }
 
 export async function GET(request: Request) {
@@ -343,6 +346,7 @@ Return ONLY a valid JSON array. Each item:
   "privacyClass": "business" | "personal" | "uncertain",
   "privacyConfidence": 0..1,
   "classification": "urgent" | "needs_response" | "informational" | "spam",
+  "lane": "scheduler" | "customer_service" | "finance" | "marketing" | "operations" | "analytics" | "orchestrator" | "specialist",
   "draftReply": "reply text or null",
   "extracted": { "people": ["full names mentioned"], "projects": ["named projects/initiatives"], "dates": ["yyyy-mm-dd or natural-language dates"], "actionItems": ["action item phrases"] }
 }
@@ -370,7 +374,19 @@ ACTION RULES (only when privacyClass is "business"):
 EXTRACTION (Story 2.5 — structured signal, business mail only):
 - For privacyClass "business" only, populate extracted with names of people mentioned, projects/initiatives referenced, dates that matter (deadlines, meetings), and action items.
 - For "personal" or "uncertain", set extracted to null. NEVER extract names or other identifying info from personal mail (privacy boundary).
-- Keep arrays short — 5 items max each.${trustBlock}`,
+- Keep arrays short — 5 items max each.
+
+LANE ROUTING (which agent handles this on the tenant's team):
+- scheduler: appointment requests, booking confirmations, scheduling conflicts, calendar invites
+- customer_service: client inquiries, follow-up questions, complaints, general support, returning customers
+- finance: invoices, payment confirmations, billing questions, statements, expense receipts
+- marketing: review notifications, social mentions, partnership/collab inquiries, advertising
+- operations: vendor/supplier comms, internal logistics, permit / inspection notices, supply orders
+- analytics: reports, dashboards, performance summaries from connected tools
+- orchestrator: anything addressed personally to the owner that needs their attention (most personal-tinged business mail)
+- specialist: anything else / vertical-specific that doesn't fit cleanly above
+
+For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's eyes only).${trustBlock}`,
             cache_control: { type: 'ephemeral' },
           },
         ],
@@ -394,6 +410,7 @@ EXTRACTION (Story 2.5 — structured signal, business mail only):
       draftReply: string | null;
       privacyClass?: string;
       privacyConfidence?: number;
+      lane?: string;
       extracted?: { people?: string[]; projects?: string[]; dates?: string[]; actionItems?: string[] } | null;
     }[] = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
 
@@ -404,6 +421,9 @@ EXTRACTION (Story 2.5 — structured signal, business mail only):
       // Story 2.3 — privacy boundary: personal mail gets minimal metadata
       // and never carries body content into agent_runs / extraction.
       const isPrivate = privacyClass === 'personal' || privacyClass === 'uncertain';
+      const validLanes = ['scheduler', 'customer_service', 'finance', 'marketing', 'operations', 'analytics', 'orchestrator', 'specialist'];
+      const rawLane = result?.lane;
+      const lane = (isPrivate ? 'orchestrator' : (validLanes.includes(rawLane ?? '') ? rawLane : 'orchestrator')) as EmailSummary['lane'];
       return {
         id: e.id,
         from: e.fromName ? `${e.fromName} <${e.from}>` : e.from,
@@ -414,6 +434,7 @@ EXTRACTION (Story 2.5 — structured signal, business mail only):
         draftReply: isPrivate ? undefined : (result?.draftReply ?? undefined),
         privacyClass,
         privacyConfidence,
+        lane,
         // Story 2.5 — extraction only on business mail (privacy boundary)
         extracted: isPrivate ? undefined : {
           people: result?.extracted?.people ?? [],
@@ -500,6 +521,7 @@ async function storePendingDrafts(phoneNumber: string, emails: EmailSummary[]): 
     subject: e.subject,
     draftReply: e.draftReply,
     classification: e.classification,
+    lane: e.lane ?? 'orchestrator',
   }));
 
   await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
