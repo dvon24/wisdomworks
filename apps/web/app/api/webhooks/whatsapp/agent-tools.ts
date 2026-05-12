@@ -126,7 +126,7 @@ const TOOL_SEARCH_EMAILS: AnthropicTool = {
 const TOOL_SEND_EMAIL: AnthropicTool = {
   name: 'send_email',
   description:
-    'Send an email on behalf of the user. CONFIRM with the user before calling this — never send without explicit approval. Use only after the user has reviewed and approved a draft.',
+    "Send an email on behalf of the user. NEVER call this unless the user's MOST RECENT message is explicit approval to send THIS SPECIFIC email (e.g. 'send it', 'send the email to John', 'yes send', 'approve and send'). If the user pivoted topics (asked something unrelated, requested a different action, said an ambiguous 'yes' more than one turn after the draft was shown), the draft stays unsent — do NOT fire this tool. When in doubt, ask 'Should I send the email to <recipient>?' and wait for a yes-specific-to-that.",
   input_schema: {
     type: 'object',
     properties: {
