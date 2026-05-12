@@ -29,6 +29,7 @@ import { setMute, clearMute, isMuted, formatMuteUntil } from '../../_lib/mute-st
 import { definePerson, listKnownPeople, forgetPerson } from '../../_lib/known-people';
 import { listAllAtoms, archiveAtom, confirmAtom, upsertAtom, type AtomKind } from '../../_lib/knowledge-atoms';
 import { computeMonthlyUsage, evaluateBudget } from '../../_lib/usage-tracker';
+import { createLinkCode, type Channel } from '../../_lib/messaging-adapters';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -560,6 +561,23 @@ const TOOL_GET_SPEND_BREAKDOWN: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+const TOOL_GET_CHANNEL_LINK_CODE: AnthropicTool = {
+  name: 'get_channel_link_code',
+  description:
+    "Generate a short-lived link code (15 min) so the owner can connect a non-WhatsApp messaging channel (Telegram, SMS, iMessage, Discord) to their WisdomWorks account. Use when the owner asks 'link my telegram', 'give me a telegram code', 'connect telegram/sms/imessage'. Returns the code and instructions for what to do on the target channel.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      channel: {
+        type: 'string',
+        enum: ['telegram', 'sms', 'imessage', 'discord'],
+        description: 'Which channel to link.',
+      },
+    },
+    required: ['channel'],
+  },
+};
+
 const TOOL_LIST_RECENT_COMMITS: AnthropicTool = {
   name: 'list_recent_commits',
   description:
@@ -813,6 +831,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LIST_ALL_PROJECTS);
   tools.push(TOOL_GET_MY_SPEND);
   tools.push(TOOL_GET_SPEND_BREAKDOWN);
+  tools.push(TOOL_GET_CHANNEL_LINK_CODE);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1583,6 +1602,25 @@ export async function executeTool(
           ...sortedModels.map((m) => `  • ${m.model}: $${m.costUsd.toFixed(2)} (${(m.tokensIn + m.tokensOut).toLocaleString()} tokens)`),
         ];
         return { content: lines.join('\n'), success: true };
+      }
+
+      case 'get_channel_link_code': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const channel = String(call.input.channel ?? '').toLowerCase() as Channel;
+        if (!['telegram', 'sms', 'imessage', 'discord'].includes(channel)) {
+          return { content: `Unsupported channel "${channel}". Try telegram, sms, imessage, or discord.`, success: false };
+        }
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const code = await createLinkCode(cleanPhone, channel);
+        if (!code) return { content: "Couldn't generate a link code right now.", success: false };
+        const channelInstructions: Record<string, string> = {
+          telegram:
+            `Code: ${code}\n\nTo link Telegram:\n1. Open Telegram and find the WisdomWorks bot (your owner can share the bot link)\n2. Send: /link ${code}\n\nCode expires in 15 minutes.`,
+          sms: `Code: ${code}\n\nSMS linking arrives in a later release. Save the code; it's valid for 15 minutes.`,
+          imessage: `Code: ${code}\n\niMessage linking arrives in a later release. Save the code; it's valid for 15 minutes.`,
+          discord: `Code: ${code}\n\nDiscord linking arrives in a later release. Save the code; it's valid for 15 minutes.`,
+        };
+        return { content: channelInstructions[channel]!, success: true };
       }
 
       case 'recall_atoms': {

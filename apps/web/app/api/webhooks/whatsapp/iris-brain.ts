@@ -67,7 +67,7 @@ async function callAnthropic(
 export async function generateIrisReply(
   text: string,
   user: UserContext,
-  surface: 'whatsapp' | 'deck' = 'whatsapp',
+  surface: 'whatsapp' | 'deck' | 'telegram' | 'sms' | 'imessage' = 'whatsapp',
 ): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
