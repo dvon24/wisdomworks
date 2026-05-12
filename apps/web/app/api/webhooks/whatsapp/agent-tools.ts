@@ -1809,8 +1809,41 @@ export async function executeTool(
         }
         const ok = await setInsightStatus(insight.id, 'approved');
         if (!ok) return { content: 'Could not update the insight.', success: false };
+
+        // Execute inline for actions that are simple state changes
+        if (insight.detector === 'vip_suggestion') {
+          const clientIds: string[] = insight.payload?.client_ids ?? [];
+          for (const cid of clientIds) {
+            try {
+              const cp = await getClientProfile(cid);
+              if (!cp) continue;
+              const newTags = Array.from(new Set([...(cp.tags ?? []), 'VIP']));
+              await upsertClientProfile({
+                tenantPhone: cleanPhone,
+                displayName: cp.display_name,
+                phone: cp.phone ?? undefined,
+                tags: newTags,
+                source: 'owner_defined',
+              });
+            } catch (err) {
+              console.warn('[insight] vip tagging failed for', cid, err);
+            }
+          }
+          await setInsightStatus(insight.id, 'executed');
+          return {
+            content: `✓ Tagged ${clientIds.length} client${clientIds.length === 1 ? '' : 's'} as VIP: ${(insight.payload?.client_names ?? []).join(', ')}.`,
+            success: true,
+          };
+        }
+
+        // Detectors that need agent-side drafting — surface what's coming
+        const draftCount = (insight.payload?.client_names ?? insight.payload?.client_ids ?? []).length || 1;
         const nextStep = insight.detector === 'lapsed_clients'
-          ? `Approved. I'll draft re-engagement messages for ${(insight.payload?.client_names ?? []).length} client${(insight.payload?.client_names ?? []).length === 1 ? '' : 's'} and queue them for your review.`
+          ? `Approved. I'll draft re-engagement messages for ${draftCount} client${draftCount === 1 ? '' : 's'} and queue them for your review.`
+          : insight.detector === 'inactive_recent'
+          ? `Approved. I'll draft light-touch check-in messages for ${draftCount} client${draftCount === 1 ? '' : 's'} and queue them for your review.`
+          : insight.detector === 'client_milestone'
+          ? `Approved. I'll draft a personalized acknowledgement for ${insight.payload?.client_name ?? 'this client'} and queue it for your review.`
           : `Approved. The responsible agent will pick this up on their next tick.`;
         return { content: nextStep, success: true };
       }

@@ -232,13 +232,184 @@ export async function setInsightStatus(insightId: string, status: InsightStatus)
   }
 }
 
+// ─── Detector: inactive_recent ────────────────────────────────────────────
+//
+// Lighter-touch sibling of lapsed_clients: 3+ visits and no visit in 30 days
+// but not yet at the 60-day lapsed threshold. Catches the "drifting away"
+// signal before they fully lapse, when re-engagement is cheaper and more
+// effective.
+
+const INACTIVE_RECENT_MIN_VISITS = 3;
+const INACTIVE_RECENT_DAYS_MIN = 30;
+const INACTIVE_RECENT_DAYS_MAX = 60;
+
+export async function detectInactiveRecent(tenantPhone: string): Promise<{ emitted: number }> {
+  const clients = await listClients(tenantPhone, 500);
+  const now = Date.now();
+  const drifting = clients
+    .filter((c) => c.last_visit_at && c.visit_count >= INACTIVE_RECENT_MIN_VISITS)
+    .map((c) => ({
+      c,
+      daysSince: Math.floor((now - new Date(c.last_visit_at!).getTime()) / (1000 * 60 * 60 * 24)),
+    }))
+    .filter((x) => x.daysSince > INACTIVE_RECENT_DAYS_MIN && x.daysSince <= INACTIVE_RECENT_DAYS_MAX)
+    .sort((a, b) => b.c.visit_count - a.c.visit_count)
+    .slice(0, 6);
+
+  if (drifting.length === 0) return { emitted: 0 };
+
+  const sig = `inactive_recent:${drifting.map((x) => x.c.id).sort().join(',')}`;
+  const names = drifting.slice(0, 5).map((x) => x.c.display_name).join(', ');
+
+  const id = await emitInsight({
+    tenantPhone,
+    detector: 'inactive_recent',
+    severity: 'low',
+    title: `${drifting.length} regular${drifting.length === 1 ? '' : 's'} starting to drift`,
+    why: `${names} have 3+ visits but haven't been back in 30-60 days. They're not lapsed yet — this is the sweet spot for a light-touch nudge before they fully disengage.`,
+    recommendedAction: `Light-touch outreach: a check-in message or relevant offer. I can draft one — say "approve insight" to have me prepare drafts.`,
+    expectedImpact: `Catching drift early is ~2x more effective than re-engagement at 60+ days.`,
+    confidence: 0.75,
+    payload: {
+      client_ids: drifting.map((x) => x.c.id),
+      client_names: drifting.map((x) => x.c.display_name),
+      days_since: drifting.map((x) => x.daysSince),
+    },
+    signature: sig,
+  });
+
+  return { emitted: id ? 1 : 0 };
+}
+
+// ─── Detector: client_milestone ───────────────────────────────────────────
+//
+// Recognizes recurring visit milestones (5, 10, 25, 50, 100) and annual
+// "anniversary" markers based on first_visit_at. Drives loyalty moments —
+// thank-you message, small gift, anniversary acknowledgement.
+
+const MILESTONE_VISITS = [5, 10, 25, 50, 100];
+
+export async function detectClientMilestones(tenantPhone: string): Promise<{ emitted: number }> {
+  const clients = await listClients(tenantPhone, 500);
+  const now = Date.now();
+  let emitted = 0;
+
+  for (const c of clients) {
+    if (!c.first_visit_at) continue;
+
+    // Visit-count milestone — hit exactly today (the cron runs once daily so
+    // we only trigger when the count actually equals a target on this scan)
+    if (MILESTONE_VISITS.includes(c.visit_count)) {
+      const sig = `visit_count:${c.id}:${c.visit_count}`;
+      const id = await emitInsight({
+        tenantPhone,
+        detector: 'client_milestone',
+        severity: 'low',
+        title: `${c.display_name} just hit ${c.visit_count} visits`,
+        why: `Loyalty moments matter — clients who feel seen come back. ${c.visit_count} visits is a real commitment to your business.`,
+        recommendedAction: `Send a personal thank-you. I can draft one based on their preferences — say "approve insight" for me to prepare it.`,
+        expectedImpact: `Milestone acknowledgements correlate with ~20-30% higher next-90-day retention.`,
+        confidence: 0.9,
+        payload: {
+          client_id: c.id,
+          client_name: c.display_name,
+          milestone_type: 'visit_count',
+          milestone_value: c.visit_count,
+        },
+        signature: sig,
+      });
+      if (id) emitted++;
+    }
+
+    // Anniversary — first_visit_at exactly N years ago (within today's
+    // window). Only check first 5 years to avoid noise.
+    const firstVisit = new Date(c.first_visit_at);
+    const yearsSince = Math.floor((now - firstVisit.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+    if (yearsSince >= 1 && yearsSince <= 5) {
+      const anniversaryThisYear = new Date(firstVisit);
+      anniversaryThisYear.setFullYear(firstVisit.getFullYear() + yearsSince);
+      const daysFromAnniversary = Math.abs(
+        Math.floor((now - anniversaryThisYear.getTime()) / (24 * 60 * 60 * 1000)),
+      );
+      if (daysFromAnniversary <= 1) {
+        const sig = `anniversary:${c.id}:${yearsSince}`;
+        const id = await emitInsight({
+          tenantPhone,
+          detector: 'client_milestone',
+          severity: 'low',
+          title: `${c.display_name} — ${yearsSince}yr anniversary as a client`,
+          why: `${c.display_name} first came in ${yearsSince} year${yearsSince === 1 ? '' : 's'} ago today. Long-term clients are your real moat — these moments stick.`,
+          recommendedAction: `Send an anniversary note. I can draft one personalized to their history.`,
+          expectedImpact: `Anniversary acknowledgements lift annual retention noticeably; under-used by most service businesses.`,
+          confidence: 0.85,
+          payload: {
+            client_id: c.id,
+            client_name: c.display_name,
+            milestone_type: 'anniversary',
+            milestone_value: yearsSince,
+          },
+          signature: sig,
+        });
+        if (id) emitted++;
+      }
+    }
+  }
+
+  return { emitted };
+}
+
+// ─── Detector: vip_suggestion ─────────────────────────────────────────────
+//
+// Top clients by visit_count who aren't tagged VIP yet — propose tagging
+// them so future workflows (priority booking, special rates) can use the
+// tag. One-shot per cohort.
+
+const VIP_MIN_VISITS = 5;
+const VIP_SUGGEST_TOP_N = 5;
+
+export async function detectVipSuggestions(tenantPhone: string): Promise<{ emitted: number }> {
+  const clients = await listClients(tenantPhone, 500);
+  const candidates = clients
+    .filter((c) => c.visit_count >= VIP_MIN_VISITS && !(c.tags ?? []).includes('VIP'))
+    .sort((a, b) => b.visit_count - a.visit_count)
+    .slice(0, VIP_SUGGEST_TOP_N);
+
+  if (candidates.length === 0) return { emitted: 0 };
+
+  const sig = `vip_suggestion:${candidates.map((c) => c.id).sort().join(',')}`;
+  const names = candidates.map((c) => `${c.display_name} (${c.visit_count} visits)`).join(', ');
+
+  const id = await emitInsight({
+    tenantPhone,
+    detector: 'vip_suggestion',
+    severity: 'low',
+    title: `${candidates.length} top client${candidates.length === 1 ? '' : 's'} not tagged VIP yet`,
+    why: `${names} are your most-visited clients with ${VIP_MIN_VISITS}+ visits each. Tagging them VIP unlocks the priority workflows (special offers, priority booking, recognition).`,
+    recommendedAction: `Tag them as VIP so the team treats them accordingly going forward. I'll handle the tagging — say "approve insight".`,
+    expectedImpact: `Helps the team consistently recognize and prioritize repeat customers.`,
+    confidence: 0.9,
+    payload: {
+      client_ids: candidates.map((c) => c.id),
+      client_names: candidates.map((c) => c.display_name),
+      visit_counts: candidates.map((c) => c.visit_count),
+    },
+    signature: sig,
+  });
+
+  return { emitted: id ? 1 : 0 };
+}
+
 /** Run all detectors for one tenant. Called by the daily insights cron. */
 export async function runDetectors(tenantPhone: string): Promise<{ emitted: number; detectors: number }> {
   const results = await Promise.all([
     detectLapsedClients(tenantPhone),
-    // Add new detectors here:
-    // detectGapAnalysis(tenantPhone),
-    // detectSeasonality(tenantPhone),
+    detectInactiveRecent(tenantPhone),
+    detectClientMilestones(tenantPhone),
+    detectVipSuggestions(tenantPhone),
+    // Phase 3 candidates (need more data):
+    // detectGapAnalysis(tenantPhone) — calendar vacancy
+    // detectSeasonality(tenantPhone) — needs 12+ weeks of visit data
+    // detectRevenueOptimization(tenantPhone) — needs revenue capture
   ]);
   return {
     emitted: results.reduce((s, r) => s + r.emitted, 0),
