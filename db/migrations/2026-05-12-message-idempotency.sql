@@ -22,9 +22,10 @@ CREATE TABLE IF NOT EXISTS processed_messages (
     CHECK (channel IN ('whatsapp', 'telegram', 'sms', 'imessage', 'discord'))
 );
 
--- Cleanup: rows older than 7 days can be safely deleted (Meta won't retry
--- that long). Run periodically or via a scheduled function.
-CREATE INDEX IF NOT EXISTS processed_messages_cleanup_idx
-  ON processed_messages (processed_at) WHERE processed_at < now() - INTERVAL '7 days';
+-- Plain index on processed_at to support cleanup queries (e.g.
+-- DELETE FROM processed_messages WHERE processed_at < now() - INTERVAL '7 days').
+-- Partial indexes can't reference now() because it's not IMMUTABLE.
+CREATE INDEX IF NOT EXISTS processed_messages_processed_at_idx
+  ON processed_messages (processed_at);
 
 SELECT 'processed_messages ready' AS status;
