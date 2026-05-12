@@ -1953,14 +1953,18 @@ export async function executeTool(
         }
         let totalFetched = 0;
         let totalUpserted = 0;
+        let totalAppts = 0;
+        let totalVisits = 0;
         for (const conn of conns) {
           if (conn.provider !== 'square') continue;
           const res = await syncCustomersFromConnection(conn, squareAdapter);
           totalFetched += res.fetched;
           totalUpserted += res.upserted;
+          totalAppts += res.appointmentsFetched;
+          totalVisits += res.visitsRecorded;
         }
         return {
-          content: `Synced ${conns.length} booking connection${conns.length === 1 ? '' : 's'} — pulled ${totalFetched} customer${totalFetched === 1 ? '' : 's'}, ${totalUpserted} written to client profiles.`,
+          content: `Synced ${conns.length} booking connection${conns.length === 1 ? '' : 's'}:\n  • Customers: ${totalUpserted} of ${totalFetched} written to client profiles\n  • Appointments: ${totalVisits} of ${totalAppts} written to visit history`,
           success: true,
         };
       }

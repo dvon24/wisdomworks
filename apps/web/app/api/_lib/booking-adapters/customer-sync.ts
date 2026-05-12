@@ -13,7 +13,7 @@
 
 import { decryptToken } from '@wisdomworks/shared';
 import type { BookingAdapter, BookingCustomer } from './index';
-import { upsertClientProfile } from '../client-profiles';
+import { upsertClientProfile, recordClientVisit, findProfileByExternalId } from '../client-profiles';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -28,6 +28,9 @@ export interface SyncResult {
   ok: boolean;
   fetched: number;
   upserted: number;
+  /** Phase 2 — appointment ingestion. Mirrors the customer counters. */
+  appointmentsFetched: number;
+  visitsRecorded: number;
   reason?: string;
 }
 
@@ -93,6 +96,8 @@ export async function syncCustomersFromConnection(
           verticalLabel: verticalLabel ?? undefined,
           source: 'imported',
           tags: c.tags,
+          externalProvider: adapter.provider,
+          externalId: c.externalId,
         });
         if (id) upserted++;
       } catch (err) {
@@ -100,12 +105,64 @@ export async function syncCustomersFromConnection(
       }
     }
 
+    // ─── Phase 2 — appointment ingestion → client_visits ────────────────
+    // Pull bookings from 12 months back through 30 days ahead so the visit
+    // history immediately reflects the tenant's real activity. Future
+    // bookings are intentionally included for the same data shape (Riley's
+    // upcoming-bookings tool will read these later).
+    let appointmentsFetched = 0;
+    let visitsRecorded = 0;
+    if (adapter.listAppointments) {
+      const now = new Date();
+      const fromIso = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000).toISOString();
+      const toIso = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      try {
+        const appointments = await adapter.listAppointments(accessToken, fromIso, toIso, {
+          merchantId: connection.metadata?.merchant_id,
+        });
+        appointmentsFetched = appointments.length;
+        for (const a of appointments) {
+          if (!a.customerExternalId || !a.startAt) continue;
+          // Only count completed/booked appointments — skip cancellations
+          // for the visit log (cancellations might be a separate signal
+          // we surface later).
+          if (a.status === 'cancelled') continue;
+          try {
+            const profileId = await findProfileByExternalId({
+              tenantPhone: connection.phone_number,
+              externalProvider: adapter.provider,
+              externalId: a.customerExternalId,
+            });
+            if (!profileId) continue;
+            const visitId = await recordClientVisit({
+              tenantPhone: connection.phone_number,
+              clientProfileId: profileId,
+              summary: a.serviceLabel
+                ? `${a.serviceLabel}${a.staffLabel ? ` with ${a.staffLabel}` : ''}`
+                : `Booked appointment${a.staffLabel ? ` with ${a.staffLabel}` : ''}`,
+              channel: 'in_person',
+              satisfaction: a.status === 'completed' ? 'positive' : undefined,
+              notes: a.notes,
+              occurredAt: a.startAt,
+              externalProvider: adapter.provider,
+              externalId: a.externalId,
+            });
+            if (visitId) visitsRecorded++;
+          } catch (err) {
+            console.warn('[customer-sync] visit upsert failed:', err);
+          }
+        }
+      } catch (err) {
+        console.warn('[customer-sync] appointment fetch failed:', err);
+      }
+    }
+
     await markSynced(connection.id, customers.length);
-    console.log(`[customer-sync] ${connection.phone_number} ${adapter.provider}: fetched=${customers.length} upserted=${upserted}`);
-    return { ok: true, fetched: customers.length, upserted };
+    console.log(`[customer-sync] ${connection.phone_number} ${adapter.provider}: customers=${customers.length}/${upserted} appointments=${appointmentsFetched}/${visitsRecorded}`);
+    return { ok: true, fetched: customers.length, upserted, appointmentsFetched, visitsRecorded };
   } catch (err: any) {
     console.warn('[customer-sync] error:', err);
-    return { ok: false, fetched: 0, upserted: 0, reason: err?.message ?? String(err) };
+    return { ok: false, fetched: 0, upserted: 0, appointmentsFetched: 0, visitsRecorded: 0, reason: err?.message ?? String(err) };
   }
 }
 

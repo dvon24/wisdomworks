@@ -39,6 +39,8 @@ export async function GET(request: Request) {
 
   let totalFetched = 0;
   let totalUpserted = 0;
+  let totalAppointments = 0;
+  let totalVisits = 0;
   let totalConnections = 0;
   let totalFailed = 0;
 
@@ -53,6 +55,8 @@ export async function GET(request: Request) {
     if (result.ok) {
       totalFetched += result.fetched;
       totalUpserted += result.upserted;
+      totalAppointments += result.appointmentsFetched;
+      totalVisits += result.visitsRecorded;
     } else {
       totalFailed++;
     }
@@ -61,8 +65,10 @@ export async function GET(request: Request) {
   return NextResponse.json({
     ok: true,
     connections: totalConnections,
-    fetched: totalFetched,
-    upserted: totalUpserted,
+    customers_fetched: totalFetched,
+    customers_upserted: totalUpserted,
+    appointments_fetched: totalAppointments,
+    visits_recorded: totalVisits,
     failed: totalFailed,
   });
 }

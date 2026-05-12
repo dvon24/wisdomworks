@@ -61,6 +61,8 @@ export async function upsertClientProfile(input: {
   verticalLabel?: string;
   source?: 'owner_defined' | 'inferred' | 'imported';
   tags?: string[];
+  externalProvider?: string;
+  externalId?: string;
 }): Promise<string | null> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
   try {
@@ -77,6 +79,8 @@ export async function upsertClientProfile(input: {
         p_vertical_label: input.verticalLabel ?? null,
         p_source: input.source ?? 'inferred',
         p_tags: input.tags ?? null,
+        p_external_provider: input.externalProvider ?? null,
+        p_external_id: input.externalId ?? null,
       }),
     });
     if (!res.ok) {
@@ -86,6 +90,28 @@ export async function upsertClientProfile(input: {
     return await res.json();
   } catch (err) {
     console.warn('[client-profiles] upsert exception:', err);
+    return null;
+  }
+}
+
+/** Look up a profile by external (provider-side) id — used by the booking
+ *  sync to map Square customer_id → local client_profile_id. */
+export async function findProfileByExternalId(input: {
+  tenantPhone: string;
+  externalProvider: string;
+  externalId: string;
+}): Promise<string | null> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  const cleanTenant = input.tenantPhone.replace(/[\s\-+()]/g, '');
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/client_profiles?tenant_phone=eq.${cleanTenant}&external_provider=eq.${encodeURIComponent(input.externalProvider)}&external_id=eq.${encodeURIComponent(input.externalId)}&select=id&limit=1`,
+      { headers: headers() },
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows[0]?.id ?? null;
+  } catch {
     return null;
   }
 }
@@ -100,6 +126,8 @@ export async function recordClientVisit(input: {
   notes?: string;
   revenueUsd?: number;
   occurredAt?: string;
+  externalProvider?: string;
+  externalId?: string;
 }): Promise<string | null> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
   try {
@@ -115,6 +143,8 @@ export async function recordClientVisit(input: {
         p_notes: input.notes ?? null,
         p_revenue_usd: input.revenueUsd ?? null,
         p_occurred_at: input.occurredAt ?? null,
+        p_external_provider: input.externalProvider ?? null,
+        p_external_id: input.externalId ?? null,
       }),
     });
     if (!res.ok) {
