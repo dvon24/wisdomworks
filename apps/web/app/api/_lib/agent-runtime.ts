@@ -248,6 +248,12 @@ interface TickContext {
   knowledgeAtoms: KnowledgeAtom[];
   /** Phase 1C — tenant system state for triage (what's connected, known gaps, recent directives) */
   systemState: TenantSystemState;
+  /** Phase 1B — team capability map (other agents' domains) for cross-lane consultation */
+  teamCapabilities: TeammateCapability[];
+  /** Phase 1B — pending consults TO this agent (they need to answer one) */
+  consultInbox: InboxConsult[];
+  /** Phase 1B — answers FROM peers waiting to be folded into this agent's reasoning */
+  consultOutbox: OutboxConsult[];
 }
 
 interface AssignedProject {
@@ -279,6 +285,9 @@ import { listKnownPeople, renderKnownPeopleForPrompt, type KnownPerson } from '.
 import { recentAtomsForPrompt, renderAtomsForPrompt, type KnowledgeAtom } from './knowledge-atoms';
 // Phase 1C — tenant system state for orchestrator triage
 import { computeTenantSystemState, renderSystemStateForPrompt, type TenantSystemState } from './tenant-system-state';
+// Phase 1B — peer consultations + capability map
+import { loadTeamCapabilities, renderCapabilityMapForPrompt, type TeammateCapability } from './capability-map';
+import { consultInboxForAgent, consultOutboxForAgent, markConsultsFolded, askPeer, answerConsult, type InboxConsult, type OutboxConsult } from './consultations';
 // Story 2.15 — skill formation + cross-agent learning.
 import {
   topSkillsForLane,
@@ -326,7 +335,7 @@ async function markDelegationsDone(ids: string[]): Promise<void> {
 async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string, agentConfigId?: string): Promise<TickContext> {
   const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [], knowledgeAtoms: [], systemState: { connected_projects: [], connected_services: [], team: [], recent_owner_directives: [], pending_approvals_count: 0, last_owner_interaction_at: null } };
+    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [], knowledgeAtoms: [], systemState: { connected_projects: [], connected_services: [], team: [], recent_owner_directives: [], pending_approvals_count: 0, last_owner_interaction_at: null }, teamCapabilities: [], consultInbox: [], consultOutbox: [] };
   }
 
   // Three small queries in parallel — context tab kept tight on purpose.
@@ -379,8 +388,8 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
 
   // Known people registry + teammate names — disambiguation context for
   // every agent's tick prompt. Plus Phase 1A atoms mined from owner chat.
-  // Plus Phase 1C system state for triage.
-  const [knownPeople, teammates, knowledgeAtoms, systemState] = await Promise.all([
+  // Plus Phase 1C system state for triage. Plus Phase 1B consult inbox/outbox.
+  const [knownPeople, teammates, knowledgeAtoms, systemState, teamCapabilities, consultInbox, consultOutbox] = await Promise.all([
     listKnownPeople(tenantPhone),
     fetch(
       `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=agent_name`,
@@ -388,6 +397,9 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     ).then((r) => r.ok ? r.json() : []).catch(() => []),
     recentAtomsForPrompt(tenantPhone, ownLane, 15),
     computeTenantSystemState(tenantPhone),
+    loadTeamCapabilities(tenantPhone),
+    consultInboxForAgent(instanceId),
+    consultOutboxForAgent(instanceId, 30),
   ]);
   const teammateNames: string[] = (teammates ?? []).map((t: any) => t.agent_name).filter(Boolean);
 
@@ -405,6 +417,9 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     teammateNames,
     knowledgeAtoms,
     systemState,
+    teamCapabilities,
+    consultInbox,
+    consultOutbox,
   };
 }
 
@@ -434,6 +449,10 @@ interface ReasoningResult {
   /** Story 2.15 — if the agent applied a learned technique this tick,
    *  echo back its signature so we can record success/failure. */
   applied_skill_signature?: string | null;
+  /** Phase 1B — if the agent decided to consult a peer this tick, name them + the question */
+  consult?: { peer_name: string; question: string; reason?: string } | null;
+  /** Phase 1B — if the agent received a consult and is answering, populate */
+  answer_to_consult?: { consult_id: string; answer: string } | null;
 }
 
 function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: TickContext): string {
@@ -492,6 +511,34 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
   const systemStateBlock = renderSystemStateForPrompt(ctx.systemState, {
     forOrchestrator: isOrchestrator,
   });
+
+  // Phase 1B — team capability map (who to consult for what)
+  const capabilityMapBlock = renderCapabilityMapForPrompt(ctx.teamCapabilities, config.agent_name);
+
+  // Phase 1B — incoming consult requests this agent should answer
+  const consultInboxBlock = ctx.consultInbox.length > 0
+    ? [
+        '',
+        'PEER CONSULTS WAITING FOR YOU TO ANSWER (answer ONE this tick by populating answer_to_consult in your response):',
+        ...ctx.consultInbox.slice(0, 3).map((c, i) =>
+          `  ${i + 1}. [${c.id.slice(0, 8)}] from ${c.from_agent_name} (${c.trigger_kind}): "${c.question.slice(0, 200)}"${c.reason ? ` — context: ${c.reason.slice(0, 100)}` : ''}`,
+        ),
+        'Answer concisely (1-3 sentences). If outside your domain, set answer_to_consult.answer = "outside my domain — try X" and we\'ll mark it declined.',
+      ].join('\n')
+    : '';
+
+  // Phase 1B — answers from peers this agent should incorporate
+  const consultOutboxBlock = ctx.consultOutbox.length > 0
+    ? [
+        '',
+        'PEER ANSWERS YOU RECEIVED (incorporate into your observation; don\'t ignore):',
+        ...ctx.consultOutbox.slice(0, 3).map((c) =>
+          c.status === 'answered'
+            ? `  - ${c.to_agent_name} answered "${c.question.slice(0, 100)}": ${c.answer ?? '(no answer)'}`
+            : `  - ${c.to_agent_name} timed out on "${c.question.slice(0, 100)}" — proceed without their input`,
+        ),
+      ].join('\n')
+    : '';
 
   // Entity disambiguation — list of agent teammates (so we don't confuse
   // "Alex the agent" with "Alex the human") + known people in the owner's
@@ -566,7 +613,7 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
-${recentRuns}${inbox}${skillsBlock}${repeatBlock}${peopleBlock}${atomsBlock}${systemStateBlock}${projectsBlock}
+${recentRuns}${inbox}${skillsBlock}${repeatBlock}${peopleBlock}${atomsBlock}${systemStateBlock}${capabilityMapBlock}${consultInboxBlock}${consultOutboxBlock}${projectsBlock}
 
 ${cadenceGuide}
 
@@ -591,7 +638,9 @@ Respond with ONLY a JSON object, no other text:
   "delegation_reason": "if delegate_to_lane is set, one sentence on why this work belongs to that lane. Omit otherwise.",
   "delegations": [{ "lane": "marketing", "reason": "..." }, { "lane": "operations", "reason": "..." }],
   "solution_brief": { "problem": "...", "proposed_solution": "...", "expected_impact": "...", "confidence": 0..1, "risk": "low" | "medium" | "high" } OR null,
-  "applied_skill_signature": "snake_case_signature_from_proven_techniques_block_if_you_used_one_or_null"
+  "applied_skill_signature": "snake_case_signature_from_proven_techniques_block_if_you_used_one_or_null",
+  "consult": { "peer_name": "Marcus", "question": "specific question for them", "reason": "why you're asking" } OR null,
+  "answer_to_consult": { "consult_id": "8-char-prefix", "answer": "1-3 sentence answer to a consult in your inbox" } OR null
 }
 
 PRIORITY GUIDE:
@@ -762,6 +811,52 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
       } else {
         console.log(`[agent-runtime] dropped solution_brief from ${config.agent_name}: failed guard (recent=${recentBriefCount}, ext=${hasExternalSignal}, conf=${brief.confidence})`);
       }
+    }
+
+    // Phase 1B — process consults this tick:
+    //   1. If the agent answered a consult in their inbox, write the answer
+    //   2. If the agent asked a new consult, write it (with depth check)
+    //   3. Mark outbox entries the agent saw as 'folded_in' so they don't re-appear
+    try {
+      if (result.answer_to_consult?.consult_id && result.answer_to_consult?.answer) {
+        const consultIdShort = result.answer_to_consult.consult_id.toLowerCase();
+        const match = ctx.consultInbox.find((c) => c.id.startsWith(consultIdShort) || c.id === consultIdShort);
+        if (match) {
+          const declined = /outside my domain|can'?t help|wrong agent/i.test(result.answer_to_consult.answer);
+          await answerConsult({
+            consultationId: match.id,
+            answer: result.answer_to_consult.answer,
+            declined,
+          });
+        }
+      }
+
+      if (result.consult?.peer_name && result.consult?.question) {
+        const peer = ctx.teamCapabilities.find(
+          (t) => t.agent_name.toLowerCase() === result.consult!.peer_name.toLowerCase(),
+        );
+        if (peer && peer.agent_instance_id !== instance.id) {
+          const ask = await askPeer({
+            tenantPhone: instance.tenant_phone,
+            fromAgentInstanceId: instance.id,
+            fromAgentName: config.agent_name,
+            toAgentInstanceId: peer.agent_instance_id,
+            toAgentName: peer.agent_name,
+            question: result.consult.question,
+            reason: result.consult.reason,
+            triggerKind: 'pre_escalation',
+          });
+          if (ask.rejected) {
+            console.log(`[consult] ${config.agent_name} → ${peer.agent_name} rejected: ${ask.rejected}`);
+          }
+        }
+      }
+
+      if (ctx.consultOutbox.length > 0) {
+        await markConsultsFolded(ctx.consultOutbox.map((c) => c.id));
+      }
+    } catch (err) {
+      console.warn('[consult] processing failed:', err);
     }
 
     const runId = await logRun({
