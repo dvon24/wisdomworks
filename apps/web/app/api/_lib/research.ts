@@ -260,16 +260,27 @@ Hard rules:
     const brief: ResearchBrief = {
       topic: req.topic,
       kind: req.kind,
-      summary: String(parsed.summary ?? '').slice(0, 1000),
-      key_findings: Array.isArray(parsed.key_findings) ? parsed.key_findings.map(String).slice(0, 12) : [],
+      summary: stripCitations(String(parsed.summary ?? '')).slice(0, 1000),
+      key_findings: Array.isArray(parsed.key_findings) ? parsed.key_findings.map((f: any) => stripCitations(String(f))).slice(0, 12) : [],
       sources: Array.isArray(parsed.sources) ? parsed.sources.slice(0, 10) : [],
-      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String).slice(0, 6) : [],
+      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map((r: any) => stripCitations(String(r))).slice(0, 6) : [],
       confidence: typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5,
     };
     return { brief, searchesUsed, tokensUsed: (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0) };
   } catch (err: any) {
     return { brief: null, searchesUsed: 0, tokensUsed: 0, error: err?.message ?? String(err) };
   }
+}
+
+/** Strip Anthropic web_search inline citation tags. Audit trail is kept
+ * in the original sources[] array; the display text shouldn't have raw
+ * `<cite index="...">...</cite>` markers. */
+function stripCitations(text: string): string {
+  return text
+    .replace(/<cite\s+index="[^"]*">/gi, '')
+    .replace(/<\/cite>/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**
