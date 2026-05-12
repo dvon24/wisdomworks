@@ -42,6 +42,8 @@ import {
 import { loadEmailPrefs, saveEmailPrefs } from '../../_lib/email-notifications';
 import { listOpenInsights, getInsightById, setInsightStatus } from '../../_lib/business-insights';
 import { emitTeamGapInsight, loadCurrentTeam, loadLatestOpenTeamGap } from '../../_lib/team-gap-detector';
+import { loadActiveBookingConnections, syncCustomersFromConnection } from '../../_lib/booking-adapters/customer-sync';
+import { squareAdapter } from '../../_lib/booking-adapters/square';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -580,6 +582,32 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+// ─── Booking-system connections ──────────────────────────────────────────
+
+const TOOL_CONNECT_BOOKING_SYSTEM: AnthropicTool = {
+  name: 'connect_booking_system',
+  description:
+    "Generate a one-tap link to connect a booking system (Square Appointments first; Mindbody/Calendly/etc. later). Use when owner says 'connect Square', 'I use Square for bookings', 'pull my client list from <booking system>', or any time the owner mentions they already have a booking platform. Returns the secure OAuth URL — when they tap it, we pull their entire customer list into client_profiles automatically.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      provider: {
+        type: 'string',
+        enum: ['square'],
+        description: 'Which booking system to connect. Today only square is wired up.',
+      },
+    },
+    required: ['provider'],
+  },
+};
+
+const TOOL_SYNC_BOOKING_CUSTOMERS: AnthropicTool = {
+  name: 'sync_booking_customers',
+  description:
+    "Force a fresh sync of customers from the owner's connected booking system. Daily cron handles this automatically; use this tool when owner asks 'pull in my latest clients', 'sync Square now', 'refresh my client list'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 // ─── Team gap detection ──────────────────────────────────────────────────
 
 const TOOL_LIST_MY_TEAM: AnthropicTool = {
@@ -1062,6 +1090,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_PROPOSE_TEAM_ADDITION);
   tools.push(TOOL_APPROVE_LATEST_PROPOSAL);
   tools.push(TOOL_DISMISS_LATEST_PROPOSAL);
+  tools.push(TOOL_CONNECT_BOOKING_SYSTEM);
+  tools.push(TOOL_SYNC_BOOKING_CUSTOMERS);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1841,6 +1871,45 @@ export async function executeTool(
         if (team.length === 0) return { content: 'No active agents on the team yet.', success: true };
         const lines = team.map((m) => `  • ${m.name} — ${m.role}${m.category ? ` (${m.category})` : ''}${m.status ? ` [${m.status}]` : ''}`);
         return { content: `${team.length} agent${team.length === 1 ? '' : 's'} on the team:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'connect_booking_system': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const provider = String(call.input.provider ?? '').toLowerCase();
+        if (provider !== 'square') {
+          return { content: `${provider} isn't wired up yet. Square Appointments is the first booking integration; more land soon.`, success: false };
+        }
+        if (!process.env.SQUARE_APP_ID) {
+          return { content: 'Square integration not configured yet (admin needs to set SQUARE_APP_ID).', success: false };
+        }
+        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const link = `${base}/api/oauth/square?phone=${encodeURIComponent(cleanPhone)}`;
+        return {
+          content: `Tap to connect Square:\n\n${link}\n\nAfter you approve, I'll pull your entire customer list into your client profiles automatically. Your existing scheduling stays in Square — we just sync the customer roster + visit history so your team can act on it.`,
+          success: true,
+        };
+      }
+
+      case 'sync_booking_customers': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const conns = await loadActiveBookingConnections(cleanPhone);
+        if (conns.length === 0) {
+          return { content: "You don't have a booking system connected yet. Say 'connect square' to set one up.", success: false };
+        }
+        let totalFetched = 0;
+        let totalUpserted = 0;
+        for (const conn of conns) {
+          if (conn.provider !== 'square') continue;
+          const res = await syncCustomersFromConnection(conn, squareAdapter);
+          totalFetched += res.fetched;
+          totalUpserted += res.upserted;
+        }
+        return {
+          content: `Synced ${conns.length} booking connection${conns.length === 1 ? '' : 's'} — pulled ${totalFetched} customer${totalFetched === 1 ? '' : 's'}, ${totalUpserted} written to client profiles.`,
+          success: true,
+        };
       }
 
       case 'approve_latest_team_proposal': {
