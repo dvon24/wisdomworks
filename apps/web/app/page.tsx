@@ -1626,6 +1626,24 @@ export default function CommandDeck() {
               );
             })}
 
+            {/* Show which required fields are still empty so the user
+                knows why the Connect button isn't reacting. */}
+            {(() => {
+              const missing: string[] = [];
+              if (!connectForm.project_name.trim()) missing.push('project name');
+              if (!connectForm.vercel_token.trim()) missing.push('Vercel token');
+              if (!connectForm.vercel_project_id.trim()) missing.push('Vercel project ID');
+              if (!connectForm.github_token.trim()) missing.push('GitHub token');
+              if (!connectForm.github_owner.trim()) missing.push('GitHub owner');
+              if (!connectForm.github_repo.trim()) missing.push('GitHub repo');
+              if (missing.length === 0) return null;
+              return (
+                <div style={{ marginTop: 12, padding: 8, borderRadius: 6, background: 'rgba(255,180,80,0.1)', border: '1px solid rgba(255,180,80,0.3)', fontSize: 11.5, color: 'var(--text-dim)' }}>
+                  Still need: <strong style={{ color: 'var(--text)' }}>{missing.join(', ')}</strong>
+                </div>
+              );
+            })()}
+
             <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
               <button
                 className="btn ghost"
