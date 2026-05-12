@@ -142,13 +142,62 @@ async function generateBriefing(user: any): Promise<string> {
     console.warn('[daily-briefing] context fetch failed:', err);
   }
 
+  // Build the UNIFIED schedule for today: native managed-calendar events +
+  // connected calendar (from profile) + upcoming bookings. Then flag conflicts.
+  let conflictsCount = 0;
+  let unifiedScheduleLines = '  (nothing scheduled)';
+  let calendarNudge = '';
+  try {
+    const { buildUnifiedSchedule, detectConflicts } = await import('../../_lib/managed-calendar');
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59).toISOString();
+
+    let upcomingBookings: any[] = [];
+    if (SUPABASE_URL && SUPABASE_KEY) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/client_visits?tenant_phone=eq.${cleanPhone}&occurred_at=gte.${encodeURIComponent(startOfDay)}&occurred_at=lt.${encodeURIComponent(endOfDay)}&select=summary,occurred_at`,
+        { headers: { apikey: SUPABASE_KEY!, Authorization: `Bearer ${SUPABASE_KEY}` } },
+      );
+      upcomingBookings = r.ok ? await r.json() : [];
+    }
+
+    const unified = await buildUnifiedSchedule({
+      tenantPhone: cleanPhone,
+      fromIso: startOfDay,
+      toIso: endOfDay,
+      connectedCalendarEvents: upcomingCalendar.map((e: any) => ({
+        start: e.start, end: e.end, title: e.title, location: e.location,
+      })),
+      upcomingBookings,
+    });
+
+    if (unified.length > 0) {
+      unifiedScheduleLines = unified.slice(0, 8).map((e) => {
+        const sourceMark = e.source === 'native' ? '📝' : e.source === 'connected_calendar' ? '📅' : '👥';
+        const t = new Date(e.startAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        return `  ${sourceMark} ${t} ${e.title}`;
+      }).join('\n');
+    }
+    const conflicts = detectConflicts(unified);
+    conflictsCount = conflicts.length;
+  } catch (err) {
+    console.warn('[daily-briefing] schedule unify failed:', err);
+  }
+
+  // If no calendar is connected AND no native events exist, nudge once
+  const hasConnectedCalendar = upcomingCalendar.length > 0; // approximation
+  if (!hasConnectedCalendar) {
+    calendarNudge = '\n\nFYI: no external calendar connected. You can either tap Connections in the deck to link Google/Apple, OR just tell me what you have on (e.g. "I have soccer with Liam Tuesday at 4") and I\'ll track it natively.';
+  }
+
   const runsSummary = recentRuns.slice(0, 10).map((r: any) =>
     `  - [${r.outcome}${r.delegated_to_lane ? ` → ${r.delegated_to_lane}` : ''}] ${(r.output_summary || '').slice(0, 120)}`,
   ).join('\n') || '  (quiet overnight)';
 
-  const calendarSummary = upcomingCalendar.slice(0, 5).map((e: any) =>
-    `  - ${new Date(e.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} ${e.title}`,
-  ).join('\n') || '  (nothing scheduled)';
+  const calendarSummary = unifiedScheduleLines;
+  const conflictsLine = conflictsCount > 0
+    ? `\n⚠ ${conflictsCount} schedule conflict${conflictsCount === 1 ? '' : 's'} detected — owner should review.`
+    : '';
 
   const userMsg = `Today is ${dayOfWeek}, ${dateStr}.
 
@@ -158,13 +207,13 @@ Business: ${user.business_name || 'their business'} (${user.business_type || 'bu
 Overnight team activity (last 24h):
 ${runsSummary}
 
-Today's calendar:
-${calendarSummary}
+Today's schedule (📝=native 📅=connected calendar 👥=customer booking):
+${calendarSummary}${conflictsLine}${calendarNudge}
 
 Pending email drafts awaiting review: ${pendingDrafts.length}
 Uncertain email classifications to clarify: ${uncertainEmails.length}
 
-Generate the morning briefing.`;
+Generate the morning briefing. If there are schedule conflicts, lead with them — owners need to see overlaps before they get caught.`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {

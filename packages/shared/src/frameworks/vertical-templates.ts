@@ -170,6 +170,7 @@ export const RESTAURANT_TEMPLATE: VerticalTemplate = {
       description: 'Captures dietary needs from reservations, escalates to kitchen', channels: ['email', 'whatsapp'] },
   ],
   recommendedTools: [
+    { id: 'google_calendar', label: 'Google Calendar', why: 'Owner schedule + reservation conflict detection' },
     { id: 'opentable', label: 'OpenTable / Resy', why: 'Reservations and waitlist' },
     { id: 'square', label: 'Square / Toast', why: 'POS, gift cards, hours' },
     { id: 'google_reviews', label: 'Google Business Profile', why: 'Review responses' },
@@ -246,6 +247,7 @@ export const SALON_TEMPLATE: VerticalTemplate = {
       description: 'Same-day rebook offers when slots open from cancels', channels: ['whatsapp', 'sms'] },
   ],
   recommendedTools: [
+    { id: 'google_calendar', label: 'Google Calendar', why: 'Owner personal schedule + conflict detection vs bookings' },
     { id: 'square_appointments', label: 'Square Appointments / Booksy', why: 'Bookings and stylist schedules' },
     { id: 'instagram', label: 'Instagram', why: 'Before/after content and bookings' },
     { id: 'google_reviews', label: 'Google Business Profile', why: 'Review monitoring' },
@@ -419,6 +421,7 @@ export const FITNESS_TEMPLATE: VerticalTemplate = {
       description: 'Member transformations, schedule promotion', channels: ['instagram'] },
   ],
   recommendedTools: [
+    { id: 'google_calendar', label: 'Google Calendar', why: 'Owner schedule + class conflict detection' },
     { id: 'square_appointments', label: 'Square / Mindbody', why: 'Class + 1:1 bookings' },
     { id: 'stripe', label: 'Stripe', why: 'Recurring memberships' },
     { id: 'instagram', label: 'Instagram', why: 'Workout content + transformations' },
@@ -569,6 +572,7 @@ export const PHOTOGRAPHY_TEMPLATE: VerticalTemplate = {
       description: 'Same-day inquiry replies, IG portfolio cadence', channels: ['instagram', 'email'] },
   ],
   recommendedTools: [
+    { id: 'google_calendar', label: 'Google Calendar', why: 'Shoot schedule + conflict detection' },
     { id: 'square_appointments', label: 'Square / Pixieset', why: 'Bookings + gallery delivery' },
     { id: 'stripe', label: 'Stripe', why: 'Deposits + final payments' },
     { id: 'instagram', label: 'Instagram', why: 'Portfolio + lead generation' },

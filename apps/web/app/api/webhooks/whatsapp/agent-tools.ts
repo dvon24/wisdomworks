@@ -45,6 +45,13 @@ import { emitTeamGapInsight, loadCurrentTeam, loadLatestOpenTeamGap } from '../.
 import { loadActiveBookingConnections, syncCustomersFromConnection } from '../../_lib/booking-adapters/customer-sync';
 import { squareAdapter } from '../../_lib/booking-adapters/square';
 import {
+  createEvent as createManagedEvent,
+  cancelEvent as cancelManagedEvent,
+  listEventsInRange,
+  buildUnifiedSchedule,
+  detectConflicts,
+} from '../../_lib/managed-calendar';
+import {
   loadActiveConnections,
   loadLatestSnapshot,
   fetchGitHubCommits,
@@ -598,6 +605,53 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+// ─── Managed calendar (native scheduling for owners without Google/Apple) ──
+
+const TOOL_SCHEDULE_EVENT: AnthropicTool = {
+  name: 'schedule_event',
+  description:
+    "Add an event to the owner's native calendar (works even if no Google/Apple calendar is connected). Use when the owner says 'put X on my calendar', 'I have Y at Z', 'schedule me for W', 'block out time for Q'. The event lands in the owner's daily brief and conflict-detection runs against bookings + connected calendar. If a Google/Apple calendar IS connected, prefer create_calendar_event so it lands in the canonical calendar; use this tool when no external calendar is connected OR when owner explicitly wants a quick local note.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Short title (e.g. "Pickup Liam", "Coffee with Sarah").' },
+      start_at: { type: 'string', description: 'ISO 8601 datetime. Resolve relative phrases like "Tuesday at 3" to a concrete time.' },
+      end_at: { type: 'string', description: 'ISO 8601 datetime. If not specified by owner, default to 1h after start.' },
+      notes: { type: 'string', description: 'Optional context.' },
+      location: { type: 'string', description: 'Optional location.' },
+      all_day: { type: 'boolean', description: 'True for all-day events (birthdays, holidays).' },
+      tags: { type: 'array', items: { type: 'string' }, description: "Tags like 'work', 'personal', 'family' for filtering." },
+    },
+    required: ['title', 'start_at', 'end_at'],
+  },
+};
+
+const TOOL_LIST_MY_SCHEDULE: AnthropicTool = {
+  name: 'list_my_schedule',
+  description:
+    "Show the owner's unified schedule (native + connected calendar + upcoming bookings) for a date range. Use when owner asks 'what's on my calendar today', 'show me Tuesday', 'what do I have coming up'. Returns events sorted by time and FLAGS any overlaps as conflicts so the owner sees scheduling collisions across personal and business commitments.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      from_date: { type: 'string', description: 'ISO date or datetime. Default: now.' },
+      to_date: { type: 'string', description: 'ISO date or datetime. Default: end of today.' },
+    },
+  },
+};
+
+const TOOL_CANCEL_EVENT: AnthropicTool = {
+  name: 'cancel_event',
+  description:
+    "Cancel a previously-scheduled native calendar event. Use when owner says 'cancel my X', 'remove that event', 'I don't have W anymore'. Soft-delete: the row stays for audit. Does NOT delete events from connected Google/Apple calendars (use a different flow for those — the connected calendar is the source of truth there).",
+  input_schema: {
+    type: 'object',
+    properties: {
+      event_id: { type: 'string', description: 'The 8-char prefix or full UUID from list_my_schedule.' },
+    },
+    required: ['event_id'],
+  },
+};
+
 // ─── Booking-system connections ──────────────────────────────────────────
 
 const TOOL_CONNECT_BOOKING_SYSTEM: AnthropicTool = {
@@ -1145,6 +1199,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_SYNC_BOOKING_CUSTOMERS);
   tools.push(TOOL_FIND_BOOKING_AVAILABILITY);
   tools.push(TOOL_BOOK_APPOINTMENT);
+  tools.push(TOOL_SCHEDULE_EVENT);
+  tools.push(TOOL_LIST_MY_SCHEDULE);
+  tools.push(TOOL_CANCEL_EVENT);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2003,6 +2060,115 @@ export async function executeTool(
           content: `Synced ${conns.length} booking connection${conns.length === 1 ? '' : 's'}:\n  • Customers: ${totalUpserted} of ${totalFetched} written to client profiles\n  • Appointments: ${totalVisits} of ${totalAppts} written to visit history`,
           success: true,
         };
+      }
+
+      case 'schedule_event': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const title = String(call.input.title ?? '').trim();
+        const startAt = String(call.input.start_at ?? '').trim();
+        const endAt = String(call.input.end_at ?? '').trim();
+        if (!title || !startAt || !endAt) return { content: 'Missing title, start_at, or end_at.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const id = await createManagedEvent({
+          tenantPhone: cleanPhone,
+          title,
+          startAt,
+          endAt,
+          notes: call.input.notes ? String(call.input.notes) : undefined,
+          location: call.input.location ? String(call.input.location) : undefined,
+          allDay: !!call.input.all_day,
+          tags: Array.isArray(call.input.tags) ? call.input.tags.map(String) : undefined,
+          source: 'owner_defined',
+        });
+        if (!id) return { content: 'Could not save the event.', success: false };
+        const when = new Date(startAt).toLocaleString('en-US', {
+          weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+        });
+        return { content: `✓ Scheduled "${title}" for ${when}. It'll appear in your daily brief and I'll flag any conflicts with other commitments.`, success: true };
+      }
+
+      case 'list_my_schedule': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const from = call.input.from_date ? new Date(String(call.input.from_date)) : new Date();
+        const to = call.input.to_date
+          ? new Date(String(call.input.to_date))
+          : new Date(from.getFullYear(), from.getMonth(), from.getDate(), 23, 59, 59);
+        const fromIso = from.toISOString();
+        const toIso = to.toISOString();
+
+        // Pull connected calendar events (from profile.todaysCalendar — populated
+        // by calendar-sync cron) when the window overlaps today
+        const connectedEvents = (user.profile as any)?.todaysCalendar ?? [];
+        const inWindow = connectedEvents.filter((e: any) => {
+          const t = new Date(e.start).getTime();
+          return t >= from.getTime() && t <= to.getTime();
+        });
+
+        // Pull upcoming bookings (client_visits with occurred_at in range)
+        let upcomingBookings: any[] = [];
+        if (SUPABASE_URL && SUPABASE_KEY) {
+          try {
+            const res = await fetch(
+              `${SUPABASE_URL}/rest/v1/client_visits?tenant_phone=eq.${cleanPhone}&occurred_at=gte.${encodeURIComponent(fromIso)}&occurred_at=lt.${encodeURIComponent(toIso)}&select=summary,occurred_at&order=occurred_at.asc`,
+              { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+            );
+            upcomingBookings = res.ok ? await res.json() : [];
+          } catch {}
+        }
+
+        const unified = await buildUnifiedSchedule({
+          tenantPhone: cleanPhone,
+          fromIso, toIso,
+          connectedCalendarEvents: inWindow.map((e: any) => ({ start: e.start, end: e.end, title: e.title, location: e.location })),
+          upcomingBookings,
+        });
+
+        if (unified.length === 0) {
+          return { content: 'Nothing on the schedule in that window.', success: true };
+        }
+
+        const conflicts = detectConflicts(unified);
+        const lines = unified.map((e) => {
+          const t = new Date(e.startAt).toLocaleString('en-US', {
+            weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+          });
+          const sourceMark = e.source === 'native' ? '📝' : e.source === 'connected_calendar' ? '📅' : '👥';
+          const loc = e.location ? ` @ ${e.location}` : '';
+          return `${sourceMark} ${t} — ${e.title}${loc}`;
+        });
+
+        let result = `${unified.length} event${unified.length === 1 ? '' : 's'}:\n${lines.join('\n')}`;
+        if (conflicts.length > 0) {
+          result += `\n\n⚠ ${conflicts.length} conflict${conflicts.length === 1 ? '' : 's'} detected:`;
+          for (const c of conflicts.slice(0, 5)) {
+            const t = new Date(c.a.startAt).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' });
+            result += `\n  • ${t}: "${c.a.title}" overlaps with "${c.b.title}"`;
+          }
+        }
+        return { content: result, success: true };
+      }
+
+      case 'cancel_event': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const idIn = String(call.input.event_id ?? '').trim();
+        if (!idIn) return { content: 'Missing event_id.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        // Resolve 8-char prefix → full UUID by listing nearby events
+        let eventId = idIn;
+        if (idIn.length === 8) {
+          const upcoming = await listEventsInRange({
+            tenantPhone: cleanPhone,
+            fromIso: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+            toIso: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString(),
+          });
+          const match = upcoming.find((e) => e.id.startsWith(idIn.toLowerCase()));
+          if (!match) return { content: `No upcoming event matches ${idIn}.`, success: false };
+          eventId = match.id;
+        }
+        const ok = await cancelManagedEvent(eventId, cleanPhone);
+        if (!ok) return { content: 'Could not cancel the event.', success: false };
+        return { content: '✓ Cancelled.', success: true };
       }
 
       case 'find_booking_availability': {
