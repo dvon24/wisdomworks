@@ -624,6 +624,40 @@ const TOOL_SYNC_BOOKING_CUSTOMERS: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+const TOOL_FIND_BOOKING_AVAILABILITY: AnthropicTool = {
+  name: 'find_booking_availability',
+  description:
+    "Search open slots on the owner's connected booking system. Use when a customer asks 'when can I get in' or the owner asks 'what's open Tuesday'. Returns specific available start times so you can offer them to the customer or owner. Read-only — does NOT create a booking.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      service_external_id: { type: 'string', description: 'Square service variation id. Required.' },
+      staff_external_id: { type: 'string', description: 'Optional: specific staff/team member id.' },
+      from_date: { type: 'string', description: 'ISO date or datetime; defaults to now.' },
+      to_date: { type: 'string', description: 'ISO date or datetime; defaults to 14 days from now.' },
+    },
+    required: ['service_external_id'],
+  },
+};
+
+const TOOL_BOOK_APPOINTMENT: AnthropicTool = {
+  name: 'book_appointment',
+  description:
+    "Create a real booking in the owner's booking system. WRITES to the merchant's calendar — never call without explicit owner approval for THIS specific booking (same rule as send_email). If the user pivots topics or says an ambiguous 'yes' more than one turn after the proposal, do NOT call this. When in doubt, ask 'Should I book <customer> for <time>?' and wait. After creating, the booking syncs back as a client visit on the next sync.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      customer_external_id: { type: 'string', description: 'The Square customer_id (from a client_profile.external_id) the booking is for.' },
+      service_external_id: { type: 'string', description: 'Square service variation id.' },
+      start_at: { type: 'string', description: 'ISO 8601 datetime for the appointment start.' },
+      staff_external_id: { type: 'string', description: 'Optional staff/team member id.' },
+      seller_note: { type: 'string', description: 'Internal note for the merchant.' },
+      duration_minutes: { type: 'number', description: 'Optional override duration.' },
+    },
+    required: ['customer_external_id', 'service_external_id', 'start_at'],
+  },
+};
+
 // ─── Team gap detection ──────────────────────────────────────────────────
 
 const TOOL_LIST_MY_TEAM: AnthropicTool = {
@@ -1109,6 +1143,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_DISMISS_LATEST_PROPOSAL);
   tools.push(TOOL_CONNECT_BOOKING_SYSTEM);
   tools.push(TOOL_SYNC_BOOKING_CUSTOMERS);
+  tools.push(TOOL_FIND_BOOKING_AVAILABILITY);
+  tools.push(TOOL_BOOK_APPOINTMENT);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1967,6 +2003,73 @@ export async function executeTool(
           content: `Synced ${conns.length} booking connection${conns.length === 1 ? '' : 's'}:\n  • Customers: ${totalUpserted} of ${totalFetched} written to client profiles\n  • Appointments: ${totalVisits} of ${totalAppts} written to visit history`,
           success: true,
         };
+      }
+
+      case 'find_booking_availability': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const serviceId = String(call.input.service_external_id ?? '').trim();
+        if (!serviceId) return { content: 'service_external_id required.', success: false };
+        const conns = await loadActiveBookingConnections(cleanPhone);
+        const conn = conns.find((c) => c.provider === 'square');
+        if (!conn) return { content: "No Square connection on file. Connect Square first.", success: false };
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(conn.access_token);
+          const from = call.input.from_date ? new Date(call.input.from_date) : new Date();
+          const to = call.input.to_date ? new Date(call.input.to_date) : new Date(from.getTime() + 14 * 24 * 60 * 60 * 1000);
+          const slots = await squareAdapter.searchAvailability!(token, from.toISOString(), to.toISOString(), {
+            merchantId: conn.metadata?.merchant_id,
+            serviceExternalId: serviceId,
+            staffExternalId: call.input.staff_external_id ? String(call.input.staff_external_id) : undefined,
+          });
+          if (slots.length === 0) {
+            return { content: `No open slots between ${from.toISOString().slice(0, 10)} and ${to.toISOString().slice(0, 10)}.`, success: true };
+          }
+          const lines = slots.slice(0, 15).map((s) => {
+            const d = new Date(s.startAt);
+            return `  • ${d.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}${s.staffExternalId ? ` (staff: ${s.staffExternalId.slice(0, 8)})` : ''}`;
+          });
+          return { content: `${slots.length} open slot${slots.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
+        } catch (err: any) {
+          return { content: `Availability search failed: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'book_appointment': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const customerId = String(call.input.customer_external_id ?? '').trim();
+        const serviceId = String(call.input.service_external_id ?? '').trim();
+        const startAt = String(call.input.start_at ?? '').trim();
+        if (!customerId || !serviceId || !startAt) {
+          return { content: 'Missing customer_external_id, service_external_id, or start_at.', success: false };
+        }
+        const conns = await loadActiveBookingConnections(cleanPhone);
+        const conn = conns.find((c) => c.provider === 'square');
+        if (!conn) return { content: "No Square connection on file.", success: false };
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(conn.access_token);
+          const created = await squareAdapter.createBooking!(token, {
+            customerExternalId: customerId,
+            serviceExternalId: serviceId,
+            startAt,
+            staffExternalId: call.input.staff_external_id ? String(call.input.staff_external_id) : undefined,
+            sellerNote: call.input.seller_note ? String(call.input.seller_note) : undefined,
+            durationMinutes: typeof call.input.duration_minutes === 'number' ? call.input.duration_minutes : undefined,
+          }, { merchantId: conn.metadata?.merchant_id });
+          if (!created) return { content: 'Booking creation failed (check Square logs).', success: false };
+          const when = new Date(created.startAt).toLocaleString('en-US', {
+            weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+          });
+          return {
+            content: `✓ Booked ${when} (Square booking id ${created.externalId.slice(0, 8)}). It'll appear in your Square calendar immediately and sync back to your visit history on the next sync.`,
+            success: true,
+          };
+        } catch (err: any) {
+          return { content: `Booking failed: ${err?.message ?? String(err)}`, success: false };
+        }
       }
 
       case 'approve_latest_team_proposal': {

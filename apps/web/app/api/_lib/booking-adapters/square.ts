@@ -12,7 +12,7 @@
  *   - MERCHANT_PROFILE_READ (so we know the merchant_id)
  */
 
-import type { BookingAdapter, BookingCustomer } from './index';
+import type { BookingAdapter, BookingCustomer, BookingAvailabilitySlot, CreateBookingInput, CreatedBooking } from './index';
 
 const SQUARE_API_BASE = process.env.SQUARE_ENV === 'production'
   ? 'https://connect.squareup.com'
@@ -80,6 +80,88 @@ export const squareAdapter: BookingAdapter = {
     } while (cursor && results.length < 5000);
 
     return results;
+  },
+
+  async searchAvailability(accessToken, fromIso, toIso, opts): Promise<BookingAvailabilitySlot[]> {
+    if (!opts?.serviceExternalId) return [];
+    try {
+      const filter: any = {
+        start_at_range: { start_at: fromIso, end_at: toIso },
+        segment_filters: [{
+          service_variation_id: opts.serviceExternalId,
+          ...(opts.staffExternalId ? { team_member_id_filter: { any: [opts.staffExternalId] } } : {}),
+        }],
+      };
+      const res = await fetch(`${SQUARE_API_BASE}/v2/bookings/availability/search`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-12-18',
+        },
+        body: JSON.stringify({ query: { filter } }),
+      });
+      if (!res.ok) {
+        console.warn('[square] searchAvailability failed:', res.status, await res.text());
+        return [];
+      }
+      const data = await res.json();
+      return (data.availabilities ?? []).map((a: any) => ({
+        startAt: a.start_at,
+        staffExternalId: a.appointment_segments?.[0]?.team_member_id,
+      }));
+    } catch (err) {
+      console.warn('[square] searchAvailability exception:', err);
+      return [];
+    }
+  },
+
+  async createBooking(accessToken, input: CreateBookingInput): Promise<CreatedBooking | null> {
+    if (!input.serviceExternalId) {
+      console.warn('[square] createBooking requires serviceExternalId');
+      return null;
+    }
+    try {
+      const idempotencyKey = `${input.customerExternalId}-${input.startAt}-${input.serviceExternalId}`.slice(0, 64);
+      const segment: any = {
+        service_variation_id: input.serviceExternalId,
+        ...(input.staffExternalId ? { team_member_id: input.staffExternalId } : {}),
+        ...(input.durationMinutes ? { duration_minutes: input.durationMinutes } : {}),
+      };
+      const res = await fetch(`${SQUARE_API_BASE}/v2/bookings`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-12-18',
+        },
+        body: JSON.stringify({
+          idempotency_key: idempotencyKey,
+          booking: {
+            customer_id: input.customerExternalId,
+            start_at: input.startAt,
+            seller_note: input.sellerNote,
+            appointment_segments: [segment],
+          },
+        }),
+      });
+      if (!res.ok) {
+        console.warn('[square] createBooking failed:', res.status, await res.text());
+        return null;
+      }
+      const data = await res.json();
+      const b = data.booking;
+      if (!b) return null;
+      return {
+        externalId: b.id,
+        startAt: b.start_at,
+        endAt: b.appointment_segments?.[0]?.end_at,
+        status: b.status,
+      };
+    } catch (err) {
+      console.warn('[square] createBooking exception:', err);
+      return null;
+    }
   },
 
   async listAppointments(accessToken, fromIso, toIso) {
