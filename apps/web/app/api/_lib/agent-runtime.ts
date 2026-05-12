@@ -246,6 +246,8 @@ interface TickContext {
   teammateNames: string[];
   /** Phase 1A — atoms mined from the owner's WhatsApp messages */
   knowledgeAtoms: KnowledgeAtom[];
+  /** Phase 1C — tenant system state for triage (what's connected, known gaps, recent directives) */
+  systemState: TenantSystemState;
 }
 
 interface AssignedProject {
@@ -275,6 +277,8 @@ import { loadConnectionsForAgent, loadLatestSnapshot } from './project-sync';
 import { listKnownPeople, renderKnownPeopleForPrompt, type KnownPerson } from './known-people';
 // Phase 1A — conversation atoms mined from owner's WhatsApp messages
 import { recentAtomsForPrompt, renderAtomsForPrompt, type KnowledgeAtom } from './knowledge-atoms';
+// Phase 1C — tenant system state for orchestrator triage
+import { computeTenantSystemState, renderSystemStateForPrompt, type TenantSystemState } from './tenant-system-state';
 // Story 2.15 — skill formation + cross-agent learning.
 import {
   topSkillsForLane,
@@ -322,7 +326,7 @@ async function markDelegationsDone(ids: string[]): Promise<void> {
 async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string, agentConfigId?: string): Promise<TickContext> {
   const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [], knowledgeAtoms: [] };
+    return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [], knowledgeAtoms: [], systemState: { connected_projects: [], connected_services: [], team: [], recent_owner_directives: [], pending_approvals_count: 0, last_owner_interaction_at: null } };
   }
 
   // Three small queries in parallel — context tab kept tight on purpose.
@@ -375,13 +379,15 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
 
   // Known people registry + teammate names — disambiguation context for
   // every agent's tick prompt. Plus Phase 1A atoms mined from owner chat.
-  const [knownPeople, teammates, knowledgeAtoms] = await Promise.all([
+  // Plus Phase 1C system state for triage.
+  const [knownPeople, teammates, knowledgeAtoms, systemState] = await Promise.all([
     listKnownPeople(tenantPhone),
     fetch(
       `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=agent_name`,
       { headers: headers() },
     ).then((r) => r.ok ? r.json() : []).catch(() => []),
     recentAtomsForPrompt(tenantPhone, ownLane, 15),
+    computeTenantSystemState(tenantPhone),
   ]);
   const teammateNames: string[] = (teammates ?? []).map((t: any) => t.agent_name).filter(Boolean);
 
@@ -398,6 +404,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     knownPeople,
     teammateNames,
     knowledgeAtoms,
+    systemState,
   };
 }
 
@@ -479,6 +486,13 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
   // perspective without re-reading the chat history.
   const atomsBlock = renderAtomsForPrompt(ctx.knowledgeAtoms);
 
+  // Phase 1C — tenant system state. Orchestrator (Sophia) gets the full
+  // triage directive ("you are the last gate before owner"); other agents
+  // get a lighter "self-suppress known gaps" version.
+  const systemStateBlock = renderSystemStateForPrompt(ctx.systemState, {
+    forOrchestrator: isOrchestrator,
+  });
+
   // Entity disambiguation — list of agent teammates (so we don't confuse
   // "Alex the agent" with "Alex the human") + known people in the owner's
   // network (attorney, accountant, clients, etc.)
@@ -552,7 +566,7 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
 YOUR RECENT TICKS:
-${recentRuns}${inbox}${skillsBlock}${repeatBlock}${peopleBlock}${atomsBlock}${projectsBlock}
+${recentRuns}${inbox}${skillsBlock}${repeatBlock}${peopleBlock}${atomsBlock}${systemStateBlock}${projectsBlock}
 
 ${cadenceGuide}
 
