@@ -1251,11 +1251,11 @@ export default function CommandDeck() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
                 {(() => {
                   const renderProviderCard = (
-                    provider: 'yahoo' | 'apple' | 'google' | 'microsoft',
+                    provider: 'yahoo' | 'apple' | 'google' | 'microsoft' | 'square',
                     label: string,
                     icon: string,
                     sub: string,
-                    service: 'email' | 'calendar',
+                    service: 'email' | 'calendar' | 'booking',
                     onClick: () => void,
                     isLink?: string,
                   ) => {
@@ -1289,12 +1289,14 @@ export default function CommandDeck() {
                       </button>
                     );
                   };
+                  const oauthBase = typeof window !== 'undefined' ? window.location.origin : '';
                   return (
                     <>
                       {renderProviderCard('yahoo', 'Yahoo Mail', '🟣', 'IMAP read access via app password.', 'email', () => { setConnForm('yahoo'); setConnEmail(''); setConnPassword(''); setConnError(''); })}
                       {renderProviderCard('apple', 'Apple iCloud', '⚫', 'CalDAV calendar via app password.', 'calendar', () => { setConnForm('apple'); setConnEmail(''); setConnPassword(''); setConnError(''); })}
-                      {renderProviderCard('google', 'Google', '🟦', 'Gmail + Calendar via OAuth (one click).', 'email', () => {}, phoneNumber ? `http://localhost:3001/api/oauth/google?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
-                      {renderProviderCard('microsoft', 'Microsoft', '🟧', 'Outlook + Calendar via OAuth.', 'email', () => {}, phoneNumber ? `http://localhost:3001/api/oauth/microsoft?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                      {renderProviderCard('google', 'Google', '🟦', 'Gmail + Calendar via OAuth (one click).', 'email', () => {}, phoneNumber ? `${oauthBase}/api/oauth/google?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                      {renderProviderCard('microsoft', 'Microsoft', '🟧', 'Outlook + Calendar via OAuth.', 'email', () => {}, phoneNumber ? `${oauthBase}/api/oauth/microsoft?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                      {renderProviderCard('square', 'Square Appointments', '🟫', 'Bookings + customer roster sync. One-click OAuth.', 'booking', () => {}, phoneNumber ? `${oauthBase}/api/oauth/square?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                     </>
                   );
                 })()}
