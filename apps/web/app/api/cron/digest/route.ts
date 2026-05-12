@@ -18,6 +18,7 @@ import {
   synthesizeStructuredDigest,
 } from '../../_lib/notifications';
 import { isMuted } from '../../_lib/mute-state';
+import { sendNotificationEmail } from '../../_lib/email-notifications';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -116,6 +117,18 @@ export async function GET(request: Request) {
       await markDelivered(synth.deliveredIds, messageId ?? undefined);
       sent++;
       console.log(`[digest] ${tenantPhone}: bundled ${items.length} item${items.length === 1 ? '' : 's'} into one message`);
+
+      // Mirror the digest to email if the owner opted in.
+      const hasCritical = items.some((i) => i.severity === 'critical');
+      const emailRes = await sendNotificationEmail({
+        tenantPhone,
+        subject: `${orchestratorName} digest — ${items.length} update${items.length === 1 ? '' : 's'}`,
+        body: synth.message,
+        isCritical: hasCritical,
+      });
+      if (emailRes.ok) {
+        console.log(`[digest] ${tenantPhone}: also emailed`);
+      }
     } catch (err) {
       console.warn(`[digest] tenant ${tenantPhone} failed:`, err);
     }

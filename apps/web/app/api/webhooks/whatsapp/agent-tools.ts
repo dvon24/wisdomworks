@@ -39,6 +39,7 @@ import {
   getClientProfile,
   listClientVisits,
 } from '../../_lib/client-profiles';
+import { loadEmailPrefs, saveEmailPrefs } from '../../_lib/email-notifications';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -577,6 +578,35 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+// ─── Email notification preferences ──────────────────────────────────────
+
+const TOOL_ENABLE_EMAIL_NOTIFICATIONS: AnthropicTool = {
+  name: 'enable_email_notifications',
+  description:
+    "Turn ON email mirroring of digest notifications so the owner gets each digest both as a WhatsApp message AND as an email. Use when owner says 'email me digests too', 'send these to my inbox', 'I want email notifications'. Requires the owner to have an email account connected (Yahoo/Gmail/Outlook) — the email is sent to themselves via their own SMTP/API.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      address: { type: 'string', description: 'Optional override email address; defaults to the connected account.' },
+      critical_only: { type: 'boolean', description: 'If true, only critical-severity items trigger email. Default false (all digests).' },
+    },
+  },
+};
+
+const TOOL_DISABLE_EMAIL_NOTIFICATIONS: AnthropicTool = {
+  name: 'disable_email_notifications',
+  description:
+    "Turn OFF email mirroring of notifications. WhatsApp digests continue. Use when owner says 'stop emailing me', 'WhatsApp only please', 'turn off email notifications'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_EMAIL_NOTIFICATION_STATUS: AnthropicTool = {
+  name: 'get_email_notification_status',
+  description:
+    "Report whether email notifications are currently enabled and at what address. Use when owner asks 'do you have my email', 'are you emailing me too', 'check my notification settings'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 // ─── Client Profiles (Story 2b.1) ────────────────────────────────────────
 
 const TOOL_ADD_UPDATE_CLIENT: AnthropicTool = {
@@ -938,6 +968,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LOOKUP_CLIENT);
   tools.push(TOOL_LIST_MY_CLIENTS);
   tools.push(TOOL_LIST_CLIENT_HISTORY);
+  tools.push(TOOL_ENABLE_EMAIL_NOTIFICATIONS);
+  tools.push(TOOL_DISABLE_EMAIL_NOTIFICATIONS);
+  tools.push(TOOL_EMAIL_NOTIFICATION_STATUS);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1708,6 +1741,50 @@ export async function executeTool(
           ...sortedModels.map((m) => `  • ${m.model}: $${m.costUsd.toFixed(2)} (${(m.tokensIn + m.tokensOut).toLocaleString()} tokens)`),
         ];
         return { content: lines.join('\n'), success: true };
+      }
+
+      case 'enable_email_notifications': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        // Check the owner has an email connected first — saving prefs without
+        // a connection would be a setup-trap.
+        const hasEmail = connections.some((c) => c.service === 'email');
+        if (!hasEmail) {
+          return {
+            content: "You need to connect an email account first (Yahoo, Gmail, or Outlook) — open the Command Deck's Connections tab. Once connected, ask me again.",
+            success: false,
+          };
+        }
+        const ok = await saveEmailPrefs(cleanPhone, {
+          enabled: true,
+          address: call.input.address ? String(call.input.address) : undefined,
+          criticalOnly: !!call.input.critical_only,
+        });
+        if (!ok) return { content: 'Could not save email preferences.', success: false };
+        const address = call.input.address ?? connections.find((c) => c.service === 'email')?.account_email;
+        const mode = call.input.critical_only ? 'critical alerts only' : 'all digests';
+        return { content: `Email notifications ON for ${address} (${mode}). I'll mirror future digests to your inbox.`, success: true };
+      }
+
+      case 'disable_email_notifications': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const ok = await saveEmailPrefs(cleanPhone, { enabled: false });
+        if (!ok) return { content: 'Could not save email preferences.', success: false };
+        return { content: 'Email notifications OFF. WhatsApp digests continue.', success: true };
+      }
+
+      case 'get_email_notification_status': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const prefs = await loadEmailPrefs(cleanPhone);
+        if (!prefs.enabled) {
+          return { content: 'Email notifications are OFF. Say "email me digests too" to turn them on.', success: true };
+        }
+        const emailConn = connections.find((c) => c.service === 'email');
+        const address = prefs.address || emailConn?.account_email || '(no email connected)';
+        const mode = prefs.criticalOnly ? 'critical alerts only' : 'all digests';
+        return { content: `Email notifications ON: ${address} (${mode}).`, success: true };
       }
 
       case 'add_or_update_client_profile': {
