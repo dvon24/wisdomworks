@@ -124,6 +124,130 @@ async function provisionAgents(supabaseUrl: string, supabaseKey: string, cleanPh
   if (!res.ok) console.warn('[deploy-complete] provisionAgents failed:', res.status, await res.text());
 }
 
+/**
+ * Onboarding-polish seeding (May 2026):
+ *   - keyContacts → known_people (so day-one agents know who Ron/the CPA/etc. are)
+ *   - knownGaps → tenant_knowledge_atoms (fact + known_gap so agents don't
+ *     flag platform limitations the owner already accepted)
+ *   - painPoints → atoms (constraint kind, tagged 'general', so all agents
+ *     know what the owner is trying to fix)
+ *   - keyWorkflows → atoms (goal kind)
+ *   - preferredChannel → whatsapp_contexts.profile.preferred_channel
+ *
+ * All best-effort and non-fatal — onboarding deploys even if seeding fails.
+ */
+async function seedFromOnboarding(
+  supabaseUrl: string,
+  supabaseKey: string,
+  cleanPhone: string,
+  data: OnboardingData,
+): Promise<void> {
+  const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, 'Content-Type': 'application/json' };
+
+  // 1. keyContacts → known_people
+  for (const contact of data.keyContacts ?? []) {
+    if (!contact?.name) continue;
+    try {
+      await fetch(`${supabaseUrl}/rest/v1/rpc/upsert_known_person`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          p_tenant_phone: cleanPhone,
+          p_display_name: contact.name,
+          p_role: contact.role ?? null,
+          p_notes: contact.notes ?? null,
+          p_email: contact.email ?? null,
+          p_source: 'owner_defined',
+          p_confidence: 1.0,
+        }),
+      });
+    } catch (err) {
+      console.warn('[deploy-complete] seed known_person failed:', err);
+    }
+  }
+
+  // 2. knownGaps → fact atoms (tagged known_gap so they're visible to all lanes)
+  for (const gap of data.knownGaps ?? []) {
+    if (!gap || gap.length < 10) continue;
+    try {
+      await fetch(`${supabaseUrl}/rest/v1/rpc/upsert_knowledge_atom`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          p_tenant_phone: cleanPhone,
+          p_kind: 'fact',
+          p_content: gap,
+          p_source: 'onboarding',
+          p_confidence: 1.0,
+          p_owner_confirmed: true,
+          p_tags: ['known_gap', 'roadmap', 'general'],
+        }),
+      });
+    } catch {}
+  }
+
+  // 3. painPoints → constraint atoms (general visibility)
+  for (const pain of data.painPoints ?? []) {
+    if (!pain || pain.length < 10) continue;
+    try {
+      await fetch(`${supabaseUrl}/rest/v1/rpc/upsert_knowledge_atom`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          p_tenant_phone: cleanPhone,
+          p_kind: 'constraint',
+          p_content: `Owner pain point captured during onboarding: ${pain}`,
+          p_source: 'onboarding',
+          p_confidence: 0.9,
+          p_owner_confirmed: true,
+          p_tags: ['onboarding', 'general'],
+        }),
+      });
+    } catch {}
+  }
+
+  // 4. keyWorkflows → goal atoms
+  for (const workflow of data.keyWorkflows ?? []) {
+    if (!workflow || workflow.length < 10) continue;
+    try {
+      await fetch(`${supabaseUrl}/rest/v1/rpc/upsert_knowledge_atom`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          p_tenant_phone: cleanPhone,
+          p_kind: 'goal',
+          p_content: `Key workflow / goal: ${workflow}`,
+          p_source: 'onboarding',
+          p_confidence: 0.9,
+          p_owner_confirmed: true,
+          p_tags: ['onboarding', 'general'],
+        }),
+      });
+    } catch {}
+  }
+
+  // 5. preferredChannel → whatsapp_contexts.profile.preferred_channel
+  if (data.preferredChannel) {
+    try {
+      const ctxRes = await fetch(
+        `${supabaseUrl}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile`,
+        { headers },
+      );
+      const rows = ctxRes.ok ? await ctxRes.json() : [];
+      const profile = rows[0]?.profile ?? {};
+      profile.preferred_channel = data.preferredChannel;
+      await fetch(`${supabaseUrl}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
+        method: 'PATCH',
+        headers: { ...headers, Prefer: 'return=minimal' },
+        body: JSON.stringify({ profile }),
+      });
+    } catch {}
+  }
+
+  const seeded = (data.keyContacts?.length ?? 0) + (data.knownGaps?.length ?? 0) + (data.painPoints?.length ?? 0) + (data.keyWorkflows?.length ?? 0);
+  console.log(`[deploy-complete] onboarding seeded: ${data.keyContacts?.length ?? 0} contacts, ${data.knownGaps?.length ?? 0} gaps, ${data.painPoints?.length ?? 0} pains, ${data.keyWorkflows?.length ?? 0} workflows, channel=${data.preferredChannel ?? 'default'}`);
+}
+
 async function loadProtocolOverride(supabaseUrl: string, supabaseKey: string, cleanPhone: string): Promise<any | null> {
   try {
     const res = await fetch(
@@ -212,6 +336,16 @@ async function persistEpic1Pipeline(
         }).catch(() => {});
       }
     } catch {}
+
+    // Onboarding-polish seeding (May 2026): seed known_people from
+    // keyContacts and atoms from painPoints/knownGaps/keyWorkflows so the
+    // team has owner context from minute one — no Ron-vs-Alex confusion
+    // and no agents inventing crises about gaps the owner already flagged.
+    try {
+      await seedFromOnboarding(supabaseUrl, supabaseKey, cleanPhone, collectedData);
+    } catch (err) {
+      console.warn('[deploy-complete] onboarding seeding failed (non-fatal):', err);
+    }
 
     // Provisioning with operating-protocol override
     const protocolOverride = await loadProtocolOverride(supabaseUrl, supabaseKey, cleanPhone);

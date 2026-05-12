@@ -41,6 +41,17 @@ export interface OnboardingData {
   contactEmail?: string;
   contactPhone?: string;
   websiteUrl?: string;
+  /** Preferred messaging surface. WhatsApp default; Telegram/SMS/iMessage opt-in.
+   * Used by deploy-complete to provision the right channel adapter. */
+  preferredChannel?: 'whatsapp' | 'telegram' | 'sms' | 'imessage' | 'email_only';
+  /** Important people in the owner's network — attorney, accountant, partner,
+   * key clients. Seeded into known_people on deploy-complete so the team has
+   * entity context from day one (no Ron-vs-Alex confusion). */
+  keyContacts?: { name: string; role: string; email?: string; notes?: string }[];
+  /** Explicit roadmap gaps / things-not-yet-built that the owner wants the
+   * team to NOT flag as missing. Seeded as 'fact' atoms tagged ['known_gap']
+   * so all agents auto-suppress complaints. */
+  knownGaps?: string[];
 }
 
 export interface ConversationMessage {
@@ -167,6 +178,9 @@ KEY DATA TO CAPTURE (naturally, not as an interrogation):
 - Communication channels they use (WhatsApp, email, Instagram, phone)
 - Website URL if they have one
 - Existing tools (scheduling, CRM, social media)
+- preferredChannel — which surface they want their AI team to reach them on. DEFAULT: 'whatsapp'. Other options: 'telegram', 'sms', 'imessage', 'email_only'. Capture only if they mention a preference; otherwise default.
+- keyContacts (OPTIONAL but high-value) — important people in their personal/business network. Attorney, accountant, partner/spouse, top clients. Schema: { name, role, email? }. ASK ONCE briefly toward the end: "Quick — who are 2-3 people I should know about up front? (attorney, accountant, key client — names and what they do for you)". Skip if they don't volunteer. Do NOT interrogate.
+- knownGaps (OPTIONAL) — things they know aren't built yet that they don't want their team flagging. E.g. "I haven't set up analytics yet" or "no formal CRM". Capture only if mentioned.
 If the user front-loads this info, capture it and move on. Never ask for something they already told you.
 
 NEVER ask "What's your biggest headache?" or "Do you have team members?" if they already told you. NEVER ask permission to show the team — just show it.
