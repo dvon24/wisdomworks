@@ -163,6 +163,93 @@ export async function listImapUnread(conn: ImapConnection, limit = 10): Promise<
   }
 }
 
+/**
+ * Open-ended IMAP search — finds emails (read or unread) by sender,
+ * subject, body keyword, or any combination. Used when the owner says
+ * "find John's email about the kitchen rewire" — most often a previously-
+ * read message they want to act on later.
+ */
+export interface ImapSearchQuery {
+  /** Optional sender filter — substring match on From address or name. */
+  from?: string;
+  /** Optional subject substring filter. */
+  subject?: string;
+  /** Optional body keyword. */
+  bodyKeyword?: string;
+  /** How far back to search. Default 30 days. */
+  sinceDays?: number;
+  /** Max results. Default 10. */
+  limit?: number;
+}
+
+export async function searchImap(conn: ImapConnection, query: ImapSearchQuery): Promise<{ success: boolean; data?: EmailMessage[]; error?: string }> {
+  if (!conn.account_email) return { success: false, error: 'IMAP connection missing account email' };
+
+  let ImapFlow: any;
+  let simpleParser: any;
+  try {
+    ImapFlow = await loadImapFlow();
+    if (!ImapFlow) return { success: false, error: 'imapflow loaded but ImapFlow constructor not found' };
+    simpleParser = await loadMailparser();
+  } catch (err: any) {
+    return { success: false, error: `imap deps load failed: ${err?.message ?? err}` };
+  }
+
+  const client = makeClient(ImapFlow, conn);
+  const limit = Math.min(query.limit ?? 10, 25);
+  const sinceDays = query.sinceDays ?? 30;
+
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+      const criteria: any = { since };
+      // IMAP supports server-side filters for from/subject/body — much faster
+      // than fetching everything then filtering client-side.
+      if (query.from) criteria.from = query.from;
+      if (query.subject) criteria.subject = query.subject;
+      if (query.bodyKeyword) criteria.body = query.bodyKeyword;
+      const uids = await client.search(criteria);
+      const slice = (uids ?? []).slice(-limit).reverse();
+      const out: EmailMessage[] = [];
+      for (const uid of slice) {
+        try {
+          const msg = await client.fetchOne(uid, { envelope: true, source: true, flags: true });
+          if (!msg) continue;
+          const env = msg.envelope ?? {};
+          const fromAddr = env.from?.[0];
+          const body = await parseBody(simpleParser, msg.source);
+          const text = body.text || body.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          const isUnread = !msg.flags?.has?.('\\Seen');
+          out.push({
+            id: msg.uid?.toString() ?? uid.toString(),
+            threadId: env.messageId ?? '',
+            from: fromAddr?.address ?? '',
+            fromName: fromAddr?.name,
+            to: env.to?.map((a: any) => a.address ?? '') ?? [],
+            subject: env.subject ?? '(no subject)',
+            body: text,
+            bodyPreview: text.slice(0, 200),
+            date: env.date?.toISOString() ?? new Date().toISOString(),
+            isUnread,
+            hasAttachments: false,
+          });
+        } catch (fetchErr) {
+          console.warn('[imap] searchImap fetchOne failed:', imapErrorDetail(fetchErr));
+        }
+      }
+      return { success: true, data: out };
+    } finally {
+      lock.release();
+    }
+  } catch (err: any) {
+    return { success: false, error: `IMAP error: ${imapErrorDetail(err)}` };
+  } finally {
+    try { await client.logout(); } catch {}
+  }
+}
+
 export interface SentEmail {
   id: string;
   to: { address: string; name?: string }[];

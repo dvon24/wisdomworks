@@ -17,7 +17,7 @@ import {
   analyzeWebsite,
   type OAuthConnection,
 } from '@wisdomworks/shared';
-import { listImapUnread, sendImap } from '../../_lib/imap-runtime';
+import { listImapUnread, sendImap, searchImap } from '../../_lib/imap-runtime';
 import { queryKnowledge } from '../../_lib/knowledge-base';
 import { logCorrection } from '../../_lib/classification-learning';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
@@ -95,7 +95,7 @@ export interface AnthropicTool {
 const TOOL_LIST_EMAILS: AnthropicTool = {
   name: 'list_unread_emails',
   description:
-    "List the user's unread emails from the last 24 hours. Returns sender, subject, and a preview. Use when the user asks about their inbox, recent emails, or what they've missed.",
+    "List the user's UNREAD emails from the last 24 hours. Returns sender, subject, and a preview. Use only when the user is asking what's NEW in their inbox right now. If they're asking about a specific email (already read, older than 24h, or referenced by sender/subject) use search_emails instead.",
   input_schema: {
     type: 'object',
     properties: {
@@ -103,6 +103,22 @@ const TOOL_LIST_EMAILS: AnthropicTool = {
         type: 'number',
         description: 'Max emails to return (default 10).',
       },
+    },
+  },
+};
+
+const TOOL_SEARCH_EMAILS: AnthropicTool = {
+  name: 'search_emails',
+  description:
+    "Find specific emails (READ OR UNREAD) by sender, subject, or body keyword — across the last 30 days by default. Use whenever the owner references a specific email they want to act on: 'reply to John', 'find that quote from Acme', 'pull up the kitchen rewire thread'. Returns full body so you can draft a reply. This is the right tool when the email might already be read.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      from: { type: 'string', description: "Sender name or email substring. e.g. 'John' or 'acme.com'." },
+      subject: { type: 'string', description: "Subject substring. e.g. 'kitchen rewire'." },
+      body_keyword: { type: 'string', description: "Keyword in body. Use when from/subject aren't enough." },
+      since_days: { type: 'number', description: 'How far back to search. Default 30.' },
+      limit: { type: 'number', description: 'Max results. Default 10.' },
     },
   },
 };
@@ -1056,6 +1072,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
 
   if (hasEmail) {
     tools.push(TOOL_LIST_EMAILS);
+    tools.push(TOOL_SEARCH_EMAILS);
     tools.push(TOOL_SEND_EMAIL);
   }
   if (hasCalendar) {
@@ -1173,6 +1190,42 @@ export async function executeTool(
             `${i + 1}. From: ${e.fromName ?? e.from} | Subject: ${e.subject} | Preview: ${e.bodyPreview.slice(0, 120)}`,
         );
         return { content: `Found ${result.data.length} unread emails:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'search_emails': {
+        const conn = connections.find((c) => c.service === 'email');
+        if (!conn) return { content: 'No email account connected.', success: false };
+        const from = call.input.from ? String(call.input.from).trim() : undefined;
+        const subject = call.input.subject ? String(call.input.subject).trim() : undefined;
+        const bodyKeyword = call.input.body_keyword ? String(call.input.body_keyword).trim() : undefined;
+        if (!from && !subject && !bodyKeyword) {
+          return { content: 'Need at least one of: from, subject, body_keyword.', success: false };
+        }
+        const isImap = conn.provider === 'yahoo' || conn.provider === 'imap';
+        if (!isImap) {
+          return { content: `search_emails only supports Yahoo/IMAP today. For ${conn.provider}, use list_unread_emails for the last 24h.`, success: false };
+        }
+        const limit = Math.min(typeof call.input.limit === 'number' ? call.input.limit : 10, 25);
+        const sinceDays = typeof call.input.since_days === 'number' ? call.input.since_days : 30;
+        const result = await searchImap(conn as any, { from, subject, bodyKeyword, sinceDays, limit });
+        if (!result.success || !result.data) {
+          return { content: `Could not search emails: ${result.error}`, success: false };
+        }
+        if (result.data.length === 0) {
+          return { content: `No emails matched your filters in the last ${sinceDays} days.`, success: true };
+        }
+        // Return enough body to draft a reply. Cap each preview at ~500 chars
+        // so total stays manageable; the model can ask for more if needed.
+        const lines = result.data.map((e, i) => {
+          const date = new Date(e.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const readMark = e.isUnread ? '🔵' : '⚪';
+          const senderLine = `${i + 1}. ${readMark} From: ${e.fromName ?? e.from} <${e.from}>`;
+          return `${senderLine}\n   Subject: ${e.subject}\n   Date: ${date}\n   ID (use for inReplyToMessageId): ${e.threadId}\n   Body: ${e.body.slice(0, 500)}${e.body.length > 500 ? '… [truncated]' : ''}`;
+        });
+        return {
+          content: `Found ${result.data.length} email${result.data.length === 1 ? '' : 's'} matching your filters:\n\n${lines.join('\n\n')}`,
+          success: true,
+        };
       }
 
       case 'send_email': {
