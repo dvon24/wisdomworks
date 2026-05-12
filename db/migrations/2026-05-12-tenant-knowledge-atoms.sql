@@ -67,9 +67,39 @@ CREATE INDEX IF NOT EXISTS tenant_knowledge_atoms_tenant_idx
   ON tenant_knowledge_atoms (tenant_phone, created_at DESC);
 
 
+-- ─── normalize_atom_for_match ──────────────────────────────────────────────
+-- Strip subject pronouns / verb prefixes so "Owner's goal is X", "Devon's
+-- goal is X", "The owner has a goal of X" all reduce to "goal is X" and
+-- collide on dedup. Trigram match on the result.
+CREATE OR REPLACE FUNCTION normalize_atom_for_match(p_content TEXT)
+RETURNS TEXT
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT regexp_replace(
+    regexp_replace(
+      regexp_replace(
+        lower(trim(coalesce(p_content, ''))),
+        -- Strip leading possessives + names: "owner's", "devon's", "the owner's", "i'm"
+        '^(the\s+)?(owner|devon|user|i|we|client)(''s|s)?\s+',
+        '',
+        'g'
+      ),
+      -- Strip leading auxiliary verbs: "is", "has", "wants", "plans", "needs"
+      '^(is|has|have|wants?|needs?|plans?|will|told|said|mentioned|noted|flagged)\s+',
+      '',
+      'g'
+    ),
+    -- Collapse remaining whitespace
+    '\s+', ' ', 'g'
+  );
+$$;
+
+
 -- ─── upsert_knowledge_atom ─────────────────────────────────────────────────
 -- Idempotent insert/update. Confirmed atoms (owner_confirmed=true) never
--- get clobbered by auto-extracted ones.
+-- get clobbered by auto-extracted ones. Dedup uses normalize_atom_for_match
+-- so "Owner's goal X" and "Devon's goal X" collide.
 CREATE OR REPLACE FUNCTION upsert_knowledge_atom(
   p_tenant_phone TEXT,
   p_kind TEXT,
@@ -90,19 +120,20 @@ DECLARE
   v_existing_id UUID;
   v_existing_confirmed BOOLEAN;
 BEGIN
-  -- Normalize for dedup — collapse whitespace, lowercase first 80 chars
-  v_content_norm := lower(regexp_replace(trim(p_content), '\s+', ' ', 'g'));
+  v_content_norm := normalize_atom_for_match(p_content);
   IF length(v_content_norm) < 5 THEN
     RAISE EXCEPTION 'atom content too short';
   END IF;
 
-  -- Look for an existing similar atom (same tenant + kind + first 80 chars)
+  -- Look for an existing similar atom — match on normalized content's
+  -- first 50 chars (after stripping subject pronouns/verbs). Catches
+  -- "Owner's goal is X" vs "Devon's goal is X" as duplicates.
   SELECT id, owner_confirmed INTO v_existing_id, v_existing_confirmed
   FROM tenant_knowledge_atoms
   WHERE tenant_phone = p_tenant_phone
     AND kind = p_kind
     AND status = 'active'
-    AND lower(regexp_replace(trim(content), '\s+', ' ', 'g')) LIKE substring(v_content_norm FROM 1 FOR 60) || '%'
+    AND normalize_atom_for_match(content) LIKE substring(v_content_norm FROM 1 FOR 50) || '%'
   ORDER BY confidence DESC, created_at DESC
   LIMIT 1;
 

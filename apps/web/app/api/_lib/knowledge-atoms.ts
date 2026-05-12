@@ -150,6 +150,27 @@ export async function extractAtomsFromMessage(args: {
   if (!ANTHROPIC_API_KEY) return [];
   if (!args.messageText || args.messageText.trim().length < 20) return [];
 
+  // Idempotency guard — Meta sometimes delivers the same WhatsApp webhook
+  // more than once. If we've already extracted atoms for this exact
+  // message_id, skip the (expensive) Anthropic call entirely.
+  if (args.messageId && SUPABASE_URL && SUPABASE_KEY) {
+    try {
+      const dupRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/tenant_knowledge_atoms?tenant_phone=eq.${args.tenantPhone}&source_message_id=eq.${encodeURIComponent(args.messageId)}&select=id&limit=1`,
+        { headers: headers() },
+      );
+      if (dupRes.ok) {
+        const rows = await dupRes.json();
+        if (rows.length > 0) {
+          console.log(`[atoms] skipping extraction for message ${args.messageId} — already processed`);
+          return [];
+        }
+      }
+    } catch {
+      // fall through — better to over-extract than skip a real new message
+    }
+  }
+
   const system = `You extract structured factual atoms from a business owner's messages to their AI assistant. The owner runs a business (or several) and tells the assistant things in passing. Your job: capture the durable facts that the AI team should remember.
 
 Return ONLY a JSON array. Each item:
