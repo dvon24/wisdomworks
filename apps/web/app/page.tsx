@@ -1531,12 +1531,20 @@ export default function CommandDeck() {
 
               <button
                 onClick={() => {
-                  // Default project_name based on agent — Au7o for Alex, etc.
+                  // Default project_name based on agent's NAME or ROLE.
+                  // Agents are named "Alex" / "Marcus" but their roles are
+                  // "Au7o Project Director" / "WisdomWorks Operations Manager"
+                  // — match against both so the pre-fill actually triggers.
+                  const haystack = `${selectedAgent.label ?? ''} ${selectedAgent.role ?? ''}`;
                   const guess =
-                    /au7o/i.test(selectedAgent.label) ? 'Au7o' :
-                    /wisdom/i.test(selectedAgent.label) ? 'WisdomWorks' :
+                    /au7o/i.test(haystack) ? 'Au7o' :
+                    /wisdom/i.test(haystack) ? 'WisdomWorks' :
                     '';
-                  setConnectForm((f) => ({ ...f, project_name: guess || f.project_name }));
+                  // Always overwrite project_name when we have a guess so the
+                  // wrong leftover value from a prior connection can't sneak
+                  // through. If no guess, clear so the user sees empty + the
+                  // missing-fields hint.
+                  setConnectForm((f) => ({ ...f, project_name: guess }));
                   setConnectError(null);
                   setConnectSuccess(null);
                   setConnectProjectOpen(true);
