@@ -41,6 +41,7 @@ import {
 } from '../../_lib/client-profiles';
 import { loadEmailPrefs, saveEmailPrefs } from '../../_lib/email-notifications';
 import { listOpenInsights, getInsightById, setInsightStatus } from '../../_lib/business-insights';
+import { emitTeamGapInsight, loadCurrentTeam } from '../../_lib/team-gap-detector';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -579,6 +580,39 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+// ─── Team gap detection ──────────────────────────────────────────────────
+
+const TOOL_LIST_MY_TEAM: AnthropicTool = {
+  name: 'list_my_team',
+  description:
+    "List the owner's CURRENT active agent team (name, role, lane, status). Use BEFORE propose_team_addition so you don't suggest an agent that overlaps an existing one. Also use when the owner asks 'who's on my team', 'what agents do I have', 'who handles X'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_PROPOSE_TEAM_ADDITION: AnthropicTool = {
+  name: 'propose_team_addition',
+  description:
+    "When the owner describes a recurring need their current team doesn't cover, propose adding a new agent. DON'T call add_agent_to_team directly — that's jarring autonomous action. Instead, propose via this tool so the owner sees the suggestion in their Insights queue and approves consciously. Call this when you hear: 'I keep losing leads', 'I can't keep up with X', 'I wish someone could handle Y', or when you notice a gap between the owner's needs and the team's lanes. ALWAYS call list_my_team first to confirm no existing agent covers this. Provides the role, why it's needed, and 3-5 example responsibilities so the owner can decide.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agent_name: { type: 'string', description: 'Friendly first-name suggestion (e.g. Riley, Nora, Atlas).' },
+      agent_role: { type: 'string', description: 'Role title (e.g. "Lead Intake & Quoting", "Inventory Tracker").' },
+      description: { type: 'string', description: 'One-sentence description of what this agent does day-to-day.' },
+      trigger_reason: { type: 'string', description: 'The specific owner-observable thing that triggered this proposal. Quote them if possible: "Owner said \'I keep losing leads at night\'."' },
+      tier: { type: 'string', enum: ['Haiku', 'Sonnet', 'Opus'], description: 'Routine work → Haiku; general → Sonnet; complex reasoning → Opus.' },
+      lane: { type: 'string', enum: ['scheduler', 'customer_service', 'marketing', 'finance', 'operations', 'analytics', 'specialist'] },
+      example_responsibilities: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '3-5 concrete things this agent would do, written for the owner to evaluate.',
+      },
+      parent_agent_name: { type: 'string', description: 'Optional — name of an existing top-level agent this should report to.' },
+    },
+    required: ['agent_name', 'agent_role', 'description', 'trigger_reason'],
+  },
+};
+
 // ─── Business Insights (Story 2b.2) ──────────────────────────────────────
 
 const TOOL_LIST_INSIGHTS: AnthropicTool = {
@@ -1010,6 +1044,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LIST_INSIGHTS);
   tools.push(TOOL_APPROVE_INSIGHT);
   tools.push(TOOL_DISMISS_INSIGHT);
+  tools.push(TOOL_LIST_MY_TEAM);
+  tools.push(TOOL_PROPOSE_TEAM_ADDITION);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1782,6 +1818,45 @@ export async function executeTool(
         return { content: lines.join('\n'), success: true };
       }
 
+      case 'list_my_team': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const team = await loadCurrentTeam(cleanPhone);
+        if (team.length === 0) return { content: 'No active agents on the team yet.', success: true };
+        const lines = team.map((m) => `  • ${m.name} — ${m.role}${m.category ? ` (${m.category})` : ''}${m.status ? ` [${m.status}]` : ''}`);
+        return { content: `${team.length} agent${team.length === 1 ? '' : 's'} on the team:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'propose_team_addition': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const agentName = String(call.input.agent_name ?? '').trim();
+        const agentRole = String(call.input.agent_role ?? '').trim();
+        const description = String(call.input.description ?? '').trim();
+        const triggerReason = String(call.input.trigger_reason ?? '').trim();
+        if (!agentName || !agentRole || !description || !triggerReason) {
+          return { content: 'Missing agent_name, agent_role, description, or trigger_reason.', success: false };
+        }
+        const result = await emitTeamGapInsight({
+          tenantPhone: cleanPhone,
+          agentName,
+          agentRole,
+          description,
+          triggerReason,
+          tier: call.input.tier as any,
+          lane: call.input.lane ? String(call.input.lane) : undefined,
+          parentAgentName: call.input.parent_agent_name ? String(call.input.parent_agent_name) : undefined,
+          exampleResponsibilities: Array.isArray(call.input.example_responsibilities)
+            ? call.input.example_responsibilities.map(String).slice(0, 5)
+            : undefined,
+        });
+        if (!result.ok) return { content: `Could not propose: ${result.reason ?? 'unknown'}`, success: false };
+        return {
+          content: `Proposed adding ${agentName} (${agentRole}). The owner will see it as an insight (id ${result.insightId?.slice(0, 8)}) — they can approve to provision the agent or dismiss.`,
+          success: true,
+        };
+      }
+
       case 'list_insights': {
         if (!user) return { content: 'Internal: user context required.', success: false };
         const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
@@ -1809,6 +1884,45 @@ export async function executeTool(
         }
         const ok = await setInsightStatus(insight.id, 'approved');
         if (!ok) return { content: 'Could not update the insight.', success: false };
+
+        // Execute inline: team_gap → provision the agent (mirrors add_agent_to_team logic)
+        if (insight.detector === 'team_gap') {
+          const p = insight.payload ?? {};
+          const team = user.profile?.team ?? [];
+          const id = String(p.agent_name).toLowerCase().replace(/\s+/g, '-');
+          const tier = ['Haiku', 'Sonnet', 'Opus'].includes(p.tier) ? p.tier : 'Sonnet';
+          const newAgent: any = {
+            id,
+            name: p.agent_name,
+            role: p.agent_role,
+            tier,
+            description: p.description,
+            tools: [],
+            channels: [],
+          };
+          const parent = (p.parent_agent_name ?? '').toString().toLowerCase();
+          if (parent) {
+            const manager = team.find((a: any) => a.name?.toLowerCase() === parent || a.id?.toLowerCase() === parent);
+            if (manager) {
+              const sub = manager.subTeam ?? { count: 0, label: `${manager.name}'s team`, agents: [] };
+              sub.agents.push({ id: `${manager.id ?? id}-${id}`, name: p.agent_name, role: p.agent_role, tier });
+              sub.count = sub.agents.length;
+              manager.subTeam = sub;
+            } else {
+              team.push(newAgent);
+            }
+          } else {
+            team.push(newAgent);
+          }
+          user.profile = user.profile ?? { preferences: {}, activeTopics: [] } as any;
+          user.profile.team = team;
+          await saveUserContext(user);
+          await setInsightStatus(insight.id, 'executed');
+          return {
+            content: `✓ Added ${p.agent_name} (${p.agent_role}) to your team. They'll start on the next agent tick.`,
+            success: true,
+          };
+        }
 
         // Execute inline for actions that are simple state changes
         if (insight.detector === 'vip_suggestion') {
