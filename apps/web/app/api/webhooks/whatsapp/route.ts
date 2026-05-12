@@ -14,6 +14,9 @@ import { NextResponse } from 'next/server';
 import { loadUserContext, type UserContext } from './context-store';
 import { generateIrisReply } from './iris-brain';
 import { claimMessage } from '../../_lib/message-idempotency';
+import { downloadWhatsAppMedia } from '../../_lib/whatsapp-media';
+import { uploadClientPhoto } from '../../_lib/photo-storage';
+import { analyzePhoto, saveClientPhoto } from '../../_lib/photo-analysis';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -50,6 +53,35 @@ function sanitizeInput(text: string): string {
 
 function sanitizeName(name: string): string {
   return name.replace(/[<>&"'\/\\]/g, '').slice(0, 100);
+}
+
+async function sendWhatsAppReply(to: string, body: string): Promise<boolean> {
+  const phoneId = process.env.WHATSAPP_PHONE_ID;
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!phoneId || !accessToken) return false;
+  try {
+    const res = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: body.slice(0, 4090) },
+      }),
+    });
+    if (!res.ok) {
+      console.error('[whatsapp] sendWhatsAppReply failed:', await res.json());
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('[whatsapp] sendWhatsAppReply exception:', err);
+    return false;
+  }
 }
 
 
@@ -89,10 +121,12 @@ export async function POST(request: Request) {
     }
 
     const from = message.from;
-    const text = sanitizeInput(message.text?.body ?? '');
+    const messageType = message.type ?? (message.text ? 'text' : 'unknown');
+    const text = sanitizeInput(message.text?.body ?? message.image?.caption ?? '');
     const name = sanitizeName(contact?.profile?.name ?? 'Customer');
+    const imageId = message.image?.id;
 
-    if (!text) {
+    if (!text && !imageId) {
       return NextResponse.json({ status: 'ok' });
     }
 
@@ -106,7 +140,86 @@ export async function POST(request: Request) {
       return NextResponse.json({ status: 'ok', deduplicated: true });
     }
 
-    console.log(`[whatsapp] Message from ${name} (${from}): ${text.slice(0, 100)}`);
+    console.log(`[whatsapp] ${messageType} from ${name} (${from}): ${text.slice(0, 100) || `[image:${imageId}]`}`);
+
+    // ─── Image message path (Story 2b.1 Phase 2) ──────────────────────────
+    // Owner sends a photo: download → upload to Storage → vision analysis →
+    // save to client_photos → reply with the analysis brief. We do this in
+    // parallel with loading user context so the iris-brain reply can
+    // reference the analysis as soon as it lands.
+    if (imageId) {
+      const user = await loadUserContext(from, name);
+      const verticalLabel = (user.profile as any)?.vertical_template?.label ?? null;
+      const photoCaption = sanitizeInput(message.image?.caption ?? '');
+
+      try {
+        const media = await downloadWhatsAppMedia(imageId);
+        if (!media) {
+          await sendWhatsAppReply(from, "I couldn't download that photo. Try sending it again.");
+          return NextResponse.json({ status: 'ok' });
+        }
+        const upload = await uploadClientPhoto({
+          tenantPhone: from,
+          bytes: media.bytes,
+          mimeType: media.mimeType,
+        });
+        if (!upload) {
+          await sendWhatsAppReply(from, "I downloaded that photo but couldn't store it. The Supabase 'client-photos' bucket may not exist yet.");
+          return NextResponse.json({ status: 'ok' });
+        }
+        const brief = await analyzePhoto({
+          imageBytes: media.bytes,
+          mimeType: media.mimeType,
+          verticalLabel,
+          caption: photoCaption || null,
+        });
+        if (!brief) {
+          await sendWhatsAppReply(from, "Photo saved, but I couldn't analyze it right now. I'll try again on the next ask.");
+          await saveClientPhoto({
+            tenantPhone: from,
+            storagePath: upload.path,
+            displayUrl: upload.signedUrl,
+            brief: { description: '', tags: [], entities: {} },
+            sourceMessageId: message.id,
+            sourceChannel: 'whatsapp',
+            caption: photoCaption || undefined,
+          });
+          return NextResponse.json({ status: 'ok' });
+        }
+        await saveClientPhoto({
+          tenantPhone: from,
+          storagePath: upload.path,
+          displayUrl: upload.signedUrl,
+          brief,
+          sourceMessageId: message.id,
+          sourceChannel: 'whatsapp',
+          caption: photoCaption || undefined,
+        });
+
+        // Compose a short reply summarizing what I saw + extracted entities
+        const replyLines: string[] = ['📸 ' + brief.description];
+        const entities = brief.entities ?? {};
+        if (entities.problem) replyLines.push(`Problem: ${entities.problem}`);
+        if (entities.diagnosis) replyLines.push(`Diagnosis: ${entities.diagnosis}`);
+        if (entities.solution) replyLines.push(`Solution: ${entities.solution}`);
+        if (entities.service) replyLines.push(`Service: ${entities.service}`);
+        if (Array.isArray(entities.tools) && entities.tools.length > 0) {
+          replyLines.push(`Tools/parts: ${entities.tools.join(', ')}`);
+        }
+        if (brief.tags.length > 0) replyLines.push(`Tags: ${brief.tags.slice(0, 6).join(', ')}`);
+        replyLines.push('');
+        replyLines.push("Want me to attach this to a client profile? Just tell me who it's for.");
+
+        await sendWhatsAppReply(from, replyLines.join('\n'));
+        return NextResponse.json({ status: 'ok' });
+      } catch (err) {
+        console.error('[whatsapp] image-handling error:', err);
+        await sendWhatsAppReply(from, "I hit an error processing that photo. Try again or send a text message instead.");
+        return NextResponse.json({ status: 'ok' });
+      }
+    }
+
+    // ─── Text message path (existing iris-brain flow) ─────────────────────
 
     // Load persistent user context (survives Vercel cold starts)
     const user = await loadUserContext(from, name);
