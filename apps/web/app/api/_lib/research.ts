@@ -426,15 +426,22 @@ Hard rules:
  * Process one pending research request end-to-end: mark in_progress,
  * run the research, store the brief, enqueue an approval-queue
  * notification, mark completed (or failed).
+ *
+ * Pass skipEnqueue=true when the caller is delivering the brief inline
+ * (e.g. owner-initiated WhatsApp request). Otherwise the digest cron
+ * picks the same brief up and double-sends it.
  */
-export async function processResearchRequest(req: ResearchRequest, ownerContext?: string): Promise<{ ok: boolean; brief?: ResearchBrief; error?: string }> {
+export async function processResearchRequest(
+  req: ResearchRequest,
+  opts: { ownerContext?: string; skipEnqueue?: boolean } = {},
+): Promise<{ ok: boolean; brief?: ResearchBrief; error?: string }> {
   await markStatus(req.id, { status: 'in_progress', started_at: new Date().toISOString() });
 
   const result = await runResearch({
     topic: req.topic,
     reason: req.reason ?? undefined,
     kind: req.kind,
-    ownerContext,
+    ownerContext: opts.ownerContext,
   });
 
   if (!result.brief) {
@@ -448,31 +455,36 @@ export async function processResearchRequest(req: ResearchRequest, ownerContext?
     return { ok: false, error: result.error };
   }
 
-  // Enqueue an approval-queue notification with the brief
-  const { enqueueNotification } = await import('./notifications');
-  const bodyLines = [
-    result.brief.summary,
-    '',
-    'KEY FINDINGS:',
-    ...result.brief.key_findings.map((f) => `• ${f}`),
-    '',
-    'RECOMMENDATIONS:',
-    ...result.brief.recommendations.map((r) => `→ ${r}`),
-    '',
-    `Sources: ${result.brief.sources.slice(0, 3).map((s) => s.url).join(', ')}${result.brief.sources.length > 3 ? ` +${result.brief.sources.length - 3} more` : ''}`,
-    `Confidence: ${Math.round(result.brief.confidence * 100)}%`,
-  ];
+  let notifId: string | null = null;
+  if (!opts.skipEnqueue) {
+    // Enqueue an approval-queue notification with the brief — only when
+    // delivery is NOT happening inline (background path: agent-initiated
+    // research that completes between owner messages).
+    const { enqueueNotification } = await import('./notifications');
+    const bodyLines = [
+      result.brief.summary,
+      '',
+      'KEY FINDINGS:',
+      ...result.brief.key_findings.map((f) => `• ${f}`),
+      '',
+      'RECOMMENDATIONS:',
+      ...result.brief.recommendations.map((r) => `→ ${r}`),
+      '',
+      `Sources: ${result.brief.sources.slice(0, 3).map((s) => s.url).join(', ')}${result.brief.sources.length > 3 ? ` +${result.brief.sources.length - 3} more` : ''}`,
+      `Confidence: ${Math.round(result.brief.confidence * 100)}%`,
+    ];
 
-  const notifId = await enqueueNotification({
-    tenantPhone: req.tenant_phone,
-    kind: 'agent_observation',
-    severity: result.brief.confidence >= 0.7 ? 'high' : 'medium',
-    title: `Research: ${req.topic.slice(0, 80)}`,
-    body: bodyLines.join('\n').slice(0, 1000),
-    sourceAgent: req.requesting_agent_name ?? 'Sophia',
-    sourceId: req.id,
-    metadata: { brief: result.brief, requesting_agent: req.requesting_agent_name },
-  });
+    notifId = await enqueueNotification({
+      tenantPhone: req.tenant_phone,
+      kind: 'agent_observation',
+      severity: result.brief.confidence >= 0.7 ? 'high' : 'medium',
+      title: `Research: ${req.topic.slice(0, 80)}`,
+      body: bodyLines.join('\n').slice(0, 1000),
+      sourceAgent: req.requesting_agent_name ?? 'Sophia',
+      sourceId: req.id,
+      metadata: { brief: result.brief, requesting_agent: req.requesting_agent_name },
+    });
+  }
 
   await markStatus(req.id, {
     status: 'completed',
@@ -480,7 +492,7 @@ export async function processResearchRequest(req: ResearchRequest, ownerContext?
     result_brief: result.brief,
     searches_used: result.searchesUsed,
     tokens_used: result.tokensUsed,
-    surfaced_in_notification_id: notifId ?? null,
+    surfaced_in_notification_id: notifId,
     completed_at: new Date().toISOString(),
   });
 

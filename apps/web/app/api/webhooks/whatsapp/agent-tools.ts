@@ -1735,7 +1735,9 @@ export async function executeTool(
             const pending = await loadPendingResearch(cleanPhone, 5);
             const target = pending.find((p) => p.id === enq.id);
             if (target) {
-              const result = await processResearchRequest(target);
+              // Owner-initiated path: brief is delivered inline as the
+              // chat reply, so skip the digest enqueue to avoid double-send.
+              const result = await processResearchRequest(target, { skipEnqueue: true });
               if (result.ok && result.brief) {
                 const b = result.brief;
                 const briefLines = [
