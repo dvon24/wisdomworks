@@ -36,6 +36,7 @@ import {
   fetchGitHubTree,
   fetchVercelDeployments,
 } from '../../_lib/project-sync';
+import { enqueueResearch, loadPendingResearch, processResearchRequest, type ResearchKind } from '../../_lib/research';
 import {
   generateWordDoc,
   generatePowerPoint,
@@ -462,6 +463,30 @@ const TOOL_GET_PROJECT_STATUS: AnthropicTool = {
   },
 };
 
+// ─── Phase 2 — Research / competitive intelligence ───
+const TOOL_REQUEST_RESEARCH: AnthropicTool = {
+  name: 'request_research',
+  description:
+    "Queue a research request — Sophia will run actual web searches and bring back a structured brief. Use when the owner mentions a competitor, market trend, news event, or asks 'what do you think about X', AND outside data would meaningfully inform the answer. Owner-initiated requests bypass the daily 5-search cap. Returns a request id; the synthesized brief lands in the approval queue when ready.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      topic: { type: 'string', description: "What to research, e.g. 'getviktor.com positioning and pricing' or 'best practices for solo entrepreneur scheduling'." },
+      reason: { type: 'string', description: "Why this matters — gives the researcher context and the owner the rationale when the brief lands." },
+      kind: { type: 'string', enum: ['competitor_analysis', 'market_research', 'best_practices', 'fact_check', 'general'], description: 'Defaults to general. Use competitor_analysis when the topic is a named competitor.' },
+      owner_initiated: { type: 'boolean', description: 'Set true when the OWNER asked for this research directly (bypasses the daily search cap). Default false for agent-initiated.' },
+    },
+    required: ['topic'],
+  },
+};
+
+const TOOL_LIST_PENDING_RESEARCH: AnthropicTool = {
+  name: 'list_pending_research',
+  description:
+    "List research requests currently pending or in progress. Use when the user asks 'what are you researching for me' or to check Sophia's queue.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 const TOOL_LIST_ALL_PROJECTS: AnthropicTool = {
   name: 'list_all_projects',
   description:
@@ -720,6 +745,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_FORGET_PERSON);
   tools.push(TOOL_GET_PROJECT_STATUS);
   tools.push(TOOL_LIST_ALL_PROJECTS);
+  tools.push(TOOL_REQUEST_RESEARCH);
+  tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_LIST_RECENT_COMMITS);
   tools.push(TOOL_LIST_OPEN_ISSUES);
   tools.push(TOOL_READ_REPO_FILE);
@@ -1395,6 +1422,77 @@ export async function executeTool(
         return ok
           ? { content: 'Removed. Future ticks won\'t reference that person.', success: true }
           : { content: 'Forget failed — id not found.', success: false };
+      }
+
+      case 'request_research': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const topic = String(call.input.topic ?? '').trim();
+        if (!topic) return { content: 'Need a topic to research.', success: false };
+        const reason = call.input.reason ? String(call.input.reason) : undefined;
+        const kind = (call.input.kind ?? 'general') as ResearchKind;
+        const ownerInitiated = call.input.owner_initiated !== false; // tool-called via chat = owner-initiated by default
+
+        const enq = await enqueueResearch({
+          tenantPhone: cleanPhone,
+          topic,
+          reason,
+          kind,
+          ownerInitiated,
+        });
+        if (enq.deferred) return { content: `Daily research cap reached. ${enq.reason}`, success: false };
+        if (!enq.id) return { content: `Could not queue research: ${enq.reason ?? 'unknown'}`, success: false };
+
+        // For owner-initiated requests, execute immediately so the owner gets
+        // the brief in the SAME conversation, not waiting for a tick later.
+        if (ownerInitiated) {
+          try {
+            const { loadPendingResearch, processResearchRequest } = await import('../../_lib/research');
+            const pending = await loadPendingResearch(cleanPhone, 5);
+            const target = pending.find((p) => p.id === enq.id);
+            if (target) {
+              const result = await processResearchRequest(target);
+              if (result.ok && result.brief) {
+                const b = result.brief;
+                const briefLines = [
+                  `Researched: ${topic}`,
+                  '',
+                  b.summary,
+                  '',
+                  'Key findings:',
+                  ...b.key_findings.slice(0, 6).map((f: string) => `• ${f}`),
+                  '',
+                  'Recommendations:',
+                  ...b.recommendations.map((r: string) => `→ ${r}`),
+                  '',
+                  `Sources: ${b.sources.slice(0, 3).map((s: any) => s.url).join(', ')}${b.sources.length > 3 ? ` (+${b.sources.length - 3} more)` : ''}`,
+                  `Confidence: ${Math.round(b.confidence * 100)}%`,
+                  '',
+                  `(Saved to your approval queue too.)`,
+                ];
+                return { content: briefLines.join('\n'), success: true };
+              }
+              return { content: `Research queued but synthesis failed: ${result.error ?? 'unknown'}. I'll retry on my next tick.`, success: false };
+            }
+          } catch (err) {
+            // Fall through to "queued" message
+          }
+        }
+        return {
+          content: `Got it — queued research on "${topic}". I'll run it and surface the brief in your next digest.`,
+          success: true,
+        };
+      }
+
+      case 'list_pending_research': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const pending = await loadPendingResearch(cleanPhone, 10);
+        if (pending.length === 0) {
+          return { content: "Nothing queued. If you want me to research something, just say 'research X' or 'look up Y'.", success: true };
+        }
+        const lines = pending.map((p, i) => `${i + 1}. [${p.status}] ${p.topic}${p.requesting_agent_name ? ` (requested by ${p.requesting_agent_name})` : ''}`);
+        return { content: `${pending.length} pending research request${pending.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
       }
 
       case 'list_all_projects': {

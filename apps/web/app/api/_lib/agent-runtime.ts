@@ -777,6 +777,26 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
       await markDelegationsDone(ctx.pendingDelegations.map((d) => d.id));
     }
 
+    // Phase 2 — Sophia (orchestrator) processes pending research requests
+    // on her tick. Other agents request research; Sophia executes. Cap to
+    // 2 per tick so a backlog doesn't blow the cost budget.
+    if (ownLane === 'orchestrator') {
+      try {
+        const { loadPendingResearch, processResearchRequest } = await import('./research');
+        const pending = await loadPendingResearch(instance.tenant_phone, 2);
+        for (const req of pending) {
+          const result = await processResearchRequest(req);
+          if (result.ok) {
+            console.log(`[research] Sophia completed "${req.topic.slice(0, 60)}" for ${instance.tenant_phone}`);
+          } else {
+            console.warn(`[research] Sophia failed on "${req.topic.slice(0, 60)}": ${result.error}`);
+          }
+        }
+      } catch (err) {
+        console.warn('[research] orchestrator pickup failed:', err);
+      }
+    }
+
     // Story 2.15 — skill formation + cross-agent learning.
     //   1. If the agent applied one of the lane's proven techniques, record
     //      success/failure on that skill (success = acted/proposed, failure
