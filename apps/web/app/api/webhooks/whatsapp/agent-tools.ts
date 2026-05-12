@@ -462,6 +462,13 @@ const TOOL_GET_PROJECT_STATUS: AnthropicTool = {
   },
 };
 
+const TOOL_LIST_ALL_PROJECTS: AnthropicTool = {
+  name: 'list_all_projects',
+  description:
+    "List EVERY project connected to the tenant across ALL agents — not just this agent's. Returns each project's name, provider, status, which agent is assigned, last sync time, and any sync error. Use when the owner asks 'what's connected?', 'are Alex and Marcus set up?', 'show me my projects', 'what do my agents have access to'. This is the answer to verification questions about project connections.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 const TOOL_LIST_RECENT_COMMITS: AnthropicTool = {
   name: 'list_recent_commits',
   description:
@@ -712,6 +719,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LIST_KNOWN_PEOPLE);
   tools.push(TOOL_FORGET_PERSON);
   tools.push(TOOL_GET_PROJECT_STATUS);
+  tools.push(TOOL_LIST_ALL_PROJECTS);
   tools.push(TOOL_LIST_RECENT_COMMITS);
   tools.push(TOOL_LIST_OPEN_ISSUES);
   tools.push(TOOL_READ_REPO_FILE);
@@ -1387,6 +1395,44 @@ export async function executeTool(
         return ok
           ? { content: 'Removed. Future ticks won\'t reference that person.', success: true }
           : { content: 'Forget failed — id not found.', success: false };
+      }
+
+      case 'list_all_projects': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const allConns = await loadActiveConnections();
+        const myConns = allConns.filter((c) => c.tenant_phone === cleanPhone);
+        if (myConns.length === 0) {
+          return {
+            content: "No projects connected yet. Go to the Command Deck, click into an agent (like Alex or Marcus), then 'Connect Project' to wire up a Vercel + GitHub repo.",
+            success: true,
+          };
+        }
+        // Look up the agent_name for each connection's agent_config_id
+        const SU = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const SK = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        const cfgIds = Array.from(new Set(myConns.map((c) => c.agent_config_id).filter(Boolean))) as string[];
+        const cfgNameById = new Map<string, string>();
+        if (cfgIds.length > 0 && SU && SK) {
+          const cfgRes = await fetch(
+            `${SU}/rest/v1/agent_configs?id=in.(${cfgIds.join(',')})&select=id,agent_name`,
+            { headers: { apikey: SK, Authorization: `Bearer ${SK}` } },
+          );
+          if (cfgRes.ok) {
+            const cfgs = await cfgRes.json();
+            for (const c of cfgs) cfgNameById.set(c.id, c.agent_name);
+          }
+        }
+        const lines = myConns.map((c) => {
+          const agent = c.agent_config_id ? cfgNameById.get(c.agent_config_id) ?? 'unassigned' : 'unassigned';
+          const sync = c.last_synced_at ? `synced ${new Date(c.last_synced_at).toISOString().slice(0, 16).replace('T', ' ')}` : 'awaiting first sync';
+          const err = c.last_sync_error ? ` ⚠ ${c.last_sync_error.slice(0, 80)}` : '';
+          return `• ${c.project_name} (${c.provider}) — owned by ${agent} — ${sync}${err}`;
+        });
+        return {
+          content: `${myConns.length} connected project${myConns.length === 1 ? '' : 's'}:\n${lines.join('\n')}`,
+          success: true,
+        };
       }
 
       // ─── Project discovery tools (Au7o etc.) ───

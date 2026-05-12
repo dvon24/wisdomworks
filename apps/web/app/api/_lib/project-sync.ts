@@ -288,6 +288,8 @@ interface ProjectConnection {
   credentials: any;
   metadata: any;
   status: string;
+  last_synced_at?: string | null;
+  last_sync_error?: string | null;
 }
 
 export async function loadActiveConnections(): Promise<ProjectConnection[]> {

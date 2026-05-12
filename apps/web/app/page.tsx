@@ -1501,6 +1501,34 @@ export default function CommandDeck() {
                 </div>
               )}
 
+              {/* Connected projects block — shows which Vercel/GitHub
+                  projects this agent has access to */}
+              {detail?.projects?.length > 0 && (
+                <div style={{ padding: 12, background: 'rgba(255,255,255,0.5)', border: '1px solid var(--glass-border)', borderRadius: 12 }}>
+                  <div className="eyebrow" style={{ marginBottom: 6 }}>🔗 Connected projects</div>
+                  {detail.projects.map((p: any) => (
+                    <div key={p.id} style={{ marginBottom: 6, fontSize: 12, lineHeight: 1.4 }}>
+                      <div style={{ fontWeight: 600 }}>{p.projectName}</div>
+                      <div style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>
+                        {p.provider} ·{' '}
+                        {p.lastSyncError ? (
+                          <span style={{ color: '#c2410c' }}>sync error: {p.lastSyncError.slice(0, 60)}</span>
+                        ) : p.lastSyncedAt ? (
+                          <>synced {new Date(p.lastSyncedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</>
+                        ) : (
+                          <span style={{ color: 'var(--text-dim)' }}>awaiting first sync…</span>
+                        )}
+                      </div>
+                      {p.deployUrl && (
+                        <a href={p.deployUrl} target="_blank" rel="noreferrer" style={{ fontSize: 10.5, color: 'var(--accent-deep)' }}>
+                          {p.deployUrl}
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <button
                 onClick={() => {
                   // Default project_name based on agent — Au7o for Alex, etc.
@@ -1516,7 +1544,7 @@ export default function CommandDeck() {
                 className="btn primary"
                 style={{ fontSize: 11, justifyContent: 'center' }}
               >
-                Connect Project
+                {detail?.projects?.length > 0 ? 'Connect another project' : 'Connect Project'}
               </button>
 
               <button

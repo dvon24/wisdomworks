@@ -227,6 +227,35 @@ export async function GET(request: Request) {
     const instanceByConfigId = new Map<string, any>();
     for (const inst of agentInstances) instanceByConfigId.set(inst.agent_config_id, inst);
 
+    // Story 2b.9 — connected projects per agent (Au7o, WisdomWorks, etc.)
+    // so the deck can show "Connected: X" on each agent's detail panel.
+    const projectsByConfigId = new Map<string, any[]>();
+    try {
+      const projRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/project_connections?tenant_phone=eq.${cleanPhone}&status=eq.active&select=id,project_name,provider,agent_config_id,last_synced_at,last_sync_error,metadata`,
+        { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+      );
+      if (projRes.ok) {
+        const projs = await projRes.json();
+        for (const p of projs) {
+          if (!p.agent_config_id) continue;
+          const list = projectsByConfigId.get(p.agent_config_id) ?? [];
+          list.push({
+            id: p.id,
+            projectName: p.project_name,
+            provider: p.provider,
+            lastSyncedAt: p.last_synced_at,
+            lastSyncError: p.last_sync_error,
+            deployUrl: p.metadata?.deploy_url,
+            repoUrl: p.metadata?.repo_url,
+          });
+          projectsByConfigId.set(p.agent_config_id, list);
+        }
+      }
+    } catch (err) {
+      console.warn('[dashboard] project_connections fetch failed:', err);
+    }
+
     const agentDetails: Record<string, any> = {};
     for (const cfg of agentConfigs) {
       const key = (cfg.agent_name || '').toLowerCase().replace(/\s+/g, '-');
@@ -250,6 +279,7 @@ export async function GET(request: Request) {
         natsSubjects: inst?.nats_subjects ?? [],
         signalConnections: inst?.signal_connections ?? [],
         escalationTriggers: proto.escalationTriggers ?? [],
+        projects: projectsByConfigId.get(cfg.id) ?? [],
       };
     }
 
