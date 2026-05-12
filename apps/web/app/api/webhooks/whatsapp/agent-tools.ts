@@ -398,7 +398,7 @@ const TOOL_DRAFT_EMAIL: AnthropicTool = {
 const TOOL_MUTE: AnthropicTool = {
   name: 'mute_assistant',
   description:
-    "Suppress proactive WhatsApp messages (digests, escalations, follow-up prompts, briefings) for a window of time. Use IMMEDIATELY when the user signals they're unavailable: 'going on a drive', 'in a meeting', 'talk later', 'gimme an hour', 'I'm busy', 'be quiet', 'stop texting me', 'shh'. Inbound user messages still work — Sophia still replies when texted. Default duration if user doesn't specify: 4 hours. ALWAYS call this rather than just acknowledging — silence is the action they want.",
+    "Suppress proactive WhatsApp messages (digests, escalations, follow-up prompts, briefings) for a window of time. Use IMMEDIATELY when the user signals they're unavailable: 'going on a drive', 'in a meeting', 'talk later', 'gimme an hour', 'I'm busy', 'be quiet', 'stop texting me', 'shh'. Inbound user messages still work — Iris still replies when texted. Default duration if user doesn't specify: 4 hours. ALWAYS call this rather than just acknowledging — silence is the action they want.",
   input_schema: {
     type: 'object',
     properties: {
@@ -550,7 +550,7 @@ const TOOL_REMEMBER_THIS: AnthropicTool = {
 const TOOL_REQUEST_RESEARCH: AnthropicTool = {
   name: 'request_research',
   description:
-    "Queue a research request — Sophia will run actual web searches and bring back a structured brief. Use when the owner mentions a competitor, market trend, news event, or asks 'what do you think about X', AND outside data would meaningfully inform the answer. Owner-initiated requests bypass the daily 5-search cap. Returns a request id; the synthesized brief lands in the approval queue when ready.",
+    "Queue a research request — Iris will run actual web searches and bring back a structured brief. Use when the owner mentions a competitor, market trend, news event, or asks 'what do you think about X', AND outside data would meaningfully inform the answer. Owner-initiated requests bypass the daily 5-search cap. Returns a request id; the synthesized brief lands in the approval queue when ready.",
   input_schema: {
     type: 'object',
     properties: {
@@ -566,7 +566,7 @@ const TOOL_REQUEST_RESEARCH: AnthropicTool = {
 const TOOL_LIST_PENDING_RESEARCH: AnthropicTool = {
   name: 'list_pending_research',
   description:
-    "List research requests currently pending or in progress. Use when the user asks 'what are you researching for me' or to check Sophia's queue.",
+    "List research requests currently pending or in progress. Use when the user asks 'what are you researching for me' or to check Iris's queue.",
   input_schema: { type: 'object', properties: {} },
 };
 
@@ -1027,7 +1027,7 @@ const TOOL_REMOVE_AGENT: AnthropicTool = {
 const TOOL_CONSULT_MANAGER: AnthropicTool = {
   name: 'consult_manager',
   description:
-    "Get an existing top-level agent/manager's opinion on a proposed change (e.g. adding a new agent, changing scope). Use this BEFORE adding a new agent so the relevant managers can weigh in on whether it makes sense, whether it overlaps with their existing scope, or whether it should report to them. Call once per manager whose domain could plausibly overlap. Their reply is treated as advisory — Iris/Sophia still makes the final call.",
+    "Get an existing top-level agent/manager's opinion on a proposed change (e.g. adding a new agent, changing scope). Use this BEFORE adding a new agent so the relevant managers can weigh in on whether it makes sense, whether it overlaps with their existing scope, or whether it should report to them. Call once per manager whose domain could plausibly overlap. Their reply is treated as advisory — Iris still makes the final call.",
   input_schema: {
     type: 'object',
     properties: {

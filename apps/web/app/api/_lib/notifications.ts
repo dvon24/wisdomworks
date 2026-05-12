@@ -1,7 +1,7 @@
 /**
  * Unified notification queue + structured digest synthesizer.
  *
- * Every proactive WhatsApp push goes through enqueueNotification(). Sophia's
+ * Every proactive WhatsApp push goes through enqueueNotification(). Iris's
  * digest cron drains the queue periodically and bundles items into ONE
  * structured WhatsApp message with severity-tiered sections so the user
  * sees a single coherent update instead of N individual texts.
@@ -200,7 +200,7 @@ export async function synthesizeStructuredDigest(args: {
   }
 
   // Use Sonnet to merge similar items, tighten phrasing, and write a 1-line
-  // intro in Sophia's voice. Section structure stays hard-coded.
+  // intro in Iris's voice. Section structure stays hard-coded.
   const itemsForLLM = notifications.map((n) =>
     `[${n.severity}] ${n.kind} from ${n.source_agent ?? 'system'}: ${n.title}${n.body ? ` — ${n.body.slice(0, 200)}` : ''}`,
   ).join('\n');

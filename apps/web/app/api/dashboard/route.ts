@@ -134,7 +134,7 @@ export async function GET(request: Request) {
     // conversation_history alternates user/assistant; pair them up so each
     // entry represents one exchange.
     const history = (ctx.conversation_history ?? []) as Array<{ role: string; content: string; timestamp?: string }>;
-    const irisName = profile.team?.[0]?.name ?? 'Sophia';
+    const irisName = profile.team?.[0]?.name ?? 'Iris';
     // Walk from newest backward, take up to 5 most recent user→assistant pairs
     let pairs = 0;
     for (let i = history.length - 1; i > 0 && pairs < 5; i--) {

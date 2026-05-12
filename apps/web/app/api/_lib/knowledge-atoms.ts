@@ -1,11 +1,11 @@
 /**
  * Phase 1A — Conversation-to-knowledge atoms.
  *
- * When the owner texts Sophia, an async extraction pass mines factual
+ * When the owner texts Iris, an async extraction pass mines factual
  * atoms (competitors, goals, preferences, constraints, people, events,
  * facts) and stores them. Every agent's tick prompt then includes a
  * compact OWNER-PROVIDED CONTEXT block so insights compound across the
- * whole team — Sophia's chat is no longer a silo.
+ * whole team — Iris's chat is no longer a silo.
  */
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;

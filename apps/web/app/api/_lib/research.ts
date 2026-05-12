@@ -2,7 +2,7 @@
  * Phase 2 — Research / competitive intelligence.
  *
  * Agents call request_research(topic, why) to queue an investigation.
- * Sophia (or any orchestrator) picks it up on her tick, calls Anthropic's
+ * Iris (or any orchestrator) picks it up on her tick, calls Anthropic's
  * web_search tool to do the actual research, then synthesizes a brief that
  * lands in the notification queue as a high-severity item.
  *
@@ -480,7 +480,7 @@ export async function processResearchRequest(
       severity: result.brief.confidence >= 0.7 ? 'high' : 'medium',
       title: `Research: ${req.topic.slice(0, 80)}`,
       body: bodyLines.join('\n').slice(0, 1000),
-      sourceAgent: req.requesting_agent_name ?? 'Sophia',
+      sourceAgent: req.requesting_agent_name ?? 'Iris',
       sourceId: req.id,
       metadata: { brief: result.brief, requesting_agent: req.requesting_agent_name },
     });

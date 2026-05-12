@@ -7,7 +7,7 @@
  *   - The Authorization: Bearer <OWNER_API_TOKEN> header
  *
  * Session tokens are minted from the WhatsApp surface (which is already
- * provider-verified by Meta's signature). Owner texts Sophia → Sophia
+ * provider-verified by Meta's signature). Owner texts Iris → Iris
  * calls issue_deck_login → owner clicks magic link → /api/auth/redeem
  * sets the cookie. No password flow needed for MVP.
  *
@@ -156,7 +156,7 @@ export async function requireOwnerAuth(
     return NextResponse.json(
       {
         error: 'unauthorized',
-        hint: 'Text Sophia on WhatsApp: "send me a deck login link"',
+        hint: 'Text Iris on WhatsApp: "send me a deck login link"',
       },
       { status: 401 },
     );

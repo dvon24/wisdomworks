@@ -31,7 +31,7 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const GRAPH_API = 'https://graph.facebook.com/v25.0';
 
 async function loadOrchestratorName(tenantPhone: string): Promise<string> {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return 'Sophia';
+  if (!SUPABASE_URL || !SUPABASE_KEY) return 'Iris';
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=agent_name,config&order=created_at.asc`,
@@ -39,9 +39,9 @@ async function loadOrchestratorName(tenantPhone: string): Promise<string> {
     );
     const rows = res.ok ? await res.json() : [];
     const orch = rows.find((r: any) => r.config?.category === 'orchestrator');
-    return orch?.agent_name ?? rows[0]?.agent_name ?? 'Sophia';
+    return orch?.agent_name ?? rows[0]?.agent_name ?? 'Iris';
   } catch {
-    return 'Sophia';
+    return 'Iris';
   }
 }
 

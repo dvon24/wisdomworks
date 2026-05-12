@@ -179,7 +179,7 @@ export function documentOrganization(
   const tools = integrations.map((i) => `${i.type} (${i.status})`).join(', ');
   // Primary contact: prefer the agent flagged category=orchestrator (BMAD
   // categorization), fall back to role-regex with "personal assistant"
-  // matched BEFORE "coordinator" so Sophia beats Riley when both exist.
+  // matched BEFORE "coordinator" so Iris beats Riley when both exist.
   const orchestrator =
     configs.find((c) => (c.config as any)?.category === 'orchestrator') ??
     configs.find((c) => /personal assistant|chief of staff/i.test(c.agent_role)) ??

@@ -62,11 +62,11 @@ export interface VerticalTemplate {
   onboardingPills: string[];
 }
 
-/** The orchestrator is always Sophia — same name across verticals so the
+/** The orchestrator is always Iris — same name across verticals so the
  *  WhatsApp brand stays consistent. Other agents are vertical-specific. */
-const SOPHIA_ORCHESTRATOR: VerticalAgent = {
+const IRIS_ORCHESTRATOR: VerticalAgent = {
   role: 'orchestrator',
-  name: 'Sophia',
+  name: 'Iris',
   tier: 'Sonnet',
   description: 'Your assistant — talks to you on WhatsApp, coordinates the team',
   required: true,
@@ -87,7 +87,7 @@ export const ELECTRICIAN_TEMPLATE: VerticalTemplate = {
     'New build wiring + service calls',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'dispatcher', name: 'Dispatcher', tier: 'Sonnet', required: true, lane: 'scheduler',
       description: 'Books jobs, routes between calls, sends ETA windows', channels: ['whatsapp', 'sms', 'calendar'] },
     { role: 'invoicer', name: 'Invoice & Payments', tier: 'Haiku', required: true, lane: 'finance',
@@ -159,7 +159,7 @@ export const RESTAURANT_TEMPLATE: VerticalTemplate = {
     'Restaurant + delivery via DoorDash',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'reservations', name: 'Reservations', tier: 'Sonnet', required: true, lane: 'scheduler',
       description: 'Confirms bookings, sends reminders, manages waitlist', channels: ['whatsapp', 'sms', 'email'] },
     { role: 'reviews', name: 'Reviews & Reputation', tier: 'Sonnet', required: true, lane: 'marketing',
@@ -235,7 +235,7 @@ export const SALON_TEMPLATE: VerticalTemplate = {
     'Nail salon + lash extensions',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'bookings', name: 'Bookings & Reminders', tier: 'Sonnet', required: true, lane: 'scheduler',
       description: 'Per-stylist scheduling, 24h reminders, deposit enforcement for first-timers', channels: ['whatsapp', 'sms'] },
     { role: 'rebookings', name: 'Rebooking & Retention', tier: 'Sonnet', required: true, lane: 'customer_service',
@@ -311,7 +311,7 @@ export const HVAC_PLUMBING_TEMPLATE: VerticalTemplate = {
     'Plumbing + drain cleaning, on-call',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'dispatcher', name: 'Dispatcher', tier: 'Sonnet', required: true, lane: 'scheduler',
       description: 'Routes jobs, sends ETA windows, handles emergency calls', channels: ['whatsapp', 'sms', 'calendar'] },
     { role: 'invoicer', name: 'Invoice & Payments', tier: 'Haiku', required: true, lane: 'finance',
@@ -362,7 +362,7 @@ export const CLEANING_TEMPLATE: VerticalTemplate = {
     'Airbnb turnover specialist',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'recurring_scheduler', name: 'Recurring Scheduler', tier: 'Sonnet', required: true, lane: 'scheduler',
       description: 'Manages weekly/biweekly client schedules and reminders', channels: ['whatsapp', 'sms', 'calendar'] },
     { role: 'auto_billing', name: 'Auto-Billing', tier: 'Haiku', required: true, lane: 'finance',
@@ -408,7 +408,7 @@ export const FITNESS_TEMPLATE: VerticalTemplate = {
     'Online coach + in-person',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'class_bookings', name: 'Class Bookings', tier: 'Sonnet', required: true, lane: 'scheduler',
       description: 'Manages class signups, waitlists, cancel-then-rebook', channels: ['whatsapp', 'sms'] },
     { role: 'member_retention', name: 'Member Retention', tier: 'Sonnet', required: true, lane: 'customer_service',
@@ -457,7 +457,7 @@ export const CONSULTING_TEMPLATE: VerticalTemplate = {
     'Freelance designer + project mix',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'discovery_funnel', name: 'Discovery & Proposals', tier: 'Sonnet', required: true, lane: 'customer_service',
       description: 'Routes new leads → discovery → proposal draft', channels: ['email', 'calendar'] },
     { role: 'client_notes', name: 'Client Notes & Follow-up', tier: 'Sonnet', required: true, lane: 'operations',
@@ -507,7 +507,7 @@ export const PROFESSIONAL_SERVICES_VERTICAL: VerticalTemplate = {
     'Solo bookkeeper, small business clients',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'intake', name: 'Intake & Conflict Check', tier: 'Sonnet', required: true, lane: 'customer_service',
       description: 'Routes new inquiries through conflict check + consultation booking', channels: ['email', 'calendar'] },
     { role: 'deadlines', name: 'Deadline Watchdog', tier: 'Sonnet', required: true, lane: 'operations',
@@ -558,7 +558,7 @@ export const PHOTOGRAPHY_TEMPLATE: VerticalTemplate = {
     'Real estate photographer',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'bookings', name: 'Bookings & Deposits', tier: 'Sonnet', required: true, lane: 'scheduler',
       description: 'Contract + 30% deposit flow, calendar locks', channels: ['email', 'calendar'] },
     { role: 'shoot_day', name: 'Shoot Day Coordinator', tier: 'Sonnet', required: true, lane: 'operations',
@@ -607,7 +607,7 @@ export const REAL_ESTATE_TEMPLATE: VerticalTemplate = {
     'Commercial broker',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'lead_qualifier', name: 'Lead Qualifier', tier: 'Sonnet', required: true, lane: 'customer_service',
       description: 'Qualifies new leads (timeline/budget/area), schedules first showing', channels: ['whatsapp', 'sms', 'email'] },
     { role: 'showing_followup', name: 'Showing Follow-up', tier: 'Sonnet', required: true, lane: 'customer_service',
@@ -658,7 +658,7 @@ export const GENERIC_SMALL_BUSINESS: VerticalTemplate = {
     'Something not in the list',
   ],
   defaultAgents: [
-    SOPHIA_ORCHESTRATOR,
+    IRIS_ORCHESTRATOR,
     { role: 'generic_scheduler', name: 'Scheduler', tier: 'Haiku', required: false, lane: 'scheduler',
       description: 'Whatever needs scheduling — appointments, calls, deadlines', channels: ['calendar', 'whatsapp'] },
     { role: 'generic_customer_service', name: 'Customer Care', tier: 'Sonnet', required: false, lane: 'customer_service',

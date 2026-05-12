@@ -3,7 +3,7 @@
  *
  * Stored on whatsapp_contexts.profile.mute as JSONB so no migration needed.
  * Only blocks PROACTIVE outbound pushes (digests, escalations, follow-ups,
- * briefings). Inbound user messages always reach Sophia and Sophia always
+ * briefings). Inbound user messages always reach Iris and Iris always
  * replies — mute is a "stop interrupting me" signal, not a "shut down."
  */
 

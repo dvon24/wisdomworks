@@ -49,7 +49,7 @@ export async function GET(request: Request) {
         let deliveredIds: string[] = [];
         if (queued.length > 0) {
           const synth = await synthesizeStructuredDigest({
-            orchestratorName: 'Sophia',
+            orchestratorName: 'Iris',
             notifications: queued,
             recentAgentRuns: [],
           });
@@ -113,7 +113,7 @@ async function generateBriefing(user: any): Promise<string> {
   let uncertainEmails: any[] = [];
   let pendingDrafts: any[] = [];
   let upcomingCalendar: any[] = [];
-  let orchestratorName = 'Sophia';
+  let orchestratorName = 'Iris';
 
   try {
     const [runsRes, ctxRes, cfgRes] = await Promise.all([

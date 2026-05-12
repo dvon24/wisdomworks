@@ -1,7 +1,7 @@
 /**
  * Phase 1C — Tenant system state for orchestrator triage.
  *
- * Sophia (orchestrator) is the last gate before agent escalations land
+ * Iris (orchestrator) is the last gate before agent escalations land
  * on the owner's phone. To triage well she needs to know:
  *   - What's connected (projects, OAuth, agents)
  *   - What's NOT (so she suppresses agents complaining about known gaps)
@@ -9,7 +9,7 @@
  *   - What's already pending in their approval queue
  *
  * Lighter version surfaces to ALL agents so they self-suppress before
- * escalating something Sophia would just suppress anyway.
+ * escalating something Iris would just suppress anyway.
  */
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -101,7 +101,7 @@ export async function computeTenantSystemState(tenantPhone: string): Promise<Ten
 
 /**
  * Render the state as a compact prompt block. Two variants:
- *   - `forOrchestrator: true` → full state + triage directive (Sophia gets this)
+ *   - `forOrchestrator: true` → full state + triage directive (Iris gets this)
  *   - `forOrchestrator: false` → lighter version every agent sees so they
  *     self-suppress before escalating known gaps
  */

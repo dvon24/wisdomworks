@@ -1,9 +1,9 @@
 /**
- * Team gap detection — Sophia spots needs the current team doesn't cover.
+ * Team gap detection — Iris spots needs the current team doesn't cover.
  *
  * Two paths:
  *   1. Reactive (during chat): owner says "I keep losing leads because I
- *      can't answer fast enough" → Sophia calls propose_team_addition →
+ *      can't answer fast enough" → Iris calls propose_team_addition →
  *      emits a team_gap insight → owner sees it in the digest + Insights
  *      tab → approve → agent gets provisioned.
  *
@@ -12,7 +12,7 @@
  *      team_gap insights for the owner to review.
  *
  * This module owns the data side. The agent-tools layer exposes the
- * propose_team_addition tool that Sophia calls.
+ * propose_team_addition tool that Iris calls.
  */
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -159,7 +159,7 @@ export async function emitTeamGapInsight(
       severity: 'medium',
       title: `💡 Team gap: ${proposal.agentRole}`,
       body: `${why}\n\n${recommendedAction}\n\nReply "approve insight ${rows[0].id.slice(0, 8)}" to add them.`,
-      sourceAgent: 'Sophia',
+      sourceAgent: 'Iris',
       sourceId: rows[0].id,
       metadata: { insight_id: rows[0].id, detector: 'team_gap' },
     });

@@ -56,7 +56,7 @@ const TIER_PRICE = { Haiku: 19, Sonnet: 39, Opus: 79 };
 
 // Approval cards source from real agent_runs (escalations + proposed actions)
 // instead of hardcoded placeholders. Dismiss is a local hide for now;
-// approve routes through WhatsApp / Sophia.
+// approve routes through WhatsApp / Iris.
 
 const INITIAL_MESSAGES = [
   { from: 'iris' as const, text: 'Good morning. I closed 1,284 small decisions while you slept. Three things genuinely need you today.' },
@@ -315,7 +315,7 @@ export default function CommandDeck() {
     // Skip the personal assistant (index 0) when searching — they're the fallback
     const owner = team.slice(1).find(match);
     if (owner) return { name: owner.name, role: owner.role };
-    return { name: team[0]?.name ?? 'Sophia', role: team[0]?.role ?? 'Personal Assistant' };
+    return { name: team[0]?.name ?? 'Iris', role: team[0]?.role ?? 'Personal Assistant' };
   }
 
   const isProviderConnected = (provider: string, service?: string): boolean => {
@@ -643,7 +643,7 @@ export default function CommandDeck() {
                 Your Command Deck is locked.
               </div>
               <div style={{ fontSize: 13, color: 'var(--text-dim)', maxWidth: 520, margin: '0 auto' }}>
-                Open WhatsApp and message Sophia: <strong>"send me a deck login link"</strong>.
+                Open WhatsApp and message Iris: <strong>"send me a deck login link"</strong>.
                 She'll text you back a one-tap link that signs you in for 30 days.
               </div>
             </div>
@@ -908,7 +908,7 @@ export default function CommandDeck() {
                 {clients.length === 0 ? (
                   <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
                     <div style={{ textAlign: 'center', maxWidth: 480 }}>
-                      Try it from WhatsApp: <strong>"Just finished Sarah's balayage, she's coming back in 6 weeks"</strong>. Sophia will capture Sarah's profile, preferences, and visit automatically.
+                      Try it from WhatsApp: <strong>"Just finished Sarah's balayage, she's coming back in 6 weeks"</strong>. Iris will capture Sarah's profile, preferences, and visit automatically.
                     </div>
                   </div>
                 ) : (

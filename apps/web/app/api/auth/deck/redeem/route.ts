@@ -2,7 +2,7 @@
  * Owner deck-login redeem.
  *
  * Flow:
- *   1. Owner texts Sophia → Sophia mints a magic-link via issue_deck_login
+ *   1. Owner texts Iris → Iris mints a magic-link via issue_deck_login
  *      and sends it back via WhatsApp
  *   2. Owner taps the link → GET /api/auth/deck/redeem?token=<...>
  *   3. This route verifies the token and sets the ww_session cookie, then
@@ -24,7 +24,7 @@ export async function GET(request: Request) {
 
   const verified = await verifySessionToken(token);
   if (!verified) {
-    return new Response('Invalid or expired login link. Ask Sophia for a fresh one.', { status: 401 });
+    return new Response('Invalid or expired login link. Ask Iris for a fresh one.', { status: 401 });
   }
 
   // Redirect to the deck and set the cookie. 30-day persistence.

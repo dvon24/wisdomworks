@@ -7,7 +7,7 @@
  *        curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://app.../api/webhooks/telegram&secret_token=<SECRET>"
  *   3. Set TELEGRAM_BOT_TOKEN + TELEGRAM_WEBHOOK_SECRET in env
  *
- * Linking: owner texts Sophia on WhatsApp "give me a telegram link code",
+ * Linking: owner texts Iris on WhatsApp "give me a telegram link code",
  * gets back e.g. "ABC23XYZ", then says "/link ABC23XYZ" to the Telegram
  * bot. Bot resolves code → tenant and binds chat_id → tenant_phone.
  */
@@ -23,7 +23,7 @@ export const maxDuration = 60;
 
 const MAX_MESSAGE_LENGTH = 4096;
 const LINK_INSTRUCTIONS =
-  "👋 I'm Sophia from WisdomWorks. To start, link this chat to your WisdomWorks account:\n\n" +
+  "👋 I'm Iris from WisdomWorks. To start, link this chat to your WisdomWorks account:\n\n" +
   "1. Open WhatsApp and message me there: \"give me a telegram link code\"\n" +
   "2. Reply here with: /link CODE\n\n" +
   "Once linked, you can manage your business from this chat too.";

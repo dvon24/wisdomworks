@@ -538,7 +538,7 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
       ).join('\n')
     : '';
 
-  // Lane-routed email drafts — every business mail Sophia (or sift) classified
+  // Lane-routed email drafts — every business mail Iris (or sift) classified
   // into THIS agent's lane shows up here so this agent can draft / approve /
   // act on it. The actual draft was already written by the classifier; this
   // agent reviews it for accuracy + decides to surface it for owner approval.
@@ -559,7 +559,7 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
   // perspective without re-reading the chat history.
   const atomsBlock = renderAtomsForPrompt(ctx.knowledgeAtoms);
 
-  // Phase 1C — tenant system state. Orchestrator (Sophia) gets the full
+  // Phase 1C — tenant system state. Orchestrator (Iris) gets the full
   // triage directive ("you are the last gate before owner"); other agents
   // get a lighter "self-suppress known gaps" version.
   const systemStateBlock = renderSystemStateForPrompt(ctx.systemState, {
@@ -951,8 +951,8 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
       await markDelegationsDone(ctx.pendingDelegations.map((d) => d.id));
     }
 
-    // Phase 2 — Sophia (orchestrator) processes pending research requests
-    // on her tick. Other agents request research; Sophia executes. Cap to
+    // Phase 2 — Iris (orchestrator) processes pending research requests
+    // on her tick. Other agents request research; Iris executes. Cap to
     // 2 per tick so a backlog doesn't blow the cost budget.
     if (ownLane === 'orchestrator') {
       try {
@@ -961,9 +961,9 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
         for (const req of pending) {
           const result = await processResearchRequest(req);
           if (result.ok) {
-            console.log(`[research] Sophia completed "${req.topic.slice(0, 60)}" for ${instance.tenant_phone}`);
+            console.log(`[research] Iris completed "${req.topic.slice(0, 60)}" for ${instance.tenant_phone}`);
           } else {
-            console.warn(`[research] Sophia failed on "${req.topic.slice(0, 60)}": ${result.error}`);
+            console.warn(`[research] Iris failed on "${req.topic.slice(0, 60)}": ${result.error}`);
           }
         }
       } catch (err) {
@@ -1081,8 +1081,8 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
   }
 }
 
-// ─── Story 2.1d — Sophia team digest ─────────────────────────────────────
-// After a tick batch, Sophia/orchestrator synthesizes what the team has
+// ─── Story 2.1d — Iris team digest ─────────────────────────────────────
+// After a tick batch, Iris/orchestrator synthesizes what the team has
 // been up to and sends ONE WhatsApp message — but only if there's actually
 // signal worth surfacing. Silent when nothing meaningful happened.
 
@@ -1096,16 +1096,16 @@ const DIGEST_THROTTLE_MIN: Record<TickCadence['band'], number | null> = {
 };
 
 async function loadOrchestratorName(tenantPhone: string): Promise<string> {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return 'Sophia';
+  if (!SUPABASE_URL || !SUPABASE_KEY) return 'Iris';
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=agent_name,config&order=created_at.asc`,
     { headers: headers() },
   );
-  if (!res.ok) return 'Sophia';
+  if (!res.ok) return 'Iris';
   const rows = await res.json();
   // Prefer the agent whose category=orchestrator
   const orch = rows.find((r: any) => r.config?.category === 'orchestrator');
-  return orch?.agent_name ?? rows[0]?.agent_name ?? 'Sophia';
+  return orch?.agent_name ?? rows[0]?.agent_name ?? 'Iris';
 }
 
 interface DigestResult {
@@ -1174,7 +1174,7 @@ async function pushDigestToOwner(tenantPhone: string, message: string): Promise<
 }
 
 /**
- * Maybe send a Sophia-led digest of recent team activity to the owner.
+ * Maybe send a Iris-led digest of recent team activity to the owner.
  * Throttled per cadence band; silent if nothing meaningful happened.
  */
 export async function maybeSendTeamDigest(tenantPhone: string, cadence: TickCadence): Promise<{ sent: boolean; reason?: string }> {
@@ -1326,7 +1326,7 @@ export async function tickRunningAgents(): Promise<{ tenants: number; ticked: nu
     }
   }
 
-  // After the tick batch: maybe send Sophia's team digest. Throttled per
+  // After the tick batch: maybe send Iris's team digest. Throttled per
   // band; silent if nothing meaningful happened.
   let digestsSent = 0;
   for (const t of tickedTenants) {
