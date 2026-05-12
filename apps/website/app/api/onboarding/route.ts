@@ -244,9 +244,15 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const { messages, collectedData } = body as {
+    const { messages, collectedData, verticalTemplate } = body as {
       messages: unknown;
       collectedData: OnboardingData;
+      verticalTemplate?: {
+        id: string;
+        label: string;
+        defaultAgents: any[];
+        recommendedTools: any[];
+      };
     };
 
     if (!Array.isArray(messages) || messages.length > 50) {
@@ -262,7 +268,26 @@ export async function POST(request: Request) {
     }
 
     const validatedMessages = messages as ConversationMessage[];
-    const systemPrompt = getOnboardingSystemPrompt(collectedData ?? {});
+    // If the owner picked a vertical template, fold its hint into the
+    // collectedData so the system prompt steers toward that vertical
+    // (businessType, recommended agent roster, tools).
+    const enrichedData: OnboardingData = {
+      ...(collectedData ?? {}),
+      ...(verticalTemplate?.label ? {
+        businessType: collectedData?.businessType ?? verticalTemplate.label,
+        industry: collectedData?.industry ?? verticalTemplate.label,
+      } : {}),
+    };
+    let systemPrompt = getOnboardingSystemPrompt(enrichedData);
+    if (verticalTemplate) {
+      const agentList = verticalTemplate.defaultAgents
+        .map((a) => `   - ${a.name} (${a.role}, ${a.tier}, ${a.required ? 'required' : 'optional'}): ${a.description}`)
+        .join('\n');
+      const toolList = verticalTemplate.recommendedTools
+        .map((t: any) => `   - ${t.label}: ${t.why}`)
+        .join('\n');
+      systemPrompt += `\n\nVERTICAL CONTEXT — the owner picked "${verticalTemplate.label}" from the type picker. Use this as the starting point:\n\nRECOMMENDED AGENT ROSTER:\n${agentList}\n\nRECOMMENDED TOOLS TO CONNECT:\n${toolList}\n\nWhen the owner describes their business, propose this roster as the starting team. They can rename or remove agents — confirm the team and tools naturally rather than re-asking what they do.`;
+    }
     const maxTokens = validatedMessages.length >= 1 ? 3000 : 1000;
 
     // Main conversation call — system prompt cached for 5 min

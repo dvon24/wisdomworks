@@ -218,7 +218,20 @@ export default function HomePage() {
   const [renameValue, setRenameValue] = useState('');
   const [agentOverrides, setAgentOverrides] = useState<Record<string, string>>({});
   const [showPriceBreakdown, setShowPriceBreakdown] = useState(false);
+  // Vertical-template picker (shown before the chat begins; chosen template
+  // seeds the suggestion pills and agent roster preview)
+  const [verticalTemplates, setVerticalTemplates] = useState<any[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<any | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Load template catalog once on mount
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    fetch('/api/templates')
+      .then((r) => r.ok ? r.json() : { templates: [] })
+      .then((d) => setVerticalTemplates(d.templates ?? []))
+      .catch(() => setVerticalTemplates([]));
+  }, []);
 
   // Restore state if returning from Stripe payment OR from an OAuth provider
   useEffect(() => {
@@ -324,7 +337,16 @@ export default function HomePage() {
       const res = await fetch('/api/onboarding', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages, collectedData: structuredData ?? {} }),
+        body: JSON.stringify({
+          messages: newMessages,
+          collectedData: structuredData ?? {},
+          verticalTemplate: selectedTemplate ? {
+            id: selectedTemplate.id,
+            label: selectedTemplate.label,
+            defaultAgents: selectedTemplate.defaultAgents,
+            recommendedTools: selectedTemplate.recommendedTools,
+          } : undefined,
+        }),
       });
       const data = await res.json();
       if (data.text) {
@@ -584,29 +606,108 @@ export default function HomePage() {
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Starter suggestions — only show before user has sent any messages */}
-              {messages.length <= 1 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {[
-                    'I run an auto repair shop',
-                    'Solo brand designer',
-                    '20-person dental practice',
-                    'Yoga studio · 3 locations',
-                  ].map((s) => (
-                    <button
-                      key={s}
-                      className="btn"
-                      style={{ fontSize: 11.5, padding: '6px 12px', background: 'rgba(255,255,255,0.5)' }}
-                      onClick={() => {
-                        setInput(s);
-                        setTimeout(() => handleSend(), 50);
-                      }}
-                    >
-                      {s}
-                    </button>
-                  ))}
+              {/* Vertical-type picker — only on first message, never blocks free-form
+                  typing. Click a template → seeds the pills + nudges the chat to
+                  that vertical. */}
+              {messages.length <= 1 && verticalTemplates.length > 0 && !selectedTemplate && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 4 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    Or pick what closest fits your business
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {verticalTemplates.map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => {
+                          setSelectedTemplate(t);
+                          // Nudge the chat to acknowledge the choice
+                          const greeting = `I run a ${t.label.toLowerCase()} business`;
+                          setInput(greeting);
+                          setTimeout(() => handleSend(), 50);
+                        }}
+                        className="btn"
+                        title={t.tagline}
+                        style={{
+                          fontSize: 12,
+                          padding: '8px 12px',
+                          background: 'rgba(255,255,255,0.55)',
+                          border: '1px solid var(--glass-border)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <span style={{ fontSize: 14 }}>{t.emoji}</span>
+                        <span>{t.label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
+
+              {/* Selected-template confirmation strip */}
+              {selectedTemplate && messages.length <= 1 && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '8px 12px',
+                  background: 'rgba(0, 122, 255, 0.08)',
+                  border: '1px solid rgba(0, 122, 255, 0.2)',
+                  borderRadius: 10,
+                  fontSize: 12,
+                }}>
+                  <span style={{ fontSize: 18 }}>{selectedTemplate.emoji}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 500 }}>{selectedTemplate.label} setup</div>
+                    <div style={{ color: 'var(--text-dim)', fontSize: 11.5 }}>
+                      {selectedTemplate.defaultAgents.length} agents recommended · {selectedTemplate.tagline}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setSelectedTemplate(null)}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'var(--text-faint)',
+                      fontSize: 11,
+                      cursor: 'pointer',
+                      textDecoration: 'underline',
+                    }}
+                  >
+                    change
+                  </button>
+                </div>
+              )}
+
+              {/* Starter suggestions — only show before user has sent any messages.
+                  If a vertical template is selected, use its onboardingPills; else
+                  fall back to the generic mix. */}
+              {messages.length <= 1 && (() => {
+                const pills = (selectedTemplate?.onboardingPills as string[] | undefined) ?? [
+                  'I run an auto repair shop',
+                  'Solo brand designer',
+                  '20-person dental practice',
+                  'Yoga studio · 3 locations',
+                ];
+                return (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {pills.map((s) => (
+                      <button
+                        key={s}
+                        className="btn"
+                        style={{ fontSize: 11.5, padding: '6px 12px', background: 'rgba(255,255,255,0.5)' }}
+                        onClick={() => {
+                          setInput(s);
+                          setTimeout(() => handleSend(), 50);
+                        }}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
 
               {/* Input */}
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', borderTop: '1px solid var(--glass-border)', paddingTop: 14 }}>
