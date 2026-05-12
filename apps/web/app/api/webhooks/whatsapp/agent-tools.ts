@@ -40,6 +40,7 @@ import {
   listClientVisits,
 } from '../../_lib/client-profiles';
 import { loadEmailPrefs, saveEmailPrefs } from '../../_lib/email-notifications';
+import { listOpenInsights, getInsightById, setInsightStatus } from '../../_lib/business-insights';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -578,6 +579,41 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+// ─── Business Insights (Story 2b.2) ──────────────────────────────────────
+
+const TOOL_LIST_INSIGHTS: AnthropicTool = {
+  name: 'list_insights',
+  description:
+    "List currently-open business insights (proposed recommendations like 'X clients lapsed', 'gap on Tuesdays', revenue patterns). Use when owner asks 'what should I do?', 'any opportunities?', 'show me insights'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_APPROVE_INSIGHT: AnthropicTool = {
+  name: 'approve_insight',
+  description:
+    "Mark an insight approved so the next step can execute (e.g. drafting re-engagement messages for lapsed clients). Use when owner says 'do it', 'approve insight ABC12345', 'go ahead with that'. After approval, the agents responsible for the recommended action will pick it up. Returns confirmation + a description of what will happen next.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      insight_id: { type: 'string', description: 'The 8-char prefix or full UUID from list_insights / digest message.' },
+    },
+    required: ['insight_id'],
+  },
+};
+
+const TOOL_DISMISS_INSIGHT: AnthropicTool = {
+  name: 'dismiss_insight',
+  description:
+    "Dismiss an insight the owner doesn't want to act on. Use when owner says 'no thanks', 'skip', 'dismiss insight ABC12345', 'not interested'. The insight won't re-surface.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      insight_id: { type: 'string', description: 'The 8-char prefix or full UUID.' },
+    },
+    required: ['insight_id'],
+  },
+};
+
 // ─── Email notification preferences ──────────────────────────────────────
 
 const TOOL_ENABLE_EMAIL_NOTIFICATIONS: AnthropicTool = {
@@ -971,6 +1007,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_ENABLE_EMAIL_NOTIFICATIONS);
   tools.push(TOOL_DISABLE_EMAIL_NOTIFICATIONS);
   tools.push(TOOL_EMAIL_NOTIFICATION_STATUS);
+  tools.push(TOOL_LIST_INSIGHTS);
+  tools.push(TOOL_APPROVE_INSIGHT);
+  tools.push(TOOL_DISMISS_INSIGHT);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1741,6 +1780,51 @@ export async function executeTool(
           ...sortedModels.map((m) => `  • ${m.model}: $${m.costUsd.toFixed(2)} (${(m.tokensIn + m.tokensOut).toLocaleString()} tokens)`),
         ];
         return { content: lines.join('\n'), success: true };
+      }
+
+      case 'list_insights': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const items = await listOpenInsights(cleanPhone);
+        if (items.length === 0) {
+          return { content: "No open insights right now. I'll surface them as they're detected (daily scan + as data accumulates).", success: true };
+        }
+        const lines = items.slice(0, 10).map((i) => {
+          const sevMark = i.severity === 'critical' ? '🛑' : i.severity === 'high' ? '⚡' : i.severity === 'medium' ? '💡' : '·';
+          const statusMark = i.status === 'approved' ? ' [approved]' : '';
+          return `${sevMark} [${i.id.slice(0, 8)}]${statusMark} ${i.title}\n   → ${i.recommended_action ?? ''}`;
+        });
+        return { content: `${items.length} open insight${items.length === 1 ? '' : 's'}:\n\n${lines.join('\n\n')}`, success: true };
+      }
+
+      case 'approve_insight': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const idIn = String(call.input.insight_id ?? '').trim();
+        if (!idIn) return { content: 'Missing insight_id.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const insight = await getInsightById(idIn, cleanPhone);
+        if (!insight) return { content: `No insight matches ${idIn}.`, success: false };
+        if (insight.status === 'dismissed' || insight.status === 'expired') {
+          return { content: `Insight ${idIn} is already ${insight.status}.`, success: false };
+        }
+        const ok = await setInsightStatus(insight.id, 'approved');
+        if (!ok) return { content: 'Could not update the insight.', success: false };
+        const nextStep = insight.detector === 'lapsed_clients'
+          ? `Approved. I'll draft re-engagement messages for ${(insight.payload?.client_names ?? []).length} client${(insight.payload?.client_names ?? []).length === 1 ? '' : 's'} and queue them for your review.`
+          : `Approved. The responsible agent will pick this up on their next tick.`;
+        return { content: nextStep, success: true };
+      }
+
+      case 'dismiss_insight': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const idIn = String(call.input.insight_id ?? '').trim();
+        if (!idIn) return { content: 'Missing insight_id.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const insight = await getInsightById(idIn, cleanPhone);
+        if (!insight) return { content: `No insight matches ${idIn}.`, success: false };
+        const ok = await setInsightStatus(insight.id, 'dismissed');
+        if (!ok) return { content: 'Could not update the insight.', success: false };
+        return { content: `Dismissed "${insight.title.slice(0, 80)}". It won't re-surface.`, success: true };
       }
 
       case 'enable_email_notifications': {

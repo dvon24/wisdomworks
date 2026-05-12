@@ -15,6 +15,7 @@ import { NextResponse } from 'next/server';
 import { computeMonthlyUsage, evaluateBudget, recordOverageIfExceeded } from '../_lib/usage-tracker';
 import { requireOwnerAuth } from '../_lib/api-auth';
 import { listClients } from '../_lib/client-profiles';
+import { listOpenInsights } from '../_lib/business-insights';
 
 export const dynamic = 'force-dynamic';
 
@@ -328,6 +329,28 @@ export async function GET(request: Request) {
       }
     }
 
+    // Story 2b.2 — open insights (best-effort, non-fatal)
+    let insights: any[] = [];
+    try {
+      const rows = await listOpenInsights(cleanPhone, 30);
+      insights = rows.map((i) => ({
+        id: i.id,
+        detector: i.detector,
+        severity: i.severity,
+        title: i.title,
+        why: i.why,
+        recommendedAction: i.recommended_action,
+        expectedImpact: i.expected_impact,
+        confidence: i.confidence,
+        payload: i.payload,
+        status: i.status,
+        detectedAt: i.detected_at,
+        expiresAt: i.expires_at,
+      }));
+    } catch (err) {
+      console.warn('[dashboard] insights fetch failed:', err);
+    }
+
     // Story 2b.1 — load recent client profiles (best-effort, non-fatal)
     let clients: any[] = [];
     try {
@@ -360,6 +383,7 @@ export async function GET(request: Request) {
       },
       verticalTemplate: profile.vertical_template ?? null,
       clients,
+      insights,
       connections: connections.map((c: any) => ({
         provider: c.provider,
         service: c.service,

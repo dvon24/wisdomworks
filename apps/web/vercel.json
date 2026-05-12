@@ -14,6 +14,7 @@
     { "path": "/api/cron/email-learn", "schedule": "0 4 * * *" },
     { "path": "/api/cron/email-followup", "schedule": "0 14 * * *" },
     { "path": "/api/cron/digest", "schedule": "0 12,17 * * *" },
-    { "path": "/api/cron/project-sync", "schedule": "0 */2 * * *" }
+    { "path": "/api/cron/project-sync", "schedule": "0 */2 * * *" },
+    { "path": "/api/cron/insights-scan", "schedule": "0 6 * * *" }
   ]
 }

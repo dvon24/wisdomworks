@@ -64,7 +64,7 @@ const INITIAL_MESSAGES = [
 ];
 
 type SidebarMode = 'briefing' | 'approvals' | 'activity' | 'agent';
-type ViewMode = 'overview' | 'team' | 'activity' | 'connections' | 'clients';
+type ViewMode = 'overview' | 'team' | 'activity' | 'connections' | 'clients' | 'insights';
 
 /** Render markdown-flavored org documentation. Handles #/## headings,
  * - bullets, **bold**, and blank-line spacing without pulling in a
@@ -504,7 +504,7 @@ export default function CommandDeck() {
 
         {/* View tabs */}
         <nav style={{ display: 'flex', gap: 4, marginLeft: 32 }}>
-          {(['overview', 'team', 'clients', 'activity', 'connections'] as ViewMode[]).map((v) => (
+          {(['overview', 'team', 'clients', 'insights', 'activity', 'connections'] as ViewMode[]).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -948,6 +948,121 @@ export default function CommandDeck() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {view === 'insights' && (() => {
+            const insights: any[] = tenantData?.insights ?? [];
+            const sevColor = (s: string) => s === 'critical' ? '#c2410c' : s === 'high' ? '#b45309' : s === 'medium' ? '#3b82f6' : 'var(--text-faint)';
+            const sevLabel = (s: string) => s === 'critical' ? 'critical' : s === 'high' ? 'high' : s === 'medium' ? 'medium' : 'low';
+            const handleAction = async (insightId: string, action: 'approve' | 'dismiss') => {
+              if (!phoneNumber) return;
+              try {
+                await fetch('/api/chat', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    phone: phoneNumber,
+                    message: `${action} insight ${insightId.slice(0, 8)}`,
+                  }),
+                });
+                // Refetch dashboard data
+                const r = await fetch(`/api/dashboard?phone=${encodeURIComponent(phoneNumber)}`);
+                if (r.ok) {
+                  const data = await r.json();
+                  setTenantData(data);
+                }
+              } catch (err) {
+                console.error('[insights] action failed:', err);
+              }
+            };
+            return (
+              <div className="glass-strong" style={{ padding: '1.5rem', flex: 1, minHeight: 540, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <div>
+                    <div className="eyebrow">Business Insights</div>
+                    <div style={{ fontSize: 22, fontWeight: 300, marginTop: 4 }}>
+                      {insights.length === 0 ? 'No open insights' : `${insights.length} ${insights.length === 1 ? 'insight' : 'insights'}`}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+                    Scanned daily at 06:00 UTC. Approve to act, dismiss to skip.
+                  </div>
+                </div>
+
+                {insights.length === 0 ? (
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
+                    <div style={{ textAlign: 'center', maxWidth: 480 }}>
+                      I'm watching for patterns in your business — lapsed clients, scheduling gaps, revenue trends. As data accumulates, recommendations will land here.
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1, overflow: 'auto' }}>
+                    {insights.map((i: any) => (
+                      <div key={i.id} className="glass" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: 10, padding: '2px 8px', background: `${sevColor(i.severity)}22`, color: sevColor(i.severity), borderRadius: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                              {sevLabel(i.severity)}
+                            </span>
+                            <span style={{ fontSize: 15, fontWeight: 500 }}>{i.title}</span>
+                            {i.status === 'approved' && (
+                              <span style={{ fontSize: 10, padding: '2px 8px', background: 'rgba(34, 197, 94, 0.15)', color: '#15803d', borderRadius: 4 }}>approved</span>
+                            )}
+                          </div>
+                          <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+                            {Math.round((i.confidence ?? 0.7) * 100)}% conf
+                          </span>
+                        </div>
+                        {i.why && <div style={{ fontSize: 12.5, color: 'var(--text-dim)', lineHeight: 1.5 }}>{i.why}</div>}
+                        {i.recommendedAction && (
+                          <div style={{ fontSize: 12.5, color: 'var(--text)', lineHeight: 1.5 }}>
+                            <span style={{ color: 'var(--accent-deep)', fontWeight: 500 }}>→</span> {i.recommendedAction}
+                          </div>
+                        )}
+                        {i.expectedImpact && (
+                          <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontStyle: 'italic' }}>
+                            Impact: {i.expectedImpact}
+                          </div>
+                        )}
+                        {i.status === 'proposed' && (
+                          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                            <button
+                              onClick={() => handleAction(i.id, 'approve')}
+                              style={{
+                                padding: '6px 14px',
+                                background: 'var(--accent)',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: 6,
+                                fontSize: 12,
+                                fontWeight: 500,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => handleAction(i.id, 'dismiss')}
+                              style={{
+                                padding: '6px 14px',
+                                background: 'transparent',
+                                color: 'var(--text-dim)',
+                                border: '1px solid var(--border)',
+                                borderRadius: 6,
+                                fontSize: 12,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
