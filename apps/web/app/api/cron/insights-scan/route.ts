@@ -9,6 +9,7 @@
 
 import { NextResponse } from 'next/server';
 import { runDetectors } from '../../_lib/business-insights';
+import { runL3Detector } from '../../_lib/autonomous-research';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,6 +38,7 @@ export async function GET(request: Request) {
 
     let totalEmitted = 0;
     let totalDetectors = 0;
+    let totalL3Queued = 0;
 
     for (const t of tenants) {
       try {
@@ -49,6 +51,18 @@ export async function GET(request: Request) {
       } catch (err) {
         console.warn(`[insights-scan] tenant ${t.phone_number} failed:`, err);
       }
+
+      // L3 autonomous research detector — separate try/catch since it
+      // calls an LLM and is more failure-prone
+      try {
+        const r3 = await runL3Detector(t.phone_number);
+        if (r3.queued > 0) {
+          totalL3Queued += r3.queued;
+          console.log(`[insights-scan] ${t.phone_number}: queued ${r3.queued} L3 research request${r3.queued === 1 ? '' : 's'}`);
+        }
+      } catch (err) {
+        console.warn(`[insights-scan] L3 detector failed for ${t.phone_number}:`, err);
+      }
     }
 
     return NextResponse.json({
@@ -56,6 +70,7 @@ export async function GET(request: Request) {
       tenants: tenants.length,
       detectors_run: totalDetectors,
       insights_emitted: totalEmitted,
+      l3_research_queued: totalL3Queued,
     });
   } catch (err) {
     console.error('[insights-scan] error:', err);
