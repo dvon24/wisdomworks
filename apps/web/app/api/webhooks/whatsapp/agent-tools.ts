@@ -502,13 +502,13 @@ const TOOL_ARCHIVE_ATOM: AnthropicTool = {
 const TOOL_REMEMBER_THIS: AnthropicTool = {
   name: 'remember_this',
   description:
-    "Explicitly remember something the owner just told you, with owner_confirmed=true. Use when the owner makes a clear declarative statement worth durable storage ('we don't email after 7pm', 'my main competitor is X', 'my goal this quarter is Y').",
+    "Explicitly remember something the owner just told you, with owner_confirmed=true. Use when the owner makes a clear declarative statement worth durable storage ('we don't email after 7pm', 'my main competitor is X', 'my goal this quarter is Y'). IMPORTANT TAG RULES: always include 'general' in tags if this fact applies to ALL agents (not just one lane). For platform-level statements about what isn't built / is on the roadmap, include 'known_gap' or 'platform' or 'roadmap' so every agent stops flagging it as missing.",
   input_schema: {
     type: 'object',
     properties: {
       kind: { type: 'string', enum: ['competitor', 'goal', 'preference', 'constraint', 'person', 'event', 'fact'] },
       content: { type: 'string', description: 'Third-person factual statement — e.g. "Owner does not want emails sent after 7pm local time."' },
-      tags: { type: 'array', items: { type: 'string' }, description: 'Optional lowercase tags for filtering — lanes, topic keywords.' },
+      tags: { type: 'array', items: { type: 'string' }, description: "Lowercase tags for filtering. ALWAYS include 'general' if the fact applies platform-wide (most do). For roadmap/known-gap items: 'known_gap', 'roadmap', 'platform'. For lane-specific facts: the lane name (operations / marketing / etc.)." },
     },
     required: ['kind', 'content'],
   },

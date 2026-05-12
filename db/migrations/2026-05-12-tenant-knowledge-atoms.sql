@@ -174,6 +174,13 @@ $$;
 -- Returns the most relevant atoms to include in an agent's tick prompt.
 -- Cheap — caps to N rows, prioritizes by recency + confidence + relevance
 -- to the agent's lane (via tag matching).
+--
+-- Visibility rules:
+--   - constraint / goal / preference atoms = ALWAYS VISIBLE regardless of lane.
+--     These are owner-level rules every agent must honor.
+--   - 'general' tag or no tags = visible to all lanes.
+--   - lane tag match = visible to that lane.
+--   - kind='fact' tagged platform/roadmap/known_gap = platform-level, all lanes.
 CREATE OR REPLACE FUNCTION recent_atoms_for_prompt(
   p_tenant_phone TEXT,
   p_lane TEXT DEFAULT NULL,
@@ -195,13 +202,19 @@ AS $$
   FROM tenant_knowledge_atoms
   WHERE tenant_phone = p_tenant_phone
     AND status = 'active'
-    -- Either no lane filter, or the atom has no tags (broadly applicable),
-    -- or the atom has at least one tag matching this lane / a generic tag
     AND (
       p_lane IS NULL
+      -- Owner-level rules every agent must honor
+      OR kind IN ('constraint', 'goal', 'preference')
+      -- Untagged or generic
       OR cardinality(tags) = 0
-      OR p_lane = ANY(tags)
       OR 'general' = ANY(tags)
+      -- Lane-specific
+      OR p_lane = ANY(tags)
+      -- Platform-level facts (visible to everyone regardless of lane)
+      OR (kind = 'fact' AND (
+        'platform' = ANY(tags) OR 'roadmap' = ANY(tags) OR 'known_gap' = ANY(tags)
+      ))
     )
   ORDER BY
     owner_confirmed DESC,

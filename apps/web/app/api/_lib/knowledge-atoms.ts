@@ -300,5 +300,7 @@ export function renderAtomsForPrompt(atoms: KnowledgeAtom[]): string {
     '',
     "OWNER-PROVIDED CONTEXT (mined from the owner's recent messages — incorporate when relevant, don't restate back to them):",
     ...sections,
+    '',
+    'CRITICAL: Before you escalate ANY observation or proposal, check this list. If your concern matches a CONSTRAINT, FACT (especially anything tagged roadmap/platform/known_gap), or already-known PREFERENCE here, DO NOT escalate it — those are explicit owner guidance that what you\'re about to flag is either known, expected, or off-limits. Acknowledge briefly in your observation that this is a known-handled item, set escalation_priority="none", and move on.',
   ].join('\n');
 }
