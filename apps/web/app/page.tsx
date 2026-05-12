@@ -1558,10 +1558,25 @@ export default function CommandDeck() {
             alignItems: 'center',
             justifyContent: 'center',
             padding: 24,
+            // Fade in/out so the close after success feels smooth
+            opacity: connectSuccess ? 0.6 : 1,
+            transition: 'opacity 240ms ease-out',
           }}
           onClick={(e) => { if (e.target === e.currentTarget) setConnectProjectOpen(false); }}
         >
-          <div className="glass-strong" style={{ width: '100%', maxWidth: 520, padding: 24, borderRadius: 16, maxHeight: '90vh', overflow: 'auto' }}>
+          <div
+            className="glass-strong"
+            style={{
+              width: '100%',
+              maxWidth: 520,
+              padding: 24,
+              borderRadius: 16,
+              maxHeight: '90vh',
+              overflow: 'auto',
+              transform: connectSuccess ? 'scale(0.97)' : 'scale(1)',
+              transition: 'transform 240ms ease-out',
+            }}
+          >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
               <div style={{ fontSize: 17, fontWeight: 600 }}>Connect a project</div>
               <button
@@ -1699,6 +1714,13 @@ export default function CommandDeck() {
                         github_repo: '',
                         github_branch: 'main',
                       });
+                      // Show success briefly, then fade the modal back to
+                      // the deck. The agent detail panel reappears in the
+                      // background so the user can keep working.
+                      setTimeout(() => {
+                        setConnectProjectOpen(false);
+                        setConnectSuccess(null);
+                      }, 2000);
                     }
                   } catch (err: any) {
                     setConnectError(err?.message ?? String(err));
