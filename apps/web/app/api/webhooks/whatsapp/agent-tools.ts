@@ -30,6 +30,7 @@ import { definePerson, listKnownPeople, forgetPerson } from '../../_lib/known-pe
 import { listAllAtoms, archiveAtom, confirmAtom, upsertAtom, type AtomKind } from '../../_lib/knowledge-atoms';
 import { computeMonthlyUsage, evaluateBudget } from '../../_lib/usage-tracker';
 import { createLinkCode, type Channel } from '../../_lib/messaging-adapters';
+import { signSessionToken } from '../../_lib/api-auth';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -561,6 +562,13 @@ const TOOL_GET_SPEND_BREAKDOWN: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
+  name: 'issue_deck_login',
+  description:
+    "Generate a magic-link URL the owner can tap to sign into the Command Deck on their phone or laptop. Use when the owner says 'send me a login link', 'log me in to the deck', 'I need to sign in', or whenever they want to view the dashboard. Returns a fully-formed URL valid for 30 days that, when clicked, sets a secure session cookie. NEVER paste deck URLs that lack a token — the deck refuses unauthenticated access.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 const TOOL_GET_CHANNEL_LINK_CODE: AnthropicTool = {
   name: 'get_channel_link_code',
   description:
@@ -832,6 +840,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_GET_MY_SPEND);
   tools.push(TOOL_GET_SPEND_BREAKDOWN);
   tools.push(TOOL_GET_CHANNEL_LINK_CODE);
+  tools.push(TOOL_ISSUE_DECK_LOGIN);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -1602,6 +1611,19 @@ export async function executeTool(
           ...sortedModels.map((m) => `  • ${m.model}: $${m.costUsd.toFixed(2)} (${(m.tokensIn + m.tokensOut).toLocaleString()} tokens)`),
         ];
         return { content: lines.join('\n'), success: true };
+      }
+
+      case 'issue_deck_login': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        if (!user.isOwner) return { content: 'Only the account owner can request a deck login link.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const token = await signSessionToken(cleanPhone);
+        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const link = `${base}/api/auth/deck/redeem?token=${encodeURIComponent(token)}`;
+        return {
+          content: `Here's your secure deck login link (valid 30 days, do not share):\n\n${link}\n\nTap it to sign in. The link sets a cookie and drops you on the dashboard.`,
+          success: true,
+        };
       }
 
       case 'get_channel_link_code': {

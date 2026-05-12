@@ -21,6 +21,7 @@
 
 import { encryptToken, assertEncryptionConfigured } from '@wisdomworks/shared';
 import { fetchVercelProject, fetchGitHubReadme, syncConnection } from '../../_lib/project-sync';
+import { requireOwnerAuth } from '../../_lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -61,6 +62,11 @@ export async function POST(request: Request) {
     if (!phone || !project_name) {
       return Response.json({ error: 'phone and project_name required' }, { status: 400 });
     }
+
+    // Story 6.1 deadbolt — project connections store provider tokens
+    const denied = await requireOwnerAuth(request, phone);
+    if (denied) return denied;
+
     if (!provider || provider !== 'vercel-github') {
       return Response.json({ error: 'Only vercel-github provider is implemented today' }, { status: 400 });
     }

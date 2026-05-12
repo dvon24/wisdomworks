@@ -7,6 +7,7 @@
 
 import { NextResponse } from 'next/server';
 import { createTransport } from 'nodemailer';
+import { requireOwnerAuth } from '../../_lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,6 +25,11 @@ const transporter = createTransport({
 
 export async function POST(request: Request) {
   try {
+    // Story 6.1 deadbolt — pinned to OWNER_PHONE since this route only
+    // services the owner's pending drafts.
+    const denied = await requireOwnerAuth(request, OWNER_PHONE);
+    if (denied) return denied;
+
     const { emailIndex, action, editedText } = await request.json();
 
     if (action === 'skip') {

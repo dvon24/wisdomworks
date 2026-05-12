@@ -13,6 +13,7 @@
 
 import { NextResponse } from 'next/server';
 import { computeMonthlyUsage, evaluateBudget, recordOverageIfExceeded } from '../_lib/usage-tracker';
+import { requireOwnerAuth } from '../_lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,13 +23,17 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const phone = url.searchParams.get('phone');
-  if (!phone) return NextResponse.json({ error: 'phone required' }, { status: 400 });
+
+  // Story 6.1 deadbolt — must be authenticated as this tenant
+  const denied = await requireOwnerAuth(request, phone);
+  if (denied) return denied;
 
   if (!SUPABASE_URL || !SUPABASE_KEY) {
     return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
   }
 
-  const cleanPhone = phone.replace(/[\s\-+()]/g, '');
+  // requireOwnerAuth guarantees phone is non-null on success
+  const cleanPhone = phone!.replace(/[\s\-+()]/g, '');
 
   try {
     const headers = {

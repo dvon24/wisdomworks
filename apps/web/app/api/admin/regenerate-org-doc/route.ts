@@ -33,6 +33,13 @@ export async function POST(request: Request) {
     return Response.json({ error: 'Supabase not configured' }, { status: 500 });
   }
 
+  // Story 6.1 — admin-only
+  const auth = request.headers.get('authorization');
+  const ownerToken = process.env.OWNER_API_TOKEN;
+  if (!ownerToken || !auth?.startsWith('Bearer ') || auth.slice(7) !== ownerToken) {
+    return Response.json({ error: 'unauthorized' }, { status: 401 });
+  }
+
   try {
     const { phone } = await request.json();
     if (!phone) return Response.json({ error: 'phone required' }, { status: 400 });

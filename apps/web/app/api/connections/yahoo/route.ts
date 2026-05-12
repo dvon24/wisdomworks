@@ -8,6 +8,7 @@
  */
 
 import { saveConnection } from '../_lib/save';
+import { requireOwnerAuth } from '../../_lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,6 +39,11 @@ export async function POST(request: Request) {
     if (!phone || !email || !appPassword) {
       return Response.json({ error: 'phone, email, and appPassword required' }, { status: 400 });
     }
+
+    // Story 6.1 deadbolt — connection writes store encrypted credentials
+    const denied = await requireOwnerAuth(request, phone);
+    if (denied) return denied;
+
     const cleanPassword = appPassword.replace(/\s/g, '');
     if (cleanPassword.length < 12) {
       return Response.json(

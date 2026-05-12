@@ -13,6 +13,7 @@
 import { NextResponse } from 'next/server';
 import { loadUserContext } from '../webhooks/whatsapp/context-store';
 import { generateIrisReply } from '../webhooks/whatsapp/iris-brain';
+import { requireOwnerAuth } from '../_lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -28,6 +29,11 @@ export async function POST(request: Request) {
     }
 
     const phone = phoneRaw.replace(/[\s\-+()]/g, '');
+
+    // Story 6.1 deadbolt
+    const denied = await requireOwnerAuth(request, phone);
+    if (denied) return denied;
+
     const user = await loadUserContext(phone, body.name || 'Owner');
     const reply = await generateIrisReply(message, user, 'deck');
 

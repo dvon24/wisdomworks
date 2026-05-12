@@ -15,6 +15,7 @@
 
 import { NextResponse } from 'next/server';
 import { ingestOntology } from '../../_lib/knowledge-base';
+import { requireOwnerAuth } from '../../_lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,6 +26,10 @@ export async function POST(request: Request) {
     const { phone } = await request.json();
     if (!phone) return NextResponse.json({ error: 'phone required' }, { status: 400 });
     const cleanPhone = phone.replace(/[\s\-+()]/g, '');
+
+    // Story 6.1 deadbolt
+    const denied = await requireOwnerAuth(request, cleanPhone);
+    if (denied) return denied;
     const result = await ingestOntology(cleanPhone);
     console.log(`[knowledge/ingest] ${cleanPhone}: ingested=${result.ingested} skipped=${result.skipped} chunks=${result.chunks}`);
     return NextResponse.json({ ok: true, ...result });

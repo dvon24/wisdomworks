@@ -11,6 +11,15 @@ const GRAPH_API = 'https://graph.facebook.com/v25.0';
 
 export async function POST(request: Request) {
   try {
+    // Story 6.1 deadbolt — this is a server-to-server test/admin endpoint
+    // that can spend WhatsApp credits to any number. Lock it to the admin
+    // token; never expose it to public callers.
+    const auth = request.headers.get('authorization');
+    const ownerToken = process.env.OWNER_API_TOKEN;
+    if (!ownerToken || !auth?.startsWith('Bearer ') || auth.slice(7) !== ownerToken) {
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
+
     const { to, message, template } = await request.json();
     const phoneId = process.env.WHATSAPP_PHONE_ID;
     const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;

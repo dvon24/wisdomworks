@@ -12,6 +12,7 @@
 import { NextResponse } from 'next/server';
 import { startTenantAgents, stopTenantAgents, tickAgent, maybeSendTeamDigest, computeCadence } from '../../_lib/agent-runtime';
 import { saveSnapshot, recoverFromSnapshot, recoveryTest } from '../../_lib/state-recovery';
+import { requireOwnerAuth } from '../../_lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,6 +28,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'phone + action required' }, { status: 400 });
     }
     const cleanPhone = phone.replace(/[\s\-+()]/g, '');
+
+    // Story 6.1 deadbolt
+    const denied = await requireOwnerAuth(request, cleanPhone);
+    if (denied) return denied;
 
     if (action === 'start') {
       const result = await startTenantAgents(cleanPhone);

@@ -133,6 +133,8 @@ export default function CommandDeck() {
   const [phoneNumber, setPhoneNumber] = useState<string | null>(null);
   const [tenantData, setTenantData] = useState<any>(null);
   const [loadingTenant, setLoadingTenant] = useState(true);
+  // Story 6.1 — set when /api/dashboard returns 401 (owner needs to sign in)
+  const [authRequired, setAuthRequired] = useState(false);
   // Map of id → rich AI metadata (description, channels, tools, strengths, limitations, emoji)
   const [teamMeta, setTeamMeta] = useState<Record<string, any>>({});
 
@@ -200,8 +202,19 @@ export default function CommandDeck() {
     localStorage.setItem('wisdomworks_phone', phone);
 
     fetch(`/api/dashboard?phone=${encodeURIComponent(phone)}`)
-      .then((r) => r.json())
-      .then((data) => {
+      .then(async (r) => {
+        if (r.status === 401) {
+          // Story 6.1 — owner needs to sign in via WhatsApp magic link
+          setAuthRequired(true);
+          return { __unauthenticated: true };
+        }
+        return r.json();
+      })
+      .then((data: any) => {
+        if (data?.__unauthenticated) {
+          setLoadingTenant(false);
+          return;
+        }
         if (data.error) {
           console.warn('[command-deck] No tenant data:', data.error);
           setLoadingTenant(false);
@@ -622,8 +635,21 @@ export default function CommandDeck() {
       >
         {/* Main pane */}
         <section style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Story 6.1 — sign-in prompt when no session cookie */}
+          {authRequired && (
+            <div className="glass-strong" style={{ padding: 24, textAlign: 'center' }}>
+              <div className="eyebrow" style={{ marginBottom: 8 }}>Sign in required</div>
+              <div style={{ fontSize: 16, fontWeight: 300, marginBottom: 8 }}>
+                Your Command Deck is locked.
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text-dim)', maxWidth: 520, margin: '0 auto' }}>
+                Open WhatsApp and message Sophia: <strong>"send me a deck login link"</strong>.
+                She'll text you back a one-tap link that signs you in for 30 days.
+              </div>
+            </div>
+          )}
           {/* KPI strip — only on Team tab (Overview stays clean) */}
-          {view === 'team' && (
+          {!authRequired && view === 'team' && (
           <div className="glass-strong" style={{ padding: '1.25rem 2rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 20, alignItems: 'baseline' }}>
             <div>
               <div className="eyebrow" style={{ marginBottom: 4 }}>Business</div>
