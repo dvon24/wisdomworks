@@ -21,6 +21,7 @@ import {
   deriveAgentConfigs,
   planProvisioning,
   runAxisDiscovery,
+  findVerticalTemplate,
 } from '@wisdomworks/shared';
 import type {
   AxisDeploymentSpec,
@@ -244,8 +245,88 @@ async function seedFromOnboarding(
     } catch {}
   }
 
+  // 6. Vertical template seeding (May 2026): if businessType matches one
+  // of our pre-tuned verticals (electrician / restaurant / salon), seed the
+  // common goals + constraints + sample workflows as knowledge atoms so the
+  // team starts with industry-aware context. Stash the recommendedTools
+  // and laneHints on whatsapp_contexts.profile for the deck to render.
+  const vertical = findVerticalTemplate(data.businessType ?? data.industry);
+  if (vertical) {
+    console.log(`[deploy-complete] applying vertical template: ${vertical.label}`);
+    for (const c of vertical.commonConstraints) {
+      try {
+        await fetch(`${supabaseUrl}/rest/v1/rpc/upsert_knowledge_atom`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            p_tenant_phone: cleanPhone,
+            p_kind: 'constraint',
+            p_content: c.content,
+            p_source: 'vertical_template',
+            p_confidence: 0.85,
+            p_owner_confirmed: false,
+            p_tags: [...c.tags, 'vertical_template'],
+          }),
+        });
+      } catch {}
+    }
+    for (const g of vertical.commonGoals) {
+      try {
+        await fetch(`${supabaseUrl}/rest/v1/rpc/upsert_knowledge_atom`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            p_tenant_phone: cleanPhone,
+            p_kind: 'goal',
+            p_content: g.content,
+            p_source: 'vertical_template',
+            p_confidence: 0.85,
+            p_owner_confirmed: false,
+            p_tags: [...g.tags, 'vertical_template'],
+          }),
+        });
+      } catch {}
+    }
+    for (const w of vertical.sampleWorkflows) {
+      try {
+        await fetch(`${supabaseUrl}/rest/v1/rpc/upsert_knowledge_atom`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            p_tenant_phone: cleanPhone,
+            p_kind: 'goal',
+            p_content: `Suggested workflow: ${w.content}`,
+            p_source: 'vertical_template',
+            p_confidence: 0.75,
+            p_owner_confirmed: false,
+            p_tags: [...w.tags, 'vertical_template', 'sample_workflow'],
+          }),
+        });
+      } catch {}
+    }
+    // Stash the recommended-tools + lane-hints on profile for the deck
+    try {
+      const ctxRes = await fetch(
+        `${supabaseUrl}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile`,
+        { headers },
+      );
+      const rows = ctxRes.ok ? await ctxRes.json() : [];
+      const profile = rows[0]?.profile ?? {};
+      profile.vertical_template = {
+        label: vertical.label,
+        recommendedTools: vertical.recommendedTools,
+        laneHints: vertical.laneHints,
+      };
+      await fetch(`${supabaseUrl}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
+        method: 'PATCH',
+        headers: { ...headers, Prefer: 'return=minimal' },
+        body: JSON.stringify({ profile }),
+      });
+    } catch {}
+  }
+
   const seeded = (data.keyContacts?.length ?? 0) + (data.knownGaps?.length ?? 0) + (data.painPoints?.length ?? 0) + (data.keyWorkflows?.length ?? 0);
-  console.log(`[deploy-complete] onboarding seeded: ${data.keyContacts?.length ?? 0} contacts, ${data.knownGaps?.length ?? 0} gaps, ${data.painPoints?.length ?? 0} pains, ${data.keyWorkflows?.length ?? 0} workflows, channel=${data.preferredChannel ?? 'default'}`);
+  console.log(`[deploy-complete] onboarding seeded: ${data.keyContacts?.length ?? 0} contacts, ${data.knownGaps?.length ?? 0} gaps, ${data.painPoints?.length ?? 0} pains, ${data.keyWorkflows?.length ?? 0} workflows, channel=${data.preferredChannel ?? 'default'}${vertical ? `, vertical=${vertical.label}` : ''}`);
 }
 
 async function loadProtocolOverride(supabaseUrl: string, supabaseKey: string, cleanPhone: string): Promise<any | null> {

@@ -830,6 +830,34 @@ export default function CommandDeck() {
                   </div>
                 </div>
               )}
+
+              {/* Vertical template — pre-curated tool recommendations for this industry */}
+              {tenantData?.verticalTemplate?.recommendedTools?.length > 0 && (
+                <div className="glass" style={{ padding: 16 }}>
+                  <div className="eyebrow" style={{ marginBottom: 8 }}>
+                    Recommended for {tenantData.verticalTemplate.label}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {tenantData.verticalTemplate.recommendedTools.map((t: any) => (
+                      <div
+                        key={t.id}
+                        title={t.why}
+                        style={{
+                          padding: '6px 12px',
+                          background: 'rgba(0, 122, 255, 0.08)',
+                          border: '1px solid rgba(0, 122, 255, 0.2)',
+                          borderRadius: 12,
+                          fontSize: 12,
+                          color: 'var(--text-dim)',
+                          cursor: 'help',
+                        }}
+                      >
+                        {t.label} <span style={{ opacity: 0.6 }}>· {t.why}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

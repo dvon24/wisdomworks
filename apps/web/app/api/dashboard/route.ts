@@ -330,6 +330,7 @@ export async function GET(request: Request) {
         businessType: ctx.business_type,
         isOwner: ctx.is_owner,
       },
+      verticalTemplate: profile.vertical_template ?? null,
       connections: connections.map((c: any) => ({
         provider: c.provider,
         service: c.service,

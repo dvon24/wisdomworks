@@ -23,6 +23,15 @@ export {
 export type { PersonalTemplate } from './personal-templates';
 
 export {
+  VERTICAL_TEMPLATES,
+  ELECTRICIAN_TEMPLATE,
+  RESTAURANT_TEMPLATE,
+  SALON_TEMPLATE,
+  findVerticalTemplate,
+} from './vertical-templates';
+export type { VerticalTemplate } from './vertical-templates';
+
+export {
   HUMAN_COACHING_CAPABILITIES,
   AGENT_COACHING_SIGNALS,
   FEEDBACK_DIMENSIONS,
