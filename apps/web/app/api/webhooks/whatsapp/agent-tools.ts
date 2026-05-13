@@ -74,6 +74,8 @@ import {
 import {
   summarizeInstagramActivity,
   publishInstagramPhoto,
+  publishInstagramReel,
+  publishFacebookPagePost,
   replyToInstagramComment,
 } from '../../_lib/integrations/meta-business';
 import {
@@ -650,6 +652,36 @@ const TOOL_PUBLISH_INSTAGRAM_POST: AnthropicTool = {
       caption: { type: 'string', description: 'Caption (max 2200 chars). Include hashtags inline.' },
     },
     required: ['image_url', 'caption'],
+  },
+};
+
+const TOOL_PUBLISH_INSTAGRAM_REEL: AnthropicTool = {
+  name: 'publish_instagram_reel',
+  description:
+    "Publish an Instagram Reel given a video URL + caption. NEVER call without explicit owner approval of THIS specific caption + video (pending-action safety rule). The video MUST be public HTTPS, MP4 H.264 + AAC, 3-90s, <100MB, ideally 9:16 aspect. After approval, Meta encodes the video (15-60s), then publishes. Returns the new reel id.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      video_url: { type: 'string', description: 'Public HTTPS URL to an MP4 video.' },
+      caption: { type: 'string', description: 'Caption (max 2200 chars). Hashtags inline.' },
+      share_to_feed: { type: 'boolean', description: 'Also share to main feed (default true).' },
+    },
+    required: ['video_url', 'caption'],
+  },
+};
+
+const TOOL_PUBLISH_FACEBOOK_POST: AnthropicTool = {
+  name: 'publish_facebook_post',
+  description:
+    "Publish a post to the owner's connected Facebook Page. NEVER call without explicit owner approval of THIS specific post (pending-action safety rule). Use when owner says 'post this to Facebook', 'share that on FB'. Optional image_url posts as a photo with caption; optional link_url posts with a link preview; otherwise plain text.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      message: { type: 'string', description: 'Post text (max 5000 chars).' },
+      image_url: { type: 'string', description: 'Optional public HTTPS image URL — converts to a photo post.' },
+      link_url: { type: 'string', description: 'Optional URL to share. If image_url is set, link is ignored.' },
+    },
+    required: ['message'],
   },
 };
 
@@ -1427,6 +1459,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LIST_RECENT_PAYMENTS);
   tools.push(TOOL_INSTAGRAM_ACTIVITY);
   tools.push(TOOL_PUBLISH_INSTAGRAM_POST);
+  tools.push(TOOL_PUBLISH_INSTAGRAM_REEL);
+  tools.push(TOOL_PUBLISH_FACEBOOK_POST);
   tools.push(TOOL_REPLY_INSTAGRAM_COMMENT);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
@@ -2463,6 +2497,62 @@ export async function executeTool(
           return { content: `✓ Posted to Instagram. Post id: ${result.postId}`, success: true };
         } catch (err: any) {
           return { content: `IG publish failed: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'publish_instagram_reel': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const videoUrl = String(call.input.video_url ?? '').trim();
+        const caption = String(call.input.caption ?? '').trim();
+        if (!videoUrl || !caption) return { content: 'video_url and caption required.', success: false };
+        if (!videoUrl.startsWith('https://')) return { content: 'video_url must be HTTPS.', success: false };
+        const igConn = (connections as any[]).find((c) => c.provider === 'meta' && c.service === 'instagram');
+        if (!igConn) return { content: "No Instagram connected yet.", success: false };
+        const igAccountId = igConn.metadata?.instagram_account_id;
+        if (!igAccountId) return { content: 'No Instagram Business Account linked.', success: false };
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(igConn.access_token);
+          // Note: Meta encodes the video before publish — this can take 15-90s.
+          // The chat brain may hit its own iteration cap; surface a friendly
+          // message if so. The Reels endpoint polls up to 90s by default.
+          const result = await publishInstagramReel({
+            accessToken: token,
+            igAccountId,
+            videoUrl,
+            caption,
+            shareToFeed: call.input.share_to_feed !== false,
+          });
+          if (!result.ok) return { content: `Reel publish failed: ${result.error}`, success: false };
+          return { content: `✓ Reel posted to Instagram. Post id: ${result.postId}`, success: true };
+        } catch (err: any) {
+          return { content: `Reel publish failed: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'publish_facebook_post': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const message = String(call.input.message ?? '').trim();
+        if (!message) return { content: 'message required.', success: false };
+        const fbConn = (connections as any[]).find((c) => c.provider === 'meta' && c.service === 'instagram');
+        if (!fbConn) return { content: "No Meta Business connected yet.", success: false };
+        const pageId = fbConn.metadata?.page_id;
+        if (!pageId) return { content: 'No Facebook Page linked to your Meta connection.', success: false };
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          // The access_token on the meta connection IS the page access token
+          const token = await decryptToken(fbConn.access_token);
+          const result = await publishFacebookPagePost({
+            pageAccessToken: token,
+            pageId,
+            message,
+            imageUrl: call.input.image_url ? String(call.input.image_url) : undefined,
+            linkUrl: call.input.link_url ? String(call.input.link_url) : undefined,
+          });
+          if (!result.ok) return { content: `Facebook post failed: ${result.error}`, success: false };
+          return { content: `✓ Posted to Facebook Page. Post id: ${result.postId}`, success: true };
+        } catch (err: any) {
+          return { content: `Facebook post failed: ${err?.message ?? String(err)}`, success: false };
         }
       }
 

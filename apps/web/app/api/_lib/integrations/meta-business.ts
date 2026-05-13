@@ -179,6 +179,133 @@ export async function publishInstagramPhoto(input: {
   }
 }
 
+/**
+ * Publish an Instagram REEL. Three-step flow (more complex than photos):
+ *   1. POST /media with media_type=REELS + video_url + caption → container id
+ *   2. Poll /{container_id}?fields=status_code until FINISHED (uploads/encodes)
+ *   3. POST /media_publish with the container id → published reel
+ *
+ * Reels requirements:
+ *   - MP4 with H.264 + AAC, 3-90 seconds, <100MB, public HTTPS URL
+ *   - 9:16 aspect ratio preferred (accepts 4:5 to 1.91:1)
+ */
+export async function publishInstagramReel(input: {
+  accessToken: string;
+  igAccountId: string;
+  videoUrl: string;
+  caption: string;
+  shareToFeed?: boolean;
+  maxWaitMs?: number;
+}): Promise<{ ok: boolean; postId?: string; error?: string }> {
+  try {
+    const createUrl = `${GRAPH_API}/${input.igAccountId}/media`;
+    const createBody = new URLSearchParams({
+      media_type: 'REELS',
+      video_url: input.videoUrl,
+      caption: input.caption.slice(0, 2200),
+      share_to_feed: input.shareToFeed === false ? 'false' : 'true',
+      access_token: input.accessToken,
+    });
+    const createRes = await fetch(createUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: createBody.toString(),
+    });
+    if (!createRes.ok) {
+      return { ok: false, error: `container create failed: ${await createRes.text()}` };
+    }
+    const created = await createRes.json();
+    const creationId = created.id;
+    if (!creationId) return { ok: false, error: 'no container id returned' };
+
+    // Poll until FINISHED (Meta encodes the video before allowing publish)
+    const maxWaitMs = input.maxWaitMs ?? 90_000;
+    const start = Date.now();
+    let lastStatus = 'IN_PROGRESS';
+    while (Date.now() - start < maxWaitMs) {
+      const statusRes = await fetch(
+        `${GRAPH_API}/${creationId}?fields=status_code,status&access_token=${input.accessToken}`,
+      );
+      if (statusRes.ok) {
+        const s = await statusRes.json();
+        lastStatus = s.status_code ?? s.status ?? 'UNKNOWN';
+        if (lastStatus === 'FINISHED') break;
+        if (lastStatus === 'ERROR' || lastStatus === 'EXPIRED') {
+          return { ok: false, error: `container ${lastStatus}: ${JSON.stringify(s)}` };
+        }
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    if (lastStatus !== 'FINISHED') {
+      return { ok: false, error: `container still ${lastStatus} after ${maxWaitMs}ms — Meta is still encoding. Try again in a minute.` };
+    }
+
+    const publishRes = await fetch(`${GRAPH_API}/${input.igAccountId}/media_publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ creation_id: creationId, access_token: input.accessToken }).toString(),
+    });
+    if (!publishRes.ok) return { ok: false, error: `publish failed: ${await publishRes.text()}` };
+    const published = await publishRes.json();
+    return { ok: true, postId: published.id };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * Publish a post to the owner's connected Facebook Page.
+ * Uses the page_access_token (stored as access_token on the connection).
+ *
+ *   POST /{page-id}/feed  with `message` and optional `link` or `picture`.
+ *   Returns the new post id.
+ */
+export async function publishFacebookPagePost(input: {
+  pageAccessToken: string;
+  pageId: string;
+  message: string;
+  linkUrl?: string;
+  imageUrl?: string;
+}): Promise<{ ok: boolean; postId?: string; error?: string }> {
+  try {
+    // If imageUrl provided, post a photo with caption instead of a text post.
+    if (input.imageUrl) {
+      const url = `${GRAPH_API}/${input.pageId}/photos`;
+      const body = new URLSearchParams({
+        url: input.imageUrl,
+        caption: input.message.slice(0, 5000),
+        access_token: input.pageAccessToken,
+      });
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      if (!res.ok) return { ok: false, error: await res.text() };
+      const data = await res.json();
+      return { ok: true, postId: data.post_id ?? data.id };
+    }
+
+    // Plain text + optional link
+    const url = `${GRAPH_API}/${input.pageId}/feed`;
+    const body = new URLSearchParams({
+      message: input.message.slice(0, 5000),
+      access_token: input.pageAccessToken,
+    });
+    if (input.linkUrl) body.set('link', input.linkUrl);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    if (!res.ok) return { ok: false, error: await res.text() };
+    const data = await res.json();
+    return { ok: true, postId: data.id };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
 /** Aggregate recent activity for the owner's daily-brief / agent tick:
  *  recent posts + their comment counts + the latest comment per post. */
 export interface InstagramActivitySummary {
