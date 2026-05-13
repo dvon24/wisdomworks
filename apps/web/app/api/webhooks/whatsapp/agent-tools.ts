@@ -57,6 +57,10 @@ import {
   revokeApiKey as revokeWidgetApiKey,
 } from '../../_lib/widget-auth';
 import {
+  createTenantSite,
+  getTenantSiteByTenant,
+} from '../../_lib/tenant-sites';
+import {
   loadActiveConnections,
   loadLatestSnapshot,
   fetchGitHubCommits,
@@ -607,6 +611,31 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   name: 'issue_deck_login',
   description:
     "Generate a magic-link URL the owner can tap to sign into the Command Deck on their phone or laptop. Use when the owner says 'send me a login link', 'log me in to the deck', 'I need to sign in', or whenever they want to view the dashboard. Returns a fully-formed URL valid for 30 days that, when clicked, sets a secure session cookie. NEVER paste deck URLs that lack a token — the deck refuses unauthenticated access.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+// ─── Client websites (Story 2b.7) ────────────────────────────────────────
+
+const TOOL_GENERATE_WEBSITE: AnthropicTool = {
+  name: 'generate_website',
+  description:
+    "Provision a one-page website for the owner's business — instant publish at wisdomworks.app/sites/<slug>. Use when owner says 'build me a website', 'I need a site', 'I don't have a website yet'. Auto-pulls services from connected Square (if any), seeds defaults from the owner's vertical template, and auto-embeds the chat + booking widgets so visitors can interact / book on the live site immediately. Owner can later point a custom domain at the URL via Vercel domain settings.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      business_name: { type: 'string', description: "The business name displayed in the hero. Defaults to whatsapp_contexts.business_name." },
+      hero_title: { type: 'string', description: 'Override the hero headline.' },
+      hero_subtitle: { type: 'string', description: 'Override the hero subtitle.' },
+      contact_email: { type: 'string' },
+      contact_phone: { type: 'string' },
+    },
+  },
+};
+
+const TOOL_MY_WEBSITE_URL: AnthropicTool = {
+  name: 'get_my_website_url',
+  description:
+    "Return the URL of the owner's WisdomWorks-generated site (if one exists). Use when owner asks 'what's my website', 'where is my site', 'send me the link'.",
   input_schema: { type: 'object', properties: {} },
 };
 
@@ -1250,6 +1279,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_CREATE_WIDGET_KEY);
   tools.push(TOOL_LIST_WIDGET_KEYS);
   tools.push(TOOL_REVOKE_WIDGET_KEY);
+  tools.push(TOOL_GENERATE_WEBSITE);
+  tools.push(TOOL_MY_WEBSITE_URL);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2237,6 +2268,56 @@ export async function executeTool(
         const ok = await cancelManagedEvent(eventId, cleanPhone);
         if (!ok) return { content: 'Could not cancel the event.', success: false };
         return { content: '✓ Cancelled.', success: true };
+      }
+
+      case 'generate_website': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const businessName = String(call.input.business_name ?? user.businessName ?? user.profile?.businessName ?? '').trim();
+        if (!businessName) {
+          return { content: "Need a business name to build a site. What's the business called?", success: false };
+        }
+        const verticalLabel = (user.profile as any)?.vertical_template?.label ?? undefined;
+        const site = await createTenantSite({
+          tenantPhone: cleanPhone,
+          businessName,
+          verticalLabel,
+          heroTitle: call.input.hero_title ? String(call.input.hero_title) : undefined,
+          heroSubtitle: call.input.hero_subtitle ? String(call.input.hero_subtitle) : undefined,
+          contactEmail: call.input.contact_email ? String(call.input.contact_email) : undefined,
+          contactPhone: call.input.contact_phone ? String(call.input.contact_phone) : undefined,
+        });
+        if (!site) return { content: 'Could not provision the site.', success: false };
+        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const url = `${base}/sites/${site.slug}`;
+        const lines = [
+          `✓ Your site is live: ${url}`,
+          '',
+          `Includes:`,
+          `  • Hero with your business name${verticalLabel ? ` (themed for ${verticalLabel})` : ''}`,
+          `  • ${site.services.length} service${site.services.length === 1 ? '' : 's'}${site.services.length > 0 ? ' (pulled from Square)' : ' — add some by saying "list my services on the site"'}`,
+          `  • Chat widget (bottom-right)`,
+          `  • Booking widget (header + floating button)${verticalLabel === 'Salon' ? '' : ''}`,
+          '',
+          `Want to customize the title, contact info, hours, or testimonials? Just tell me — "set my hours Mon-Fri 9 to 5", "add this testimonial...", etc.`,
+          '',
+          `Custom domain? Tell me and I'll walk you through the Vercel domain setup.`,
+        ];
+        return { content: lines.join('\n'), success: true };
+      }
+
+      case 'get_my_website_url': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const site = await getTenantSiteByTenant(cleanPhone);
+        if (!site) {
+          return { content: "You don't have a site yet. Say 'build me a website' and I'll provision one.", success: true };
+        }
+        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        return {
+          content: `Your site: ${base}/sites/${site.slug}\nStatus: ${site.status}${site.custom_domain ? `\nCustom domain: ${site.custom_domain}` : ''}`,
+          success: true,
+        };
       }
 
       case 'create_widget_api_key': {
