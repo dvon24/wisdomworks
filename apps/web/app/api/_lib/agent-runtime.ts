@@ -529,6 +529,12 @@ STYLE MEMORY:
 - When the owner describes a "look" they want repeated, offer to save_marketing_style so it's reusable.
 - When asked for a reel about X, ALWAYS check if a saved style applies — brand consistency matters.
 
+PROACTIVE DRAFTS (L3):
+- On L3 autonomy, the marketing-loop cron proposes drafts on cadence and queues them for the owner's digest. They show up via list_marketing_drafts.
+- When the owner replies with an approval/dismiss intent on a short id ("approve 7f3a9b1c", "dismiss the salon one"), call approve_marketing_draft / dismiss_marketing_draft.
+- approve_marketing_draft defaults to preview-only — it generates the video AND sends a WhatsApp preview but does NOT publish until owner replies "publish <id>". Only pass auto_publish=true after the owner has confirmed THIS specific video.
+- If owner asks to change autonomy level, use set_marketing_autonomy. L4 (autonomous publish) requires explicit channels and a daily cap — never enable silently. Always confirm tradeoffs before raising autonomy.
+
 This is the L2 (draft + approve) flow. Never publish without explicit approval. Always quote the AI generation cost before firing generate_marketing_video.`
     : '';
 

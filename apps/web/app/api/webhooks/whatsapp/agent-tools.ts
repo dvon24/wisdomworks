@@ -88,6 +88,17 @@ import {
   recordStyleUsed,
 } from '../../_lib/marketing-styles';
 import {
+  listDrafts,
+  getDraft,
+  dismissDraft,
+  approveDraft,
+  loadAutonomyPrefs,
+  saveAutonomyPrefs,
+  proposeDraft,
+  type AutonomyLevel,
+  type DraftChannel,
+} from '../../_lib/marketing-drafts';
+import {
   loadActiveConnections,
   loadLatestSnapshot,
   fetchGitHubCommits,
@@ -694,6 +705,98 @@ const TOOL_DELETE_MARKETING_STYLE: AnthropicTool = {
       name: { type: 'string' },
     },
     required: ['name'],
+  },
+};
+
+// ─── Marketing drafts (L3 proactive) ─────────────────────────────────────
+
+const TOOL_LIST_MARKETING_DRAFTS: AnthropicTool = {
+  name: 'list_marketing_drafts',
+  description:
+    "List the owner's open marketing drafts (proposals waiting for approval). Use when owner asks 'what marketing ideas do you have', 'show my drafts', 'any pending posts', 'what did you draft for me'. Drafts are produced by the marketing-loop cron when the owner is on L3 autonomy. Each shows a short id, topic, channel, and estimated cost.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      status: {
+        type: 'string',
+        enum: ['proposed', 'approved', 'published', 'dismissed', 'failed', 'expired'],
+        description: 'Filter by status. Defaults to "proposed" (open ones).',
+      },
+      limit: { type: 'number', description: 'Max drafts to return. Defaults to 8.' },
+    },
+  },
+};
+
+const TOOL_PROPOSE_MARKETING_DRAFT: AnthropicTool = {
+  name: 'propose_marketing_draft',
+  description:
+    "Propose a new marketing draft on demand (owner-requested). Useful when the owner says 'draft a reel about X but don't post yet' or 'add a post idea to my queue: X'. This stores the concept without generating the video — they can review later, then approve to trigger generation + publish. To draft AND publish in one go, use generate_marketing_video + publish_instagram_reel instead.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      topic: { type: 'string', description: 'Short label so the owner recognizes the idea later.' },
+      caption: { type: 'string', description: 'Proposed Instagram caption (1-3 lines).' },
+      prompt: { type: 'string', description: 'Visual prompt for the video model when generation runs.' },
+      hashtags: { type: 'array', items: { type: 'string' }, description: 'Hashtags (without # prefix or with — both work).' },
+      channel: { type: 'string', enum: ['instagram_reel', 'instagram_post', 'facebook_post'] },
+    },
+    required: ['topic', 'caption', 'prompt'],
+  },
+};
+
+const TOOL_APPROVE_MARKETING_DRAFT: AnthropicTool = {
+  name: 'approve_marketing_draft',
+  description:
+    "Approve a proposed marketing draft. By default this fires video generation and sends the video to the owner's WhatsApp for final preview (pending-action safety rule — DOES NOT publish until the owner sees the actual video and confirms 'publish it'). Pass auto_publish=true ONLY when the owner has already approved both the concept AND the generated video. Returns the video URL on success.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      draft_id: { type: 'string', description: 'Full UUID or 8-char prefix from list_marketing_drafts.' },
+      auto_publish: { type: 'boolean', description: 'Set true ONLY after owner has approved the generated video. Default false (preview-only).' },
+      style_name: { type: 'string', description: 'Optional saved style name to apply before generating.' },
+    },
+    required: ['draft_id'],
+  },
+};
+
+const TOOL_DISMISS_MARKETING_DRAFT: AnthropicTool = {
+  name: 'dismiss_marketing_draft',
+  description:
+    "Dismiss a proposed marketing draft the owner doesn't want. Use when owner says 'pass on that one', 'dismiss draft X', 'not interested in the X idea'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      draft_id: { type: 'string', description: 'Full UUID or 8-char prefix.' },
+    },
+    required: ['draft_id'],
+  },
+};
+
+const TOOL_GET_MARKETING_AUTONOMY: AnthropicTool = {
+  name: 'get_marketing_autonomy',
+  description:
+    "Show the owner their current marketing autonomy settings: level (L1-L4), cadence, max daily auto-publishes, confidence threshold, channels and blocked words. Use when owner asks 'how autonomous is marketing', 'what are my marketing settings', 'why isn't the agent posting on its own'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_SET_MARKETING_AUTONOMY: AnthropicTool = {
+  name: 'set_marketing_autonomy',
+  description:
+    "Update the owner's marketing autonomy preferences. L1=manual, L2=draft+approve (default), L3=propose proactively on cadence, L4=autonomous publish within guardrails. Increasing to L4 REQUIRES at least one auto-publish channel and a positive daily cap. ALWAYS confirm with the owner before raising the level — autonomy changes affect what posts go out without their review.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      autonomy_level: { type: 'string', enum: ['L1', 'L2', 'L3', 'L4'] },
+      max_auto_publish_per_day: { type: 'number', description: 'L4 only — max posts auto-published per day. Default 0.' },
+      min_confidence_for_auto: { type: 'number', description: '0..1 — min concept confidence to auto-publish at L4. Default 0.85.' },
+      blocked_words: { type: 'array', items: { type: 'string' }, description: 'Words/phrases that block auto-publish (force owner review).' },
+      auto_publish_channels: {
+        type: 'array',
+        items: { type: 'string', enum: ['instagram_reel', 'instagram_post', 'facebook_post', 'tiktok'] },
+        description: 'Channels owner authorizes for autonomous publishing at L4.',
+      },
+      draft_cadence_days: { type: 'number', description: 'How often the L3 detector wakes up to propose new drafts. Default 7.' },
+    },
   },
 };
 
@@ -1559,6 +1662,12 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_SAVE_MARKETING_STYLE);
   tools.push(TOOL_LIST_MARKETING_STYLES);
   tools.push(TOOL_DELETE_MARKETING_STYLE);
+  tools.push(TOOL_LIST_MARKETING_DRAFTS);
+  tools.push(TOOL_PROPOSE_MARKETING_DRAFT);
+  tools.push(TOOL_APPROVE_MARKETING_DRAFT);
+  tools.push(TOOL_DISMISS_MARKETING_DRAFT);
+  tools.push(TOOL_GET_MARKETING_AUTONOMY);
+  tools.push(TOOL_SET_MARKETING_AUTONOMY);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2641,6 +2750,174 @@ export async function executeTool(
         return ok
           ? { content: `✓ Deleted style "${name}".`, success: true }
           : { content: `No style named "${name}" found.`, success: false };
+      }
+
+      case 'list_marketing_drafts': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const status = (call.input.status as any) ?? 'proposed';
+        const limit = typeof call.input.limit === 'number' ? call.input.limit : 8;
+        const drafts = (await listDrafts(cleanPhone, status)).slice(0, limit);
+        if (drafts.length === 0) {
+          return { content: `No ${status} marketing drafts. Set autonomy to L3 to have me propose ideas on cadence.`, success: true };
+        }
+        const lines = drafts.map((d) => {
+          const sid = d.id.slice(0, 8);
+          const cost = d.estimated_cost_usd ? `~$${Number(d.estimated_cost_usd).toFixed(2)}` : 'free';
+          return `  [${sid}] ${d.topic}\n     ${d.channel} · ${cost} · ${d.status}\n     "${d.caption.slice(0, 140)}${d.caption.length > 140 ? '…' : ''}"`;
+        });
+        return {
+          content: `${drafts.length} ${status} draft${drafts.length === 1 ? '' : 's'}:\n${lines.join('\n\n')}\n\nReply "approve <id>" to generate the video + preview, or "dismiss <id>".`,
+          success: true,
+        };
+      }
+
+      case 'propose_marketing_draft': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const topic = String(call.input.topic ?? '').trim();
+        const caption = String(call.input.caption ?? '').trim();
+        const prompt = String(call.input.prompt ?? '').trim();
+        if (!topic || !caption || !prompt) return { content: 'topic, caption, and prompt required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const channel = (call.input.channel as DraftChannel | undefined) ?? 'instagram_reel';
+        const hashtags = Array.isArray(call.input.hashtags)
+          ? (call.input.hashtags as string[]).map((h) => (h.startsWith('#') ? h : `#${h}`))
+          : [];
+        const est = estimateGenerationCost('fast');
+        const draft = await proposeDraft({
+          tenantPhone: cleanPhone,
+          source: 'owner_requested',
+          channel,
+          topic,
+          caption,
+          prompt,
+          hashtags,
+          estimatedCostUsd: est.costUsd,
+          metadata: { quality: 'fast', model: est.modelRef, confidence: 0.85 },
+        });
+        if (!draft) return { content: 'Could not save draft.', success: false };
+        return {
+          content: `✓ Draft saved [${draft.id.slice(0, 8)}]: ${topic}\nEstimated cost to generate: ~$${est.costUsd.toFixed(2)}.\nReply "approve ${draft.id.slice(0, 8)}" when you want me to generate the video.`,
+          success: true,
+        };
+      }
+
+      case 'approve_marketing_draft': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const rawId = String(call.input.draft_id ?? '').trim();
+        if (!rawId) return { content: 'draft_id required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        // Accept 8-char prefix — resolve to full UUID
+        let fullId = rawId;
+        if (rawId.length < 36) {
+          const open = await listDrafts(cleanPhone);
+          const match = open.find((d) => d.id.startsWith(rawId));
+          if (!match) return { content: `No draft matching id "${rawId}".`, success: false };
+          fullId = match.id;
+        } else {
+          // Verify tenant ownership
+          const d = await getDraft(fullId);
+          if (!d || d.tenant_phone !== cleanPhone) return { content: 'Draft not found.', success: false };
+        }
+        const autoPublish = call.input.auto_publish === true;
+        const styleNameOverride = call.input.style_name ? String(call.input.style_name) : undefined;
+        const result = await approveDraft(fullId, { generate: true, autoPublish, styleNameOverride });
+        if (!result.ok) {
+          return { content: `Approval failed: ${result.error}`, success: false };
+        }
+        if (autoPublish) {
+          return {
+            content: `✓ Published. Post id: ${result.publishedPostId ?? 'pending'}.`,
+            success: true,
+          };
+        }
+        // Send preview to WhatsApp so owner can confirm the actual video
+        if (result.videoUrl) {
+          const preview = await sendWhatsAppVideo({
+            to: user.phoneNumber,
+            videoUrl: result.videoUrl,
+            caption: result.draft?.caption?.slice(0, 1024),
+          });
+          if (!preview.ok) {
+            return {
+              content: `✓ Video generated (${result.videoUrl}) but preview send failed: ${preview.error}. Reply "publish ${fullId.slice(0, 8)}" to post anyway.`,
+              success: true,
+            };
+          }
+        }
+        return {
+          content: `✓ Video generated and sent to your WhatsApp as a preview. Reply "publish ${fullId.slice(0, 8)}" to post, or "regenerate ${fullId.slice(0, 8)} with <new angle>" to try again.`,
+          success: true,
+        };
+      }
+
+      case 'dismiss_marketing_draft': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const rawId = String(call.input.draft_id ?? '').trim();
+        if (!rawId) return { content: 'draft_id required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        let fullId = rawId;
+        if (rawId.length < 36) {
+          const open = await listDrafts(cleanPhone, 'proposed');
+          const match = open.find((d) => d.id.startsWith(rawId));
+          if (!match) return { content: `No proposed draft matching id "${rawId}".`, success: false };
+          fullId = match.id;
+        }
+        const updated = await dismissDraft(fullId);
+        if (!updated) return { content: 'Could not dismiss draft.', success: false };
+        return { content: `✓ Dismissed draft "${updated.topic}".`, success: true };
+      }
+
+      case 'get_marketing_autonomy': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const prefs = await loadAutonomyPrefs(cleanPhone);
+        const lvlDesc: Record<AutonomyLevel, string> = {
+          L1: 'manual only — you trigger every post',
+          L2: 'draft + approve — I draft on demand, you approve',
+          L3: 'propose proactively — I draft on cadence, you approve',
+          L4: 'autonomous within guardrails — auto-publish allowed posts',
+        };
+        const lastDraft = prefs.last_draft_at ? new Date(prefs.last_draft_at).toISOString().slice(0, 10) : 'never';
+        const channels = prefs.auto_publish_channels.length > 0 ? prefs.auto_publish_channels.join(', ') : '(none)';
+        const blocked = prefs.blocked_words.length > 0 ? prefs.blocked_words.join(', ') : '(none)';
+        return {
+          content:
+            `Marketing autonomy: ${prefs.autonomy_level} — ${lvlDesc[prefs.autonomy_level]}\n` +
+            `Cadence: every ${prefs.draft_cadence_days}d (last draft: ${lastDraft})\n` +
+            `Auto-publish cap: ${prefs.max_auto_publish_per_day}/day · min confidence ${prefs.min_confidence_for_auto}\n` +
+            `Auto-publish channels: ${channels}\n` +
+            `Blocked words: ${blocked}`,
+          success: true,
+        };
+      }
+
+      case 'set_marketing_autonomy': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const patch: Record<string, unknown> = {};
+        if (call.input.autonomy_level) patch.autonomy_level = call.input.autonomy_level;
+        if (typeof call.input.max_auto_publish_per_day === 'number') patch.max_auto_publish_per_day = call.input.max_auto_publish_per_day;
+        if (typeof call.input.min_confidence_for_auto === 'number') patch.min_confidence_for_auto = call.input.min_confidence_for_auto;
+        if (Array.isArray(call.input.blocked_words)) patch.blocked_words = (call.input.blocked_words as string[]).slice(0, 100);
+        if (Array.isArray(call.input.auto_publish_channels)) patch.auto_publish_channels = (call.input.auto_publish_channels as string[]).slice(0, 8);
+        if (typeof call.input.draft_cadence_days === 'number') patch.draft_cadence_days = Math.max(1, Math.min(90, call.input.draft_cadence_days));
+        // Guardrail: don't allow L4 without channels + cap
+        const merged = { ...(await loadAutonomyPrefs(cleanPhone)), ...patch } as any;
+        if (merged.autonomy_level === 'L4') {
+          if (!Array.isArray(merged.auto_publish_channels) || merged.auto_publish_channels.length === 0) {
+            return { content: 'Refusing L4 — set at least one auto_publish_channels entry first.', success: false };
+          }
+          if (!merged.max_auto_publish_per_day || merged.max_auto_publish_per_day <= 0) {
+            return { content: 'Refusing L4 — set max_auto_publish_per_day to a positive number first.', success: false };
+          }
+        }
+        const saved = await saveAutonomyPrefs(cleanPhone, patch as any);
+        if (!saved) return { content: 'Could not save autonomy preferences.', success: false };
+        return {
+          content: `✓ Autonomy updated to ${saved.autonomy_level}. ${saved.autonomy_level === 'L4' ? `Auto-publishing up to ${saved.max_auto_publish_per_day}/day on ${saved.auto_publish_channels.join(', ')}.` : ''}`.trim(),
+          success: true,
+        };
       }
 
       case 'send_video_preview': {
