@@ -319,6 +319,58 @@ export interface InstagramActivitySummary {
   }>;
 }
 
+/**
+ * Per-media engagement snapshot for the performance tracker. Pulls
+ * likes/comments via /{media_id} and reach/impressions/saves via
+ * /{media_id}/insights when available (account must be Business not
+ * Creator to get insights — silently omit on fail).
+ */
+export interface InstagramPostMetrics {
+  ok: boolean;
+  likeCount?: number;
+  commentsCount?: number;
+  reach?: number;
+  impressions?: number;
+  saves?: number;
+  error?: string;
+}
+
+export async function fetchInstagramPostMetrics(input: {
+  accessToken: string;
+  mediaId: string;
+}): Promise<InstagramPostMetrics> {
+  try {
+    const fields = 'id,like_count,comments_count';
+    const base = await fetch(`${GRAPH_API}/${input.mediaId}?fields=${fields}&access_token=${input.accessToken}`);
+    if (!base.ok) {
+      return { ok: false, error: `media fetch ${base.status}` };
+    }
+    const baseData = await base.json();
+    const out: InstagramPostMetrics = {
+      ok: true,
+      likeCount: baseData.like_count,
+      commentsCount: baseData.comments_count,
+    };
+    // Try insights (best-effort — works for Business accounts on reels/posts)
+    try {
+      const metrics = 'reach,impressions,saved';
+      const ins = await fetch(`${GRAPH_API}/${input.mediaId}/insights?metric=${metrics}&access_token=${input.accessToken}`);
+      if (ins.ok) {
+        const insData = await ins.json();
+        for (const m of insData.data ?? []) {
+          const v = m.values?.[0]?.value;
+          if (m.name === 'reach') out.reach = v;
+          if (m.name === 'impressions') out.impressions = v;
+          if (m.name === 'saved') out.saves = v;
+        }
+      }
+    } catch {}
+    return out;
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
 export async function summarizeInstagramActivity(input: {
   accessToken: string;
   igAccountId: string;

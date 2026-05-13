@@ -22,6 +22,7 @@ import {
   countAutoPublishedToday,
   approveDraft,
 } from '../../_lib/marketing-drafts';
+import { snapshotAllRecent, runAutonomyGuard } from '../../_lib/marketing-performance';
 import { enqueueNotification } from '../../_lib/notifications';
 
 export const dynamic = 'force-dynamic';
@@ -53,9 +54,32 @@ export async function GET(request: Request) {
     let totalProposed = 0;
     let totalAutoPublished = 0;
     let totalAutoPublishBlocked = 0;
+    let totalMetricsSynced = 0;
+    let totalAutoDemotions = 0;
     const errors: string[] = [];
 
     for (const t of tenants) {
+      // 0. Snapshot engagement on recent posts so the L4 autonomy guard
+      //    has fresh data to evaluate.
+      try {
+        const snap = await snapshotAllRecent(t.phone_number);
+        totalMetricsSynced += snap.synced;
+      } catch (err: any) {
+        console.warn(`[marketing-loop] snapshot failed for ${t.phone_number}:`, err);
+      }
+
+      // 0b. Autonomy guard — if last 3 auto-publishes underperformed vs
+      //     baseline, drop L4 → L3 with cooldown.
+      try {
+        const guard = await runAutonomyGuard(t.phone_number);
+        if (guard.action === 'demoted_l4_to_l3') {
+          totalAutoDemotions++;
+          console.log(`[marketing-loop] ${t.phone_number}: demoted L4→L3 (${guard.reason})`);
+        }
+      } catch (err: any) {
+        console.warn(`[marketing-loop] autonomy guard failed for ${t.phone_number}:`, err);
+      }
+
       // 1. Propose new drafts on cadence (L3+ only — runDraftDetector gates on level)
       try {
         const r = await runDraftDetector(t.phone_number);
@@ -143,6 +167,8 @@ export async function GET(request: Request) {
       proposed_drafts: totalProposed,
       auto_published: totalAutoPublished,
       auto_publish_blocked: totalAutoPublishBlocked,
+      metrics_synced: totalMetricsSynced,
+      auto_demotions: totalAutoDemotions,
       errors,
     });
   } catch (err) {

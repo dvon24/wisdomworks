@@ -98,6 +98,7 @@ import {
   type AutonomyLevel,
   type DraftChannel,
 } from '../../_lib/marketing-drafts';
+import { trackPostPublished, recentPerformance } from '../../_lib/marketing-performance';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -798,6 +799,13 @@ const TOOL_SET_MARKETING_AUTONOMY: AnthropicTool = {
       draft_cadence_days: { type: 'number', description: 'How often the L3 detector wakes up to propose new drafts. Default 7.' },
     },
   },
+};
+
+const TOOL_MARKETING_PERFORMANCE: AnthropicTool = {
+  name: 'marketing_performance_summary',
+  description:
+    "Show how the owner's recent marketing posts are performing. Returns the last 10 posts with likes, comments, reach, and a hour-discounted performance score so newer posts aren't unfairly compared. Use when owner asks 'how are my posts doing', 'what's working on instagram', 'which post performed best'.",
+  input_schema: { type: 'object', properties: {} },
 };
 
 const TOOL_SEND_VIDEO_PREVIEW: AnthropicTool = {
@@ -1668,6 +1676,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_DISMISS_MARKETING_DRAFT);
   tools.push(TOOL_GET_MARKETING_AUTONOMY);
   tools.push(TOOL_SET_MARKETING_AUTONOMY);
+  tools.push(TOOL_MARKETING_PERFORMANCE);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2920,6 +2929,23 @@ export async function executeTool(
         };
       }
 
+      case 'marketing_performance_summary': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const rows = await recentPerformance(cleanPhone, 10);
+        if (rows.length === 0) {
+          return { content: 'No marketing post performance data yet. Posts get tracked once you publish through me — try generate_marketing_video + publish_instagram_reel.', success: true };
+        }
+        const lines = rows.map((r, i) => {
+          const auto = r.auto_published ? '🤖' : '👤';
+          const score = r.performance_score != null ? `score ${r.performance_score}` : 'pending';
+          const ago = Math.max(0, Math.floor((Date.now() - new Date(r.published_at).getTime()) / (60 * 60 * 1000)));
+          const reachBit = r.reach != null ? `, reach ${r.reach}` : '';
+          return `  ${i + 1}. ${auto} ${r.channel} (${ago}h ago) — ❤️${r.like_count} 💬${r.comments_count}${reachBit} · ${score}`;
+        });
+        return { content: `Recent performance:\n${lines.join('\n')}\n\n🤖 = auto-published (L4)  👤 = owner-approved`, success: true };
+      }
+
       case 'send_video_preview': {
         if (!user) return { content: 'Internal: user context required.', success: false };
         const videoUrl = String(call.input.video_url ?? '').trim();
@@ -2980,6 +3006,14 @@ export async function executeTool(
           const token = await decryptToken(igConn.access_token);
           const result = await publishInstagramPhoto({ accessToken: token, igAccountId, imageUrl, caption });
           if (!result.ok) return { content: `Publish failed: ${result.error}`, success: false };
+          if (result.postId) {
+            void trackPostPublished({
+              tenantPhone: user.phoneNumber,
+              channel: 'instagram_post',
+              platformPostId: result.postId,
+              autoPublished: false,
+            });
+          }
           return { content: `✓ Posted to Instagram. Post id: ${result.postId}`, success: true };
         } catch (err: any) {
           return { content: `IG publish failed: ${err?.message ?? String(err)}`, success: false };
@@ -3010,6 +3044,14 @@ export async function executeTool(
             shareToFeed: call.input.share_to_feed !== false,
           });
           if (!result.ok) return { content: `Reel publish failed: ${result.error}`, success: false };
+          if (result.postId) {
+            void trackPostPublished({
+              tenantPhone: user.phoneNumber,
+              channel: 'instagram_reel',
+              platformPostId: result.postId,
+              autoPublished: false,
+            });
+          }
           return { content: `✓ Reel posted to Instagram. Post id: ${result.postId}`, success: true };
         } catch (err: any) {
           return { content: `Reel publish failed: ${err?.message ?? String(err)}`, success: false };
@@ -3036,6 +3078,14 @@ export async function executeTool(
             linkUrl: call.input.link_url ? String(call.input.link_url) : undefined,
           });
           if (!result.ok) return { content: `Facebook post failed: ${result.error}`, success: false };
+          if (result.postId) {
+            void trackPostPublished({
+              tenantPhone: user.phoneNumber,
+              channel: 'facebook_post',
+              platformPostId: result.postId,
+              autoPublished: false,
+            });
+          }
           return { content: `✓ Posted to Facebook Page. Post id: ${result.postId}`, success: true };
         } catch (err: any) {
           return { content: `Facebook post failed: ${err?.message ?? String(err)}`, success: false };

@@ -277,6 +277,40 @@ async function markLastDraftedNow(tenantPhone: string): Promise<void> {
   await saveAutonomyPrefs(tenantPhone, { last_draft_at: new Date().toISOString() } as any);
 }
 
+/**
+ * Insert a marketing_post_metrics row for a just-published post so the
+ * performance cron picks it up. Inlined here to avoid a circular import
+ * with marketing-performance.ts (which needs loadAutonomyPrefs).
+ */
+async function recordPublishedPost(input: {
+  tenantPhone: string;
+  draftId: string | null;
+  channel: string;
+  platformPostId: string;
+  autoPublished: boolean;
+}): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  try {
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/marketing_post_metrics?on_conflict=tenant_phone,platform_post_id`,
+      {
+        method: 'POST',
+        headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify({
+          tenant_phone: input.tenantPhone.replace(/[\s\-+()]/g, ''),
+          draft_id: input.draftId,
+          channel: input.channel,
+          platform_post_id: input.platformPostId,
+          auto_published: input.autoPublished,
+          published_at: new Date().toISOString(),
+        }),
+      },
+    );
+  } catch (err) {
+    console.warn('[marketing-drafts] recordPublishedPost failed:', err);
+  }
+}
+
 // ─── L3 detector: propose drafts on cadence ───────────────────────────────
 
 /**
@@ -558,6 +592,15 @@ export async function approveDraft(
         published_at: new Date().toISOString(),
         published_post_id: result.postId,
       });
+      if (result.postId) {
+        void recordPublishedPost({
+          tenantPhone: draft.tenant_phone,
+          draftId: draft.id,
+          channel: draft.channel,
+          platformPostId: result.postId,
+          autoPublished: true,
+        });
+      }
       return { ok: true, draft, videoUrl, publishedPostId: result.postId };
     }
     if (draft.channel === 'facebook_post') {
@@ -580,6 +623,15 @@ export async function approveDraft(
         published_at: new Date().toISOString(),
         published_post_id: result.postId,
       });
+      if (result.postId) {
+        void recordPublishedPost({
+          tenantPhone: draft.tenant_phone,
+          draftId: draft.id,
+          channel: draft.channel,
+          platformPostId: result.postId,
+          autoPublished: true,
+        });
+      }
       return { ok: true, draft, videoUrl, publishedPostId: result.postId };
     }
     await markFailed(id, `channel ${draft.channel} not yet supported for autonomous publish`);
