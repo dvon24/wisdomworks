@@ -67,6 +67,11 @@ import {
 } from '../../_lib/event-webhooks';
 import { detectConnectionGaps } from '../../_lib/connection-gap-detector';
 import {
+  listStripeCharges,
+  createStripePaymentLink,
+  fetchStripeAccount,
+} from '../../_lib/integrations/stripe-connect';
+import {
   loadActiveConnections,
   loadLatestSnapshot,
   fetchGitHubCommits,
@@ -618,6 +623,35 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   description:
     "Generate a magic-link URL the owner can tap to sign into the Command Deck on their phone or laptop. Use when the owner says 'send me a login link', 'log me in to the deck', 'I need to sign in', or whenever they want to view the dashboard. Returns a fully-formed URL valid for 30 days that, when clicked, sets a secure session cookie. NEVER paste deck URLs that lack a token — the deck refuses unauthenticated access.",
   input_schema: { type: 'object', properties: {} },
+};
+
+// ─── Stripe Connect (payments) ────────────────────────────────────────────
+
+const TOOL_CREATE_PAYMENT_LINK: AnthropicTool = {
+  name: 'create_payment_link',
+  description:
+    "Generate a Stripe payment link to send to a customer. Use when owner says 'send X an invoice for Y', 'charge the customer', 'I need to get paid for the job'. Returns a Stripe-hosted URL the customer taps to pay by card. Owner gets paid into their connected Stripe account. NOTE: Stripe charges 2.9% + $0.30 per transaction (customer's choice to keep WisdomWorks transparent on third-party costs).",
+  input_schema: {
+    type: 'object',
+    properties: {
+      amount_usd: { type: 'number', description: 'Amount in USD (e.g. 125.50).' },
+      description: { type: 'string', description: 'What the payment is for ("Kitchen rewire — 4 hours", "Balayage + toner").' },
+      customer_email: { type: 'string', description: 'Optional — for receipt routing.' },
+    },
+    required: ['amount_usd', 'description'],
+  },
+};
+
+const TOOL_LIST_RECENT_PAYMENTS: AnthropicTool = {
+  name: 'list_recent_payments',
+  description:
+    "List the owner's recent Stripe charges (paid + pending). Use when owner asks 'who paid me', 'what came in this week', 'show me my payouts', 'recent revenue'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Default 10.' },
+    },
+  },
 };
 
 // ─── Connection gap detector (Iris-as-onboarding-concierge) ──────────────
@@ -1346,6 +1380,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LIST_AUTOMATION_WEBHOOKS);
   tools.push(TOOL_REVOKE_AUTOMATION_WEBHOOK);
   tools.push(TOOL_OFFER_MISSING_CONNECTIONS);
+  tools.push(TOOL_CREATE_PAYMENT_LINK);
+  tools.push(TOOL_LIST_RECENT_PAYMENTS);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2333,6 +2369,64 @@ export async function executeTool(
         const ok = await cancelManagedEvent(eventId, cleanPhone);
         if (!ok) return { content: 'Could not cancel the event.', success: false };
         return { content: '✓ Cancelled.', success: true };
+      }
+
+      case 'create_payment_link': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const amount = Number(call.input.amount_usd);
+        const description = String(call.input.description ?? '').trim();
+        if (!amount || amount <= 0 || !description) {
+          return { content: 'Need amount_usd > 0 and a description.', success: false };
+        }
+        // Find Stripe connection (cast through any — OAuthConnection.provider
+        // type doesn't include new providers from the integration catalog)
+        const stripeConn = (connections as any[]).find((c) => c.provider === 'stripe' && c.service === 'payments');
+        if (!stripeConn) {
+          return { content: "No Stripe connected yet. Say 'connect Stripe' to set it up — one tap, no API keys.", success: false };
+        }
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(stripeConn.access_token);
+          const link = await createStripePaymentLink({
+            accessToken: token,
+            amountUsd: amount,
+            description,
+            customerEmail: call.input.customer_email ? String(call.input.customer_email) : undefined,
+          });
+          if (!link) return { content: 'Could not create the payment link. Check the Stripe connection.', success: false };
+          return {
+            content: `✓ Payment link ready:\n\n${link.url}\n\nFor ${description} — $${amount.toFixed(2)}. Stripe takes 2.9% + $0.30 per transaction. Send the URL to your customer.`,
+            success: true,
+          };
+        } catch (err: any) {
+          return { content: `Payment link creation failed: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'list_recent_payments': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const stripeConn = (connections as any[]).find((c) => c.provider === 'stripe' && c.service === 'payments');
+        if (!stripeConn) {
+          return { content: "No Stripe connected yet. Say 'connect Stripe' to set it up.", success: false };
+        }
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(stripeConn.access_token);
+          const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 50) : 10;
+          const charges = await listStripeCharges(token, limit);
+          if (charges.length === 0) return { content: 'No recent Stripe charges.', success: true };
+          const lines = charges.map((c: any) => {
+            const amount = (c.amount / 100).toFixed(2);
+            const date = new Date(c.created * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const status = c.status === 'succeeded' ? '✓' : c.status === 'pending' ? '⏳' : '⚠';
+            const customer = c.billing_details?.name || c.billing_details?.email || c.description || '(no name)';
+            return `  ${status} ${date}  $${amount}  ${customer}`;
+          });
+          return { content: `${charges.length} recent charge${charges.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
+        } catch (err: any) {
+          return { content: `Stripe fetch failed: ${err?.message ?? String(err)}`, success: false };
+        }
       }
 
       case 'offer_missing_connections': {

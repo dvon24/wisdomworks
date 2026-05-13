@@ -155,7 +155,6 @@ export const INTEGRATION_CATALOG: IntegrationDescriptor[] = [
     envVars: ['STRIPE_CLIENT_ID', 'STRIPE_SECRET_KEY'],
     recommendedFor: ['Electrician', 'HVAC / Plumbing', 'Cleaning Service', 'Fitness / Personal Training', 'Consulting / Coaching', 'Photography / Video', 'Salon', 'Other Small Business'],
     costNote: 'Stripe charges 2.9% + $0.30 per transaction',
-    hidden: true, // not yet built — flip when stripe adapter ships
   },
   {
     provider: 'quickbooks',
