@@ -1632,6 +1632,15 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2.15 — Business Type Framework Dictionary visibility ──────────
+
+const TOOL_BUSINESS_TYPE_DICTIONARY: AnthropicTool = {
+  name: 'show_business_type_dictionary',
+  description:
+    "Show the owner what proven techniques their business_type has accumulated in the cross-tenant Business Type Framework Dictionary. These are anonymized skills promoted from other tenants of the same vertical that hit ≥3 tenants, ≥0.7 pooled success rate, ≥5 uses. Use when owner asks 'what have other [their vertical] businesses figured out', 'what's the dictionary', 'what comes pre-loaded'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 // ─── Story 2.14 — lessons learned (avoid repeating mistakes) ─────────────
 
 const TOOL_FLAG_LESSON: AnthropicTool = {
@@ -1913,6 +1922,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_FLAG_LESSON);
   tools.push(TOOL_LIST_LESSONS);
   tools.push(TOOL_RESOLVE_LESSON);
+  tools.push(TOOL_BUSINESS_TYPE_DICTIONARY);
 
   return tools;
 }
@@ -4928,6 +4938,47 @@ export async function executeTool(
         });
         return {
           content: `${snaps.length} recent snapshot${snaps.length === 1 ? '' : 's'}:\n${lines.join('\n')}\n\nTo roll back, say "roll back to snap <id>" or "undo that send_email".`,
+          success: true,
+        };
+      }
+
+      case 'show_business_type_dictionary': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        // Pull business_type from whatsapp_contexts
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!supaUrl || !supaKey) return { content: 'Supabase not configured.', success: false };
+        let businessType = '';
+        try {
+          const res = await fetch(
+            `${supaUrl}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=business_type,profile`,
+            { headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` } },
+          );
+          if (res.ok) {
+            const rows = await res.json();
+            businessType = rows[0]?.business_type ?? rows[0]?.profile?.businessType ?? '';
+          }
+        } catch {}
+        if (!businessType) {
+          return { content: "I don't have your business_type recorded — tell me what kind of business you run and I'll pull the dictionary.", success: false };
+        }
+        const { summarizeDictionaryForBusinessType } = await import('../../_lib/cross-tenant-dictionary');
+        const summary = await summarizeDictionaryForBusinessType(businessType);
+        if (summary.total === 0) {
+          return {
+            content: `No dictionary entries for "${businessType}" yet — the cross-tenant aggregator promotes skills once ≥3 tenants of the same vertical have used them successfully. Until then, your agents learn from your own corrections only.`,
+            success: true,
+          };
+        }
+        const laneSummary = Object.entries(summary.by_lane)
+          .map(([lane, n]) => `  ${lane}: ${n}`)
+          .join('\n');
+        const topLines = summary.top.map((t, i) =>
+          `  ${i + 1}. [${t.lane}] ${t.description.slice(0, 140)}\n     ${(t.success_rate * 100).toFixed(0)}% success across ${t.tenant_count} tenants`,
+        );
+        return {
+          content: `📚 Business Type Dictionary — "${businessType}":\n${summary.total} proven techniques across the network.\n\nBy lane:\n${laneSummary}\n\nTop 5 by success rate:\n${topLines.join('\n')}\n\nThese were anonymized + promoted from other "${businessType}" tenants who hit ≥3 deployments + ≥70% pooled success rate. Your agents already inherited the relevant ones.`,
           success: true,
         };
       }

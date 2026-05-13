@@ -12,6 +12,7 @@
 import { NextResponse } from 'next/server';
 import { startTenantAgents, stopTenantAgents, tickAgent, maybeSendTeamDigest, computeCadence } from '../../_lib/agent-runtime';
 import { saveSnapshot, recoverFromSnapshot, recoveryTest } from '../../_lib/state-recovery';
+import { seedDictionaryForNewTenant, type EnvClass } from '../../_lib/cross-tenant-dictionary';
 import { requireOwnerAuth } from '../../_lib/api-auth';
 
 export const dynamic = 'force-dynamic';
@@ -116,6 +117,25 @@ export async function POST(request: Request) {
       if (!instance_id) return NextResponse.json({ error: 'instance_id required' }, { status: 400 });
       const result = await recoverFromSnapshot(instance_id, point_in_time ? new Date(point_in_time) : undefined);
       return NextResponse.json(result);
+    }
+
+    if (action === 'seed_dictionary') {
+      // Story 2.15 — apps/website deploy-complete (or this admin path)
+      // calls this once at the end of onboarding to inherit cross-tenant
+      // skills for the business_type. Body shape:
+      //   { phone, action: 'seed_dictionary', business_type, env_class? }
+      const body = await (async () => {
+        try { return await request.clone().json(); } catch { return {}; }
+      })();
+      const businessType = body.business_type as string | undefined;
+      const envClass = (body.env_class as EnvClass | undefined) ?? 'commercial';
+      if (!businessType) return NextResponse.json({ error: 'business_type required' }, { status: 400 });
+      const result = await seedDictionaryForNewTenant({
+        tenantPhone: cleanPhone,
+        businessType,
+        envClass,
+      });
+      return NextResponse.json({ ok: true, ...result });
     }
 
     if (action === 'recovery_test') {
