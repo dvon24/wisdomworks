@@ -211,11 +211,17 @@ export interface KnowledgeMatch {
  * Embed the question, find the top N most-similar chunks for this tenant,
  * return them with citations. Caller composes the answer using these
  * snippets as context.
+ *
+ * Audit trail: every call lands in agent_runs with phase='analyze' so the
+ * KB usage shows up in the activity feed and per-tenant token accounting.
+ * (Story 2.9 AC: "all queries and responses are tenant-scoped and audit-logged".)
+ * Pass `audit: false` for internal pre-flight calls that shouldn't pollute
+ * the feed (e.g. background error-checks the user never asked for).
  */
 export async function queryKnowledge(
   tenantPhone: string,
   question: string,
-  options: { limit?: number; minSimilarity?: number } = {},
+  options: { limit?: number; minSimilarity?: number; audit?: boolean; source?: string } = {},
 ): Promise<{ matches: KnowledgeMatch[]; embedTokens: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { matches: [], embedTokens: 0 };
 
@@ -235,5 +241,65 @@ export async function queryKnowledge(
     return { matches: [], embedTokens: tokens };
   }
   const matches: KnowledgeMatch[] = await res.json();
+
+  // Fire-and-forget audit log. Never block the query result on this.
+  if (options.audit !== false) {
+    void logKnowledgeQuery({
+      tenantPhone,
+      question,
+      matches,
+      embedTokens: tokens,
+      source: options.source ?? 'agent',
+    });
+  }
+
   return { matches, embedTokens: tokens };
+}
+
+/**
+ * Write a structured agent_runs row capturing a KB query: the question,
+ * which chunks matched, top similarity, and the tokens spent on the embed.
+ * Lives in the activity feed; aggregated by usage-tracker for the dashboard.
+ */
+async function logKnowledgeQuery(args: {
+  tenantPhone: string;
+  question: string;
+  matches: KnowledgeMatch[];
+  embedTokens: number;
+  source: string;
+}): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  const topSim = args.matches[0]?.similarity ?? 0;
+  const sourceTypes = Array.from(new Set(args.matches.map((m) => m.source_entity_type)));
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/agent_runs`, {
+      method: 'POST',
+      headers: { ...headers(), Prefer: 'return=minimal' },
+      body: JSON.stringify({
+        tenant_phone: args.tenantPhone,
+        trigger: 'manual',
+        phase: 'analyze',
+        outcome: args.matches.length > 0 ? 'observed' : 'no_signal',
+        input_summary: `[KB] ${args.question.slice(0, 200)}`,
+        output_summary: args.matches.length > 0
+          ? `${args.matches.length} match${args.matches.length === 1 ? '' : 'es'} (top ${(topSim * 100).toFixed(0)}%) from ${sourceTypes.join(', ')}`
+          : 'no matches',
+        metadata: {
+          kb_query: args.question.slice(0, 500),
+          kb_source: args.source,
+          embed_tokens: args.embedTokens,
+          match_count: args.matches.length,
+          top_similarity: topSim,
+          matched_chunk_ids: args.matches.map((m) => m.id),
+          matched_entities: args.matches.map((m) => ({
+            type: m.source_entity_type,
+            name: m.source_entity_name,
+            similarity: m.similarity,
+          })),
+        },
+      }),
+    });
+  } catch (err) {
+    console.warn('[kb] audit log failed:', err);
+  }
 }

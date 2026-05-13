@@ -2124,7 +2124,7 @@ export async function executeTool(
         if (!question) return { content: 'Missing question.', success: false };
         try {
           const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
-          const { matches, embedTokens } = await queryKnowledge(cleanPhone, question, { limit: call.input.limit ?? 5 });
+          const { matches, embedTokens } = await queryKnowledge(cleanPhone, question, { limit: call.input.limit ?? 5, source: 'agent_query' });
           if (matches.length === 0) {
             return { content: `No knowledge-base matches for "${question}". The KB may be empty or the question is outside the org's recorded scope.`, success: true };
           }
@@ -2148,7 +2148,7 @@ export async function executeTool(
           const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
           // Lower threshold for error_check: we'd rather show a possibly-relevant
           // policy than miss a real one. minSimilarity=0.3 errs on the side of more results.
-          const { matches } = await queryKnowledge(cleanPhone, action, { limit: 5, minSimilarity: 0.3 });
+          const { matches } = await queryKnowledge(cleanPhone, action, { limit: 5, minSimilarity: 0.3, source: 'error_check' });
           if (matches.length === 0) {
             return { content: 'No relevant policies, constraints, or risks found in the knowledge base. Action is unconstrained from the KB perspective.', success: true };
           }

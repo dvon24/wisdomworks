@@ -10,6 +10,7 @@
 import { NextResponse } from 'next/server';
 import { runDetectors } from '../../_lib/business-insights';
 import { runL3Detector } from '../../_lib/autonomous-research';
+import { runCareerDevDetector } from '../../_lib/career-opportunities';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -39,6 +40,7 @@ export async function GET(request: Request) {
     let totalEmitted = 0;
     let totalDetectors = 0;
     let totalL3Queued = 0;
+    let totalCareerDev = 0;
 
     for (const t of tenants) {
       try {
@@ -63,6 +65,18 @@ export async function GET(request: Request) {
       } catch (err) {
         console.warn(`[insights-scan] L3 detector failed for ${t.phone_number}:`, err);
       }
+
+      // Story 2.9 FR17 — career development opportunities. Self-gates to
+      // weekly cadence, so it's safe to call from this daily cron.
+      try {
+        const rc = await runCareerDevDetector(t.phone_number);
+        if (rc.proposed > 0) {
+          totalCareerDev += rc.proposed;
+          console.log(`[insights-scan] ${t.phone_number}: proposed ${rc.proposed} career-dev opportunit${rc.proposed === 1 ? 'y' : 'ies'}`);
+        }
+      } catch (err) {
+        console.warn(`[insights-scan] career-dev detector failed for ${t.phone_number}:`, err);
+      }
     }
 
     return NextResponse.json({
@@ -71,6 +85,7 @@ export async function GET(request: Request) {
       detectors_run: totalDetectors,
       insights_emitted: totalEmitted,
       l3_research_queued: totalL3Queued,
+      career_dev_opportunities: totalCareerDev,
     });
   } catch (err) {
     console.error('[insights-scan] error:', err);
