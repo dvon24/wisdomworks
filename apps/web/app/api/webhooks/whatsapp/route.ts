@@ -116,8 +116,12 @@ export async function POST(request: Request) {
     const imageId = message.image?.id;
     const videoId = message.video?.id;
     const videoMimeType: string | undefined = message.video?.mime_type;
+    const documentId = message.document?.id;
+    const documentMimeType: string | undefined = message.document?.mime_type;
+    const documentFilename: string | undefined = message.document?.filename;
+    const documentCaption: string | undefined = message.document?.caption;
 
-    if (!text && !imageId && !videoId) {
+    if (!text && !imageId && !videoId && !documentId) {
       return NextResponse.json({ status: 'ok' });
     }
 
@@ -282,6 +286,144 @@ export async function POST(request: Request) {
       } catch (err) {
         console.error('[whatsapp] video-handling error:', err);
         await sendWhatsAppReply(from, "I hit an error processing that video. Try again or describe the style in text.", 'webhook-video');
+        return NextResponse.json({ status: 'ok' });
+      }
+    }
+
+    // ─── Document message path (Story 2.16 Phase 1) ───────────────────────
+    // Owner sends a PDF/docx/xlsx via WhatsApp → download → upload to public
+    // bucket → run Claude PDF analysis → persist to received_documents →
+    // reply with the structured analysis. Non-PDF formats are stored but
+    // analysis is currently PDF-only (Phase 3 adds docx/xlsx text extraction).
+    if (documentId) {
+      try {
+        const media = await downloadWhatsAppMedia(documentId);
+        if (!media) {
+          await sendWhatsAppReply(from, "I couldn't download that document. Try sending it again.", 'webhook-image');
+          return NextResponse.json({ status: 'ok' });
+        }
+        if (media.fileSize && media.fileSize > 30 * 1024 * 1024) {
+          await sendWhatsAppReply(from, "That document is over 30MB — too big to analyze. Try a smaller file or send just the relevant pages.", 'webhook-image');
+          return NextResponse.json({ status: 'ok' });
+        }
+
+        const { uploadReceivedDoc } = await import('../../_lib/received-doc-storage');
+        const upload = await uploadReceivedDoc({
+          tenantPhone: from,
+          bytes: media.bytes,
+          mimeType: documentMimeType ?? media.mimeType,
+          filename: documentFilename,
+        });
+        if (!upload) {
+          await sendWhatsAppReply(from, "I downloaded the document but couldn't store it. The Supabase 'received-docs' bucket may not exist yet (admin needs to create it with public-read access).", 'webhook-image');
+          return NextResponse.json({ status: 'ok' });
+        }
+
+        const mime = (documentMimeType ?? media.mimeType ?? '').toLowerCase();
+        const isPdf = mime.includes('pdf') || (documentFilename ?? '').toLowerCase().endsWith('.pdf');
+
+        // Insert the row up-front in 'processing' status so we have a
+        // record even if analysis fails
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        let docRowId: string | null = null;
+        if (supaUrl && supaKey) {
+          try {
+            const insRes = await fetch(`${supaUrl}/rest/v1/received_documents`, {
+              method: 'POST',
+              headers: {
+                apikey: supaKey,
+                Authorization: `Bearer ${supaKey}`,
+                'Content-Type': 'application/json',
+                Prefer: 'return=representation',
+              },
+              body: JSON.stringify({
+                tenant_phone: from.replace(/[\s\-+()]/g, ''),
+                source: 'whatsapp',
+                filename: documentFilename ?? null,
+                mime_type: documentMimeType ?? media.mimeType,
+                size_bytes: media.fileSize ?? media.bytes.length,
+                storage_path: upload.path,
+                public_url: upload.publicUrl,
+                status: 'processing',
+                metadata: {
+                  source_message_id: message.id,
+                  caption: documentCaption ?? null,
+                },
+              }),
+            });
+            if (insRes.ok) {
+              const rows = await insRes.json();
+              docRowId = rows[0]?.id ?? null;
+            }
+          } catch (err) {
+            console.warn('[whatsapp] received_documents insert failed:', err);
+          }
+        }
+
+        if (!isPdf) {
+          // Store-only for non-PDF formats — Phase 3 will add docx/xlsx
+          if (docRowId && supaUrl && supaKey) {
+            await fetch(`${supaUrl}/rest/v1/received_documents?id=eq.${docRowId}`, {
+              method: 'PATCH',
+              headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+              body: JSON.stringify({
+                status: 'analysis_failed',
+                summary: `Stored ${documentFilename ?? 'document'} — analysis for ${mime || 'this format'} is coming in a future update. Currently I can analyze PDFs.`,
+              }),
+            });
+          }
+          await sendWhatsAppReply(from, `📎 Got ${documentFilename ?? 'the document'} (${(media.bytes.length / 1024).toFixed(0)}KB) — stored for you, but I can only analyze PDFs right now. If you can re-send as a PDF I'll pull dates, parties, amounts, and risks. Otherwise tell me what you want to know about it.`, 'webhook-image');
+          return NextResponse.json({ status: 'ok' });
+        }
+
+        // PDF analysis path — base64 the bytes for Claude's document input
+        const { analyzePdfDocument, renderAnalysisForWhatsApp } = await import('../../_lib/document-analysis');
+        const pdfBase64 = Buffer.from(media.bytes).toString('base64');
+        const result = await analyzePdfDocument({
+          pdfBase64,
+          hintFilename: documentFilename,
+        });
+
+        if (!result.ok) {
+          if (docRowId && supaUrl && supaKey) {
+            await fetch(`${supaUrl}/rest/v1/received_documents?id=eq.${docRowId}`, {
+              method: 'PATCH',
+              headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+              body: JSON.stringify({ status: 'analysis_failed', metadata: { error: result.error } }),
+            });
+          }
+          await sendWhatsAppReply(from, `📄 Stored the PDF but couldn't analyze it: ${result.error}. The file is on record — ask me about it later.`, 'webhook-image');
+          return NextResponse.json({ status: 'ok' });
+        }
+
+        // Persist analysis
+        if (docRowId && supaUrl && supaKey) {
+          await fetch(`${supaUrl}/rest/v1/received_documents?id=eq.${docRowId}`, {
+            method: 'PATCH',
+            headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+            body: JSON.stringify({
+              status: 'analyzed',
+              summary: result.analysis.summary,
+              key_dates: result.analysis.keyDates,
+              key_amounts: result.analysis.keyAmounts,
+              key_parties: result.analysis.keyParties,
+              action_items: result.analysis.actionItems,
+              risks: result.analysis.risks,
+              tags: result.analysis.tags,
+            }),
+          });
+        }
+
+        const reply = renderAnalysisForWhatsApp({
+          analysis: result.analysis,
+          filename: documentFilename,
+        });
+        await sendWhatsAppReply(from, reply, 'webhook-image');
+        return NextResponse.json({ status: 'ok' });
+      } catch (err) {
+        console.error('[whatsapp] document-handling error:', err);
+        await sendWhatsAppReply(from, "I hit an error processing that document. Try again or describe what's in it.", 'webhook-image');
         return NextResponse.json({ status: 'ok' });
       }
     }

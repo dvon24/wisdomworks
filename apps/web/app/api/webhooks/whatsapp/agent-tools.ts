@@ -1632,6 +1632,21 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2.16 — Recall analyzed documents ──────────────────────────────
+
+const TOOL_RECALL_DOCUMENTS: AnthropicTool = {
+  name: 'recall_recent_documents',
+  description:
+    "List or recall documents the owner has sent to Iris for analysis (PDFs via WhatsApp, email attachments). Returns filenames, summaries, key dates/parties/amounts, and analyzed_at timestamps. Use when owner asks 'what was in that contract', 'pull up the lease I sent', 'what documents have I shared', 'search my docs for X'. Optional `query` filters by tags or substring match in the summary.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Optional — substring to match against summary or tags.' },
+      limit: { type: 'number', description: 'Default 5.' },
+    },
+  },
+};
+
 // ─── Story 2.15 — Business Type Framework Dictionary visibility ──────────
 
 const TOOL_BUSINESS_TYPE_DICTIONARY: AnthropicTool = {
@@ -1923,6 +1938,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LIST_LESSONS);
   tools.push(TOOL_RESOLVE_LESSON);
   tools.push(TOOL_BUSINESS_TYPE_DICTIONARY);
+  tools.push(TOOL_RECALL_DOCUMENTS);
 
   return tools;
 }
@@ -5023,6 +5039,57 @@ export async function executeTool(
           content: `${snaps.length} recent snapshot${snaps.length === 1 ? '' : 's'}:\n${lines.join('\n')}\n\nTo roll back, say "roll back to snap <id>" or "undo that send_email".`,
           success: true,
         };
+      }
+
+      case 'recall_recent_documents': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const query = call.input.query ? String(call.input.query).trim().toLowerCase() : '';
+        const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 20) : 5;
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!supaUrl || !supaKey) return { content: 'Supabase not configured.', success: false };
+        try {
+          // Pull more than `limit` so we can filter by query, then trim
+          const fetchLimit = query ? 25 : limit;
+          const res = await fetch(
+            `${supaUrl}/rest/v1/received_documents?tenant_phone=eq.${cleanPhone}&status=eq.analyzed&order=analyzed_at.desc&limit=${fetchLimit}&select=id,filename,source,summary,key_dates,key_amounts,key_parties,action_items,risks,tags,analyzed_at`,
+            { headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` } },
+          );
+          if (!res.ok) return { content: `Document fetch failed: ${res.status}`, success: false };
+          let docs = await res.json();
+          if (query) {
+            docs = docs.filter((d: any) => {
+              const haystack = `${d.filename ?? ''} ${d.summary ?? ''} ${(d.tags ?? []).join(' ')}`.toLowerCase();
+              return haystack.includes(query);
+            });
+          }
+          docs = docs.slice(0, limit);
+          if (docs.length === 0) {
+            return {
+              content: query
+                ? `No analyzed documents matching "${query}". Try a different search term, or send the document via WhatsApp to add it.`
+                : 'No analyzed documents yet. Send a PDF via WhatsApp and I\'ll extract dates, parties, amounts, and risks.',
+              success: true,
+            };
+          }
+          const lines = docs.map((d: any, i: number) => {
+            const when = new Date(d.analyzed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const tagPart = (d.tags ?? []).length > 0 ? ` · ${(d.tags as string[]).slice(0, 4).join(', ')}` : '';
+            const summary = (d.summary ?? '').slice(0, 200);
+            const datesPart = (d.key_dates ?? []).length > 0 ? `\n     📅 ${(d.key_dates as any[]).slice(0, 2).map((x) => `${x.when}: ${x.what}`).join(' · ')}` : '';
+            const risksPart = (d.risks ?? []).filter((r: any) => r.severity === 'high').length > 0
+              ? `\n     ⚠ ${(d.risks as any[]).filter((r: any) => r.severity === 'high').map((r) => r.concern).slice(0, 2).join(' · ')}`
+              : '';
+            return `  ${i + 1}. ${d.filename ?? `(${d.source})`} — ${when}${tagPart}\n     ${summary}${datesPart}${risksPart}`;
+          });
+          return {
+            content: `${docs.length} document${docs.length === 1 ? '' : 's'}${query ? ` matching "${query}"` : ''}:\n${lines.join('\n\n')}`,
+            success: true,
+          };
+        } catch (err: any) {
+          return { content: `Document recall failed: ${err?.message ?? String(err)}`, success: false };
+        }
       }
 
       case 'show_business_type_dictionary': {
