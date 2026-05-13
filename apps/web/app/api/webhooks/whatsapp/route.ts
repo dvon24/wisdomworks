@@ -17,6 +17,8 @@ import { claimMessage } from '../../_lib/message-idempotency';
 import { downloadWhatsAppMedia } from '../../_lib/whatsapp-media';
 import { uploadClientPhoto } from '../../_lib/photo-storage';
 import { analyzePhoto, saveClientPhoto } from '../../_lib/photo-analysis';
+import { uploadStyleReferenceVideo } from '../../_lib/style-video-storage';
+import { saveMarketingStyle } from '../../_lib/marketing-styles';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -122,11 +124,13 @@ export async function POST(request: Request) {
 
     const from = message.from;
     const messageType = message.type ?? (message.text ? 'text' : 'unknown');
-    const text = sanitizeInput(message.text?.body ?? message.image?.caption ?? '');
+    const text = sanitizeInput(message.text?.body ?? message.image?.caption ?? message.video?.caption ?? '');
     const name = sanitizeName(contact?.profile?.name ?? 'Customer');
     const imageId = message.image?.id;
+    const videoId = message.video?.id;
+    const videoMimeType: string | undefined = message.video?.mime_type;
 
-    if (!text && !imageId) {
+    if (!text && !imageId && !videoId) {
       return NextResponse.json({ status: 'ok' });
     }
 
@@ -215,6 +219,82 @@ export async function POST(request: Request) {
       } catch (err) {
         console.error('[whatsapp] image-handling error:', err);
         await sendWhatsAppReply(from, "I hit an error processing that photo. Try again or send a text message instead.");
+        return NextResponse.json({ status: 'ok' });
+      }
+    }
+
+    // ─── Video message path (marketing style references) ─────────────────
+    // Owner sends a video — most often as a reference template for marketing
+    // reel generation. We download → upload to public bucket → save as a
+    // marketing_style row → ask owner to name + describe the look so future
+    // generations can match it.
+    if (videoId) {
+      try {
+        const media = await downloadWhatsAppMedia(videoId);
+        if (!media) {
+          await sendWhatsAppReply(from, "I couldn't download that video. Try sending it again.");
+          return NextResponse.json({ status: 'ok' });
+        }
+        // Vercel function body limit / WhatsApp limit defenses: 30MB cap
+        if (media.fileSize && media.fileSize > 30 * 1024 * 1024) {
+          await sendWhatsAppReply(from, "That video is over 30MB — too big to store as a style reference. Try a shorter clip.");
+          return NextResponse.json({ status: 'ok' });
+        }
+        const upload = await uploadStyleReferenceVideo({
+          tenantPhone: from,
+          bytes: media.bytes,
+          mimeType: videoMimeType ?? media.mimeType,
+        });
+        if (!upload) {
+          await sendWhatsAppReply(from, "I downloaded the video but couldn't store it. The Supabase 'marketing-style-refs' bucket may not exist yet (admin needs to create it with public-read access).");
+          return NextResponse.json({ status: 'ok' });
+        }
+
+        // Try to parse a style name from the caption: "save as <name>",
+        // "use as template <name>", "<name> style", etc. If none, default
+        // to a timestamped placeholder the owner can rename.
+        const captionText = sanitizeInput(message.video?.caption ?? '');
+        const nameMatch =
+          captionText.match(/(?:save (?:this )?as|use as template|template:?)\s+(.+?)(?:\.|$|\s—|\s-)/i) ||
+          captionText.match(/^([^,.]+?)\s+style\b/i);
+        const styleName = nameMatch
+          ? nameMatch[1]!.trim().slice(0, 60)
+          : `Style ref ${new Date().toISOString().slice(0, 10)}`;
+
+        // Phase 1 of style reception: we save the row with a placeholder
+        // style_prompt the owner fills in via chat. Phase 2 (vision
+        // analysis) will populate this automatically.
+        const placeholderPrompt = captionText
+          ? captionText.slice(0, 1500)
+          : 'Style reference video saved. Describe the look (mood, motion, color, lighting) so I can match it in future reels.';
+
+        const saved = await saveMarketingStyle({
+          tenantPhone: from,
+          name: styleName,
+          stylePrompt: placeholderPrompt,
+          referenceVideoUrl: upload.publicUrl,
+        });
+        if (!saved) {
+          await sendWhatsAppReply(from, "Stored the video but couldn't save it as a style. Try again or describe the look in text.");
+          return NextResponse.json({ status: 'ok' });
+        }
+
+        const replyLines: string[] = [
+          `🎬 Got the video — saved as "${saved.name}".`,
+        ];
+        if (captionText && nameMatch) {
+          replyLines.push(`I'll use this as a template when you ask for reels in this style.`);
+        } else {
+          replyLines.push(
+            `What should I call this style and what's the vibe? Tell me 1-2 lines about mood, motion, color, lighting — that's what I'll match when generating future reels.`,
+          );
+          replyLines.push(`Example: "Au7o energetic — neon, fast cuts, cinematic dramatic lighting"`);
+        }
+        await sendWhatsAppReply(from, replyLines.join('\n\n'));
+        return NextResponse.json({ status: 'ok' });
+      } catch (err) {
+        console.error('[whatsapp] video-handling error:', err);
+        await sendWhatsAppReply(from, "I hit an error processing that video. Try again or describe the style in text.");
         return NextResponse.json({ status: 'ok' });
       }
     }
