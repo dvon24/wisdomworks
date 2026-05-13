@@ -57,33 +57,20 @@ function sanitizeName(name: string): string {
   return name.replace(/[<>&"'\/\\]/g, '').slice(0, 100);
 }
 
-async function sendWhatsAppReply(to: string, body: string): Promise<boolean> {
-  const phoneId = process.env.WHATSAPP_PHONE_ID;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!phoneId || !accessToken) return false;
-  try {
-    const res = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'text',
-        text: { body: body.slice(0, 4090) },
-      }),
-    });
-    if (!res.ok) {
-      console.error('[whatsapp] sendWhatsAppReply failed:', await res.json());
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.error('[whatsapp] sendWhatsAppReply exception:', err);
-    return false;
-  }
+/**
+ * Wraps the universal owner-message helper so every reply Iris (or the
+ * image/video handlers above) sends to the owner lands in conversation
+ * history. The `source` distinguishes reactive ("iris") from image/video
+ * branches — useful when debugging "why did Iris forget she said X".
+ */
+async function sendWhatsAppReply(
+  to: string,
+  body: string,
+  source: 'iris' | 'webhook-image' | 'webhook-video' = 'iris',
+): Promise<boolean> {
+  const { sendOwnerMessage } = await import('../../_lib/owner-message');
+  const result = await sendOwnerMessage({ tenantPhone: to, body, source });
+  return result.ok;
 }
 
 
@@ -159,7 +146,7 @@ export async function POST(request: Request) {
       try {
         const media = await downloadWhatsAppMedia(imageId);
         if (!media) {
-          await sendWhatsAppReply(from, "I couldn't download that photo. Try sending it again.");
+          await sendWhatsAppReply(from, "I couldn't download that photo. Try sending it again.", 'webhook-image');
           return NextResponse.json({ status: 'ok' });
         }
         const upload = await uploadClientPhoto({
@@ -168,7 +155,7 @@ export async function POST(request: Request) {
           mimeType: media.mimeType,
         });
         if (!upload) {
-          await sendWhatsAppReply(from, "I downloaded that photo but couldn't store it. The Supabase 'client-photos' bucket may not exist yet.");
+          await sendWhatsAppReply(from, "I downloaded that photo but couldn't store it. The Supabase 'client-photos' bucket may not exist yet.", 'webhook-image');
           return NextResponse.json({ status: 'ok' });
         }
         const brief = await analyzePhoto({
@@ -178,7 +165,7 @@ export async function POST(request: Request) {
           caption: photoCaption || null,
         });
         if (!brief) {
-          await sendWhatsAppReply(from, "Photo saved, but I couldn't analyze it right now. I'll try again on the next ask.");
+          await sendWhatsAppReply(from, "Photo saved, but I couldn't analyze it right now. I'll try again on the next ask.", 'webhook-image');
           await saveClientPhoto({
             tenantPhone: from,
             storagePath: upload.path,
@@ -214,11 +201,11 @@ export async function POST(request: Request) {
         replyLines.push('');
         replyLines.push("Want me to attach this to a client profile? Just tell me who it's for.");
 
-        await sendWhatsAppReply(from, replyLines.join('\n'));
+        await sendWhatsAppReply(from, replyLines.join('\n'), 'webhook-image');
         return NextResponse.json({ status: 'ok' });
       } catch (err) {
         console.error('[whatsapp] image-handling error:', err);
-        await sendWhatsAppReply(from, "I hit an error processing that photo. Try again or send a text message instead.");
+        await sendWhatsAppReply(from, "I hit an error processing that photo. Try again or send a text message instead.", 'webhook-image');
         return NextResponse.json({ status: 'ok' });
       }
     }
@@ -232,12 +219,12 @@ export async function POST(request: Request) {
       try {
         const media = await downloadWhatsAppMedia(videoId);
         if (!media) {
-          await sendWhatsAppReply(from, "I couldn't download that video. Try sending it again.");
+          await sendWhatsAppReply(from, "I couldn't download that video. Try sending it again.", 'webhook-video');
           return NextResponse.json({ status: 'ok' });
         }
         // Vercel function body limit / WhatsApp limit defenses: 30MB cap
         if (media.fileSize && media.fileSize > 30 * 1024 * 1024) {
-          await sendWhatsAppReply(from, "That video is over 30MB — too big to store as a style reference. Try a shorter clip.");
+          await sendWhatsAppReply(from, "That video is over 30MB — too big to store as a style reference. Try a shorter clip.", 'webhook-video');
           return NextResponse.json({ status: 'ok' });
         }
         const upload = await uploadStyleReferenceVideo({
@@ -246,7 +233,7 @@ export async function POST(request: Request) {
           mimeType: videoMimeType ?? media.mimeType,
         });
         if (!upload) {
-          await sendWhatsAppReply(from, "I downloaded the video but couldn't store it. The Supabase 'marketing-style-refs' bucket may not exist yet (admin needs to create it with public-read access).");
+          await sendWhatsAppReply(from, "I downloaded the video but couldn't store it. The Supabase 'marketing-style-refs' bucket may not exist yet (admin needs to create it with public-read access).", 'webhook-video');
           return NextResponse.json({ status: 'ok' });
         }
 
@@ -275,7 +262,7 @@ export async function POST(request: Request) {
           referenceVideoUrl: upload.publicUrl,
         });
         if (!saved) {
-          await sendWhatsAppReply(from, "Stored the video but couldn't save it as a style. Try again or describe the look in text.");
+          await sendWhatsAppReply(from, "Stored the video but couldn't save it as a style. Try again or describe the look in text.", 'webhook-video');
           return NextResponse.json({ status: 'ok' });
         }
 
@@ -290,11 +277,11 @@ export async function POST(request: Request) {
           );
           replyLines.push(`Example: "Au7o energetic — neon, fast cuts, cinematic dramatic lighting"`);
         }
-        await sendWhatsAppReply(from, replyLines.join('\n\n'));
+        await sendWhatsAppReply(from, replyLines.join('\n\n'), 'webhook-video');
         return NextResponse.json({ status: 'ok' });
       } catch (err) {
         console.error('[whatsapp] video-handling error:', err);
-        await sendWhatsAppReply(from, "I hit an error processing that video. Try again or describe the style in text.");
+        await sendWhatsAppReply(from, "I hit an error processing that video. Try again or describe the style in text.", 'webhook-video');
         return NextResponse.json({ status: 'ok' });
       }
     }

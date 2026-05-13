@@ -143,11 +143,12 @@ export async function generateIrisReply(
     const textBlock = response.content.find((b: any) => b.type === 'text');
     const assistantMessage = textBlock?.text ?? "I couldn't process that. Try again?";
 
-    user.conversationHistory.push({
-      role: 'assistant',
-      content: assistantMessage,
-      timestamp: new Date().toISOString(),
-    });
+    // NOTE: we don't push the assistant message to conversationHistory here.
+    // The caller (webhook → sendWhatsAppReply → sendOwnerMessage) appends to
+    // conversation_history as the message actually leaves the system. This
+    // keeps cron + reactive paths writing through the same code path, so
+    // Iris's own outputs (including proactive sends) all land in her
+    // memory without duplication.
     await saveUserContext(user);
 
     const cachedPct = totalTokensIn > 0 ? Math.round((totalCachedIn / totalTokensIn) * 100) : 0;

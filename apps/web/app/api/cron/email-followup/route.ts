@@ -49,6 +49,10 @@ interface OauthConn {
  * scheduled digest (morning / lunch / afternoon). User replies 'send [id]'
  * later to actually send. */
 async function enqueueFollowupPrompt(tenantPhone: string, proposalId: string, recipientLabel: string, days: number, subject: string): Promise<void> {
+  // Dedup keys — recipient + a distinguishing subject token. If the
+  // owner recently said "already sent <recipient>" or "done <token>",
+  // the enqueue pre-flight drops this notification.
+  const subjectKeyword = subject.split(/\s+/).filter((w) => w.length >= 4).slice(0, 2).join(' ');
   await enqueueNotification({
     tenantPhone,
     kind: 'followup_prompt',
@@ -58,6 +62,7 @@ async function enqueueFollowupPrompt(tenantPhone: string, proposalId: string, re
     sourceAgent: 'email-followup',
     sourceId: proposalId,
     metadata: { days_since_sent: days, recipient: recipientLabel },
+    topicKeywords: [recipientLabel, subjectKeyword].filter((s) => s && s.length >= 3),
   });
 }
 

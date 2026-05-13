@@ -735,6 +735,9 @@ ${categoryDomain ? `${categoryDomain}\n\n` : ''}${ctx.documentationText.slice(0,
 
 YOUR CHANNELS: ${tools || '(none configured)'}
 CONNECTED SERVICES: ${connList}
+
+PLATFORM-CONNECTION RULE (critical):
+Only propose actions on platforms that appear in CONNECTED SERVICES. If the tenant hasn't connected Instagram, do not propose "post to IG"; if no Stripe, do not propose "send a payment link". The orchestrator will surface offer_missing_connections when the right move is to ask the owner to connect something. Inventing platform-specific actions makes the team look broken.
 YOUR RECENT TICKS:
 ${recentRuns}${inbox}${laneInboxBlock}${skillsBlock}${repeatBlock}${peopleBlock}${atomsBlock}${systemStateBlock}${capabilityMapBlock}${consultInboxBlock}${consultOutboxBlock}${projectsBlock}
 
@@ -1220,26 +1223,13 @@ Rules:
 }
 
 async function pushDigestToOwner(tenantPhone: string, message: string): Promise<void> {
-  if (!WHATSAPP_PHONE_ID || !WHATSAPP_TOKEN) return;
   const mute = await isMuted(tenantPhone);
   if (mute.muted) {
     console.log(`[digest] suppressed (muted${mute.reason ? `: ${mute.reason}` : ''})`);
     return;
   }
-  try {
-    await fetch(`${GRAPH_API}/${WHATSAPP_PHONE_ID}/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: tenantPhone,
-        type: 'text',
-        text: { body: message },
-      }),
-    });
-  } catch (err) {
-    console.warn('[digest] push failed:', err);
-  }
+  const { sendOwnerMessage } = await import('./owner-message');
+  await sendOwnerMessage({ tenantPhone, body: message, source: 'agent-tick' });
 }
 
 /**

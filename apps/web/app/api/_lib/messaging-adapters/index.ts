@@ -183,26 +183,7 @@ async function sendTelegram(chatId: string, text: string): Promise<boolean> {
 // ─── WhatsApp ────────────────────────────────────────────────────────────
 
 async function sendWhatsApp(phoneNumber: string, text: string): Promise<boolean> {
-  const phoneId = process.env.WHATSAPP_PHONE_ID;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!phoneId || !accessToken) return false;
-  try {
-    const res = await fetch(`https://graph.facebook.com/v25.0/${phoneId}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: phoneNumber,
-        type: 'text',
-        text: { body: text },
-      }),
-    });
-    return res.ok;
-  } catch (err) {
-    console.error('[whatsapp] send error:', err);
-    return false;
-  }
+  const { sendOwnerMessage } = await import('../owner-message');
+  const result = await sendOwnerMessage({ tenantPhone: phoneNumber, body: text, source: 'manual' });
+  return result.ok;
 }

@@ -55,17 +55,58 @@ export interface EnqueueArgs {
   sourceAgent?: string;
   sourceId?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Optional topic keywords used to dedup against the owner's recent
+   * messages. If the owner has already said something like "I already
+   * did X" in the last 12 turns AND any keyword matches their message,
+   * we silently drop the notification. Prevents Iris (or a lane agent)
+   * from re-pinging about an email/invoice/booking the owner has
+   * already told her was handled.
+   *
+   * Provide 1-3 specific keywords ("Maria email", "permit 4501",
+   * "balayage booking"). Generic keywords ("email", "invoice") will
+   * over-match — use the most distinguishing token you have.
+   */
+  topicKeywords?: string[];
 }
 
 /**
  * Enqueue a notification for the next digest. Returns the id (so caller
- * can correlate later) or null on failure.
+ * can correlate later) or null on failure / silently-deduped.
  *
  * This is the SINGLE entry point for all proactive notifications — push
  * paths should never call WhatsApp directly anymore (except critical).
+ *
+ * Pre-flight: if the caller provides topicKeywords, we check the owner's
+ * recent messages for "I already did it" patterns + a keyword match. If
+ * the owner has plausibly already addressed this, we drop the
+ * notification and return null. This is the universal "step in and
+ * correct" gate — any agent that enqueues here gets dedup automatically.
  */
 export async function enqueueNotification(args: EnqueueArgs): Promise<string | null> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+
+  // Pre-flight — has the owner already told us this is done?
+  if (args.topicKeywords && args.topicKeywords.length > 0) {
+    try {
+      const { ownerAlreadyAddressed } = await import('./owner-message');
+      const gate = await ownerAlreadyAddressed({
+        tenantPhone: args.tenantPhone,
+        topicKeywords: args.topicKeywords,
+      });
+      if (gate.addressed) {
+        console.log(
+          `[notifications] dropped "${args.title.slice(0, 60)}" — owner said: "${gate.evidence?.slice(0, 100)}"`,
+        );
+        return null;
+      }
+    } catch (err) {
+      // Pre-flight failure should never block a real notification — log
+      // and continue. The worst case is a duplicate ping, not a missed one.
+      console.warn('[notifications] pre-flight check failed (continuing):', err);
+    }
+  }
+
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/notification_queue`, {
       method: 'POST',

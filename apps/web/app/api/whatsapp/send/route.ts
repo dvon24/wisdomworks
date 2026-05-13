@@ -30,37 +30,36 @@ export async function POST(request: Request) {
 
     const cleanTo = (to ?? '').replace(/[\s\-\+]/g, '');
 
-    // Send template or text message
-    const body = template
-      ? {
+    // Template sends (session-initiation, keep-alive) skip conversation
+    // history — they're not freeform. Plain text routes through the
+    // universal owner-message helper so it lands in Iris's memory.
+    if (template) {
+      const response = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           messaging_product: 'whatsapp',
           to: cleanTo,
           type: 'template',
           template: { name: template, language: { code: 'en_US' } },
-        }
-      : {
-          messaging_product: 'whatsapp',
-          to: cleanTo,
-          type: 'text',
-          text: { body: message },
-        };
-
-    const response = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return NextResponse.json({ error: data.error?.message, details: data }, { status: response.status });
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        return NextResponse.json({ error: data.error?.message, details: data }, { status: response.status });
+      }
+      return NextResponse.json({ success: true, messageId: data.messages?.[0]?.id });
     }
 
-    return NextResponse.json({ success: true, messageId: data.messages?.[0]?.id });
+    const { sendOwnerMessage } = await import('../../_lib/owner-message');
+    const result = await sendOwnerMessage({ tenantPhone: cleanTo, body: message ?? '', source: 'manual' });
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: 502 });
+    }
+    return NextResponse.json({ success: true, messageId: result.messageId });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

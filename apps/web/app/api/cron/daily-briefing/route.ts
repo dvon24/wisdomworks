@@ -258,10 +258,6 @@ Rules:
 }
 
 async function sendWhatsApp(to: string, message: string): Promise<void> {
-  const phoneId = process.env.WHATSAPP_PHONE_ID;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!phoneId || !accessToken) return;
-
   // Honor DND — briefings are proactive, so they wait until the user is back
   const { isMuted } = await import('../../_lib/mute-state');
   const mute = await isMuted(to);
@@ -269,18 +265,6 @@ async function sendWhatsApp(to: string, message: string): Promise<void> {
     console.log(`[daily-briefing] suppressed for ${to} (muted${mute.reason ? `: ${mute.reason}` : ''})`);
     return;
   }
-
-  await fetch(`${GRAPH_API}/${phoneId}/messages`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body: message },
-    }),
-  });
+  const { sendOwnerMessage } = await import('../../_lib/owner-message');
+  await sendOwnerMessage({ tenantPhone: to, body: message, source: 'daily-briefing' });
 }

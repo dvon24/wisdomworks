@@ -131,7 +131,19 @@ import { saveUserContext, type UserContext } from './context-store';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const APP_BASE_URL = process.env.NEXT_PUBLIC_APP_BASE_URL || process.env.NEXT_PUBLIC_WEBSITE_URL || 'http://localhost:3001';
+/**
+ * Public app base — used to build any URL Iris hands to the owner.
+ * NEVER falls back to localhost; if neither env var is set, this is null
+ * and url-building tool cases must refuse rather than send a broken link.
+ * (Bug 2026-05-13: a localhost:3001 link reached Devon's phone because
+ * the old fallback string snuck through.)
+ */
+const APP_BASE_URL: string | null = (() => {
+  const raw = (process.env.NEXT_PUBLIC_APP_BASE_URL || process.env.NEXT_PUBLIC_WEBSITE_URL || '').trim();
+  if (!raw) return null;
+  if (/localhost|127\.0\.0\.1|0\.0\.0\.0/.test(raw)) return null;
+  return raw.replace(/\/$/, '');
+})();
 
 // Provider list used by connect_service — mirrors the OAuth routes that exist
 // under apps/website/app/api/oauth/.
@@ -1648,6 +1660,15 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
 
   const hasEmail = connections.some((c) => c.service === 'email');
   const hasCalendar = connections.some((c) => c.service === 'calendar');
+  // Connection-gated tool sets — agents should NEVER see tools for
+  // platforms the tenant hasn't connected. This is the structural fix for
+  // "Iris suggested publishing to IG when IG isn't connected" — she can
+  // only suggest what she has tools for, and we don't even hand her the
+  // tools if there's no underlying connection.
+  const conns = connections as any[];
+  const hasMeta = conns.some((c) => c.provider === 'meta');
+  const hasStripe = conns.some((c) => c.provider === 'stripe');
+  const hasQuickBooks = conns.some((c) => c.provider === 'quickbooks');
 
   if (hasEmail) {
     tools.push(TOOL_LIST_EMAILS);
@@ -1702,16 +1723,38 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_LIST_AUTOMATION_WEBHOOKS);
   tools.push(TOOL_REVOKE_AUTOMATION_WEBHOOK);
   tools.push(TOOL_OFFER_MISSING_CONNECTIONS);
-  tools.push(TOOL_CREATE_PAYMENT_LINK);
-  tools.push(TOOL_LIST_RECENT_PAYMENTS);
-  tools.push(TOOL_QBO_OUTSTANDING_AR);
-  tools.push(TOOL_QBO_LIST_UNPAID_INVOICES);
-  tools.push(TOOL_QBO_CREATE_INVOICE);
-  tools.push(TOOL_INSTAGRAM_ACTIVITY);
-  tools.push(TOOL_PUBLISH_INSTAGRAM_POST);
-  tools.push(TOOL_PUBLISH_INSTAGRAM_REEL);
-  tools.push(TOOL_PUBLISH_FACEBOOK_POST);
-  tools.push(TOOL_REPLY_INSTAGRAM_COMMENT);
+
+  // Stripe tools — require an active stripe connection
+  if (hasStripe) {
+    tools.push(TOOL_CREATE_PAYMENT_LINK);
+    tools.push(TOOL_LIST_RECENT_PAYMENTS);
+  }
+
+  // QuickBooks tools — require an active quickbooks connection
+  if (hasQuickBooks) {
+    tools.push(TOOL_QBO_OUTSTANDING_AR);
+    tools.push(TOOL_QBO_LIST_UNPAID_INVOICES);
+    tools.push(TOOL_QBO_CREATE_INVOICE);
+  }
+
+  // Meta (IG + FB) tools — require an active meta connection. Without
+  // this gate Iris would suggest "publish to Instagram" even when no
+  // meta token is on file. Video generation + style memory stay always-
+  // on (Replicate is platform-level, not per-tenant OAuth) but the
+  // publish + preview path is gated.
+  if (hasMeta) {
+    tools.push(TOOL_INSTAGRAM_ACTIVITY);
+    tools.push(TOOL_PUBLISH_INSTAGRAM_POST);
+    tools.push(TOOL_PUBLISH_INSTAGRAM_REEL);
+    tools.push(TOOL_PUBLISH_FACEBOOK_POST);
+    tools.push(TOOL_REPLY_INSTAGRAM_COMMENT);
+    tools.push(TOOL_APPROVE_MARKETING_DRAFT); // auto_publish branch needs meta
+  }
+
+  // Video generation + style memory + draft management — Replicate is
+  // platform-level, so these work without a tenant OAuth. The publish
+  // branch (approve_marketing_draft with auto_publish=true) still requires
+  // meta, which is enforced at runtime in marketing-drafts.ts.
   tools.push(TOOL_GENERATE_MARKETING_VIDEO);
   tools.push(TOOL_SEND_VIDEO_PREVIEW);
   tools.push(TOOL_VIDEO_GEN_COST);
@@ -1720,7 +1763,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_DELETE_MARKETING_STYLE);
   tools.push(TOOL_LIST_MARKETING_DRAFTS);
   tools.push(TOOL_PROPOSE_MARKETING_DRAFT);
-  tools.push(TOOL_APPROVE_MARKETING_DRAFT);
+  if (!hasMeta) tools.push(TOOL_APPROVE_MARKETING_DRAFT); // available even without meta (preview-only path)
   tools.push(TOOL_DISMISS_MARKETING_DRAFT);
   tools.push(TOOL_GET_MARKETING_AUTONOMY);
   tools.push(TOOL_SET_MARKETING_AUTONOMY);
@@ -2546,7 +2589,7 @@ export async function executeTool(
         if (!user) return { content: 'Internal: user context required.', success: false };
         const provider = String(call.input.provider ?? '').toLowerCase();
         const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
-        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const base = APP_BASE_URL ?? 'https://wisdomworks.vercel.app';
         const providerLabels: Record<string, { label: string; envVar: string; description: string }> = {
           square: {
             label: 'Square Appointments',
@@ -3405,7 +3448,7 @@ export async function executeTool(
           contactPhone: call.input.contact_phone ? String(call.input.contact_phone) : undefined,
         });
         if (!site) return { content: 'Could not provision the site.', success: false };
-        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const base = APP_BASE_URL ?? 'https://wisdomworks.vercel.app';
         const url = `${base}/sites/${site.slug}`;
         const lines = [
           `✓ Your site is live: ${url}`,
@@ -3430,7 +3473,7 @@ export async function executeTool(
         if (!site) {
           return { content: "You don't have a site yet. Say 'build me a website' and I'll provision one.", success: true };
         }
-        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const base = APP_BASE_URL ?? 'https://wisdomworks.vercel.app';
         return {
           content: `Your site: ${base}/sites/${site.slug}\nStatus: ${site.status}${site.custom_domain ? `\nCustom domain: ${site.custom_domain}` : ''}`,
           success: true,
@@ -3453,7 +3496,7 @@ export async function executeTool(
         });
         if (!result) return { content: 'Could not generate the API key.', success: false };
 
-        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const base = APP_BASE_URL ?? 'https://wisdomworks.vercel.app';
         const chatSnippet = `<script src="${base}/api/widget/embed.js?key=${result.plainKey}" defer></script>`;
         const bookingSnippet = `<script src="${base}/api/widget/booking.js?key=${result.plainKey}" defer></script>`;
         const lines: string[] = [
@@ -3909,7 +3952,7 @@ export async function executeTool(
         if (!user.isOwner) return { content: 'Only the account owner can request a deck login link.', success: false };
         const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
         const token = await signSessionToken(cleanPhone);
-        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const base = APP_BASE_URL ?? 'https://wisdomworks.vercel.app';
         const link = `${base}/api/auth/deck/redeem?token=${encodeURIComponent(token)}`;
         return {
           content: `Here's your secure deck login link (valid 30 days, do not share):\n\n${link}\n\nTap it to sign in. The link sets a cookie and drops you on the dashboard.`,
@@ -4536,6 +4579,12 @@ export async function executeTool(
         if (!cfg) {
           return {
             content: `Provider "${provider}" isn't wired up yet. Supported: ${Object.keys(SUPPORTED_PROVIDERS).join(', ')}.`,
+            success: false,
+          };
+        }
+        if (!APP_BASE_URL) {
+          return {
+            content: 'Cannot generate a connect link — NEXT_PUBLIC_APP_BASE_URL is not set in Vercel. Admin needs to configure the public app URL.',
             success: false,
           };
         }

@@ -46,25 +46,9 @@ async function loadOrchestratorName(tenantPhone: string): Promise<string> {
 }
 
 async function sendWhatsApp(to: string, message: string): Promise<string | null> {
-  if (!WHATSAPP_PHONE_ID || !WHATSAPP_TOKEN) return null;
-  try {
-    const res = await fetch(`${GRAPH_API}/${WHATSAPP_PHONE_ID}/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'text',
-        text: { body: message },
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.messages?.[0]?.id ?? null;
-  } catch (err) {
-    console.warn('[digest] send failed:', err);
-    return null;
-  }
+  const { sendOwnerMessage } = await import('../../_lib/owner-message');
+  const result = await sendOwnerMessage({ tenantPhone: to, body: message, source: 'digest' });
+  return result.messageId ?? null;
 }
 
 export async function GET(request: Request) {

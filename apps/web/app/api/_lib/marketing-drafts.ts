@@ -368,6 +368,9 @@ export async function runDraftDetector(tenantPhone: string): Promise<{
     if (!draft) continue;
     count++;
 
+    // Dedup keys — topic + draft short id. If the owner already said
+    // "dismiss <id>" or "no <topic>" recently, we drop this re-push.
+    const topicKey = c.topic.split(/\s+/).filter((w) => w.length >= 4).slice(0, 2).join(' ');
     await enqueueNotification({
       tenantPhone,
       kind: 'agent_observation',
@@ -377,6 +380,7 @@ export async function runDraftDetector(tenantPhone: string): Promise<{
       sourceAgent: 'marketing-loop',
       sourceId: draft.id,
       metadata: { draft_id: draft.id, channel: c.channel },
+      topicKeywords: [draft.id.slice(0, 8), topicKey].filter((s) => s && s.length >= 3),
     });
   }
 
