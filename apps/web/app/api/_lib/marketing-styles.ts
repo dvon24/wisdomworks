@@ -40,27 +40,60 @@ export async function saveMarketingStyle(input: {
 }): Promise<MarketingStyle | null> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
   const cleanPhone = input.tenantPhone.replace(/[\s\-+()]/g, '');
+  const name = input.name.slice(0, 100);
+  // Manual lookup-then-insert/update. PostgREST upsert via on_conflict
+  // can't reference the existing UNIQUE INDEX on (tenant_phone, lower(name))
+  // because on_conflict only accepts plain column lists (no expressions).
+  // Doing it by hand also gives us proper case-insensitive matching.
   try {
-    // Upsert by (tenant, lower(name))
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/marketing_styles?on_conflict=tenant_phone,name`, {
+    const existingRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/marketing_styles?tenant_phone=eq.${cleanPhone}&name=ilike.${encodeURIComponent(name)}&select=id&limit=1`,
+      { headers: headers() },
+    );
+    const existing = existingRes.ok ? await existingRes.json() : [];
+    const updateBody: Record<string, unknown> = {
+      style_prompt: input.stylePrompt.slice(0, 1500),
+      default_quality: input.defaultQuality ?? 'fast',
+      updated_at: new Date().toISOString(),
+    };
+    if (input.referenceVideoUrl !== undefined) updateBody.reference_video_url = input.referenceVideoUrl;
+    if (input.referenceImageUrl !== undefined) updateBody.reference_image_url = input.referenceImageUrl;
+
+    if (existing[0]?.id) {
+      const patchRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/marketing_styles?id=eq.${existing[0].id}`,
+        {
+          method: 'PATCH',
+          headers: { ...headers(), Prefer: 'return=representation' },
+          body: JSON.stringify(updateBody),
+        },
+      );
+      if (!patchRes.ok) {
+        console.warn('[marketing-styles] update failed:', await patchRes.text());
+        return null;
+      }
+      const rows = await patchRes.json();
+      return rows[0] ?? null;
+    }
+
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/marketing_styles`, {
       method: 'POST',
-      headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=representation' },
+      headers: { ...headers(), Prefer: 'return=representation' },
       body: JSON.stringify({
         tenant_phone: cleanPhone,
-        name: input.name.slice(0, 100),
+        name,
         style_prompt: input.stylePrompt.slice(0, 1500),
         reference_video_url: input.referenceVideoUrl ?? null,
         reference_image_url: input.referenceImageUrl ?? null,
         default_quality: input.defaultQuality ?? 'fast',
         source: 'owner_defined',
-        updated_at: new Date().toISOString(),
       }),
     });
-    if (!res.ok) {
-      console.warn('[marketing-styles] save failed:', await res.text());
+    if (!insertRes.ok) {
+      console.warn('[marketing-styles] insert failed:', await insertRes.text());
       return null;
     }
-    const rows = await res.json();
+    const rows = await insertRes.json();
     return rows[0] ?? null;
   } catch (err) {
     console.warn('[marketing-styles] save exception:', err);
