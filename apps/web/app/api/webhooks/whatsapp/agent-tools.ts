@@ -1632,6 +1632,54 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2.14 — lessons learned (avoid repeating mistakes) ─────────────
+
+const TOOL_FLAG_LESSON: AnthropicTool = {
+  name: 'flag_lesson_learned',
+  description:
+    "Capture a lesson the owner wants the agents to remember so the SAME mistake doesn't happen again. Use when the owner says 'don't do that again', 'remember not to X', 'learn from this', 'next time avoid Y'. Specifies what went wrong + what to do instead + keywords that should trigger this lesson in future. The pre-flight matcher checks open lessons before destructive actions; matches surface to the owner.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Short owner-facing label (5-12 words).' },
+      what_went_wrong: { type: 'string', description: 'What happened, in one or two sentences.' },
+      corrective_action: { type: 'string', description: 'The rule going forward. Specific and actionable.' },
+      topic_keywords: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '3-8 keywords/phrases that should trigger this lesson — sender names, action names, topic words. Used by the pre-flight matcher.',
+      },
+      severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'critical = block action; high = surface to owner before acting; medium = inject as warning in agent prompt; low = log-only.' },
+    },
+    required: ['title', 'what_went_wrong', 'corrective_action', 'topic_keywords'],
+  },
+};
+
+const TOOL_LIST_LESSONS: AnthropicTool = {
+  name: 'list_lessons_learned',
+  description:
+    "Show the owner the open lessons the agents currently consult before acting. Use when owner asks 'what have you learned', 'what rules are you following', 'show my lessons'. Returns severity, what to avoid, and corrective action for each.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Default 10.' },
+    },
+  },
+};
+
+const TOOL_RESOLVE_LESSON: AnthropicTool = {
+  name: 'resolve_lesson_learned',
+  description:
+    "Mark a lesson as no longer applicable when the owner says 'forget that one', 'that rule doesn't apply anymore', 'remove the X lesson'. Resolved lessons stop influencing pre-flight checks and agent prompts.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      lesson_id: { type: 'string', description: 'Full UUID or 8-char prefix from list_lessons_learned.' },
+    },
+    required: ['lesson_id'],
+  },
+};
+
 // ─── Story 2.13 FR102 — professional profile ingest ──────────────────────
 
 const TOOL_SET_PROFESSIONAL_CONTEXT: AnthropicTool = {
@@ -1862,6 +1910,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_ROLLBACK_STATE);
   tools.push(TOOL_SET_PROFESSIONAL_CONTEXT);
   tools.push(TOOL_GET_CLASSIFIER_ACCURACY);
+  tools.push(TOOL_FLAG_LESSON);
+  tools.push(TOOL_LIST_LESSONS);
+  tools.push(TOOL_RESOLVE_LESSON);
 
   return tools;
 }
@@ -1913,6 +1964,67 @@ export async function executeTool(
   if (user && DESTRUCTIVE_TOOLS.has(call.name)) {
     const { snapshotBeforeAction } = await import('../../_lib/state-recovery');
     void snapshotBeforeAction(user.phoneNumber, call.name);
+
+    // Story 2.14 pre-flight — query lessons_learned for matches against
+    // this action. Critical-severity matches BLOCK the tool; high-severity
+    // matches return a warning to the agent so it can re-think; low/medium
+    // matches just bump the consult count (already done in queryLessonsForTask)
+    // and trickle in via the agent's system prompt the next turn.
+    try {
+      const { queryLessonsForTask, markLessonApplied } = await import('../../_lib/lessons-learned');
+      // Build coarse keywords from the tool name + input string values.
+      // Coarse on purpose: we want to catch "schedule_event with Maria"
+      // matching a "no double-booking with Maria" lesson.
+      const taskKeywords: string[] = [call.name];
+      for (const v of Object.values(call.input ?? {})) {
+        if (typeof v === 'string' && v.length >= 3) {
+          // Split into word-level tokens for the matcher
+          for (const word of v.split(/\s+/)) {
+            const w = word.replace(/[^\w@.+\-]/g, '').toLowerCase();
+            if (w.length >= 4 && w.length < 40) taskKeywords.push(w);
+          }
+        }
+      }
+      const matches = await queryLessonsForTask({
+        tenantPhone: user.phoneNumber,
+        taskKeywords: Array.from(new Set(taskKeywords)).slice(0, 20),
+        minSeverity: 'high',
+        limit: 3,
+      });
+      // Skip lessons we already warned about in the last 5 minutes —
+      // owner has had a chance to approve the override and the agent
+      // is now retrying with that approval. Without this guard the
+      // pre-flight would block in an infinite loop.
+      const RECENT_APPLY_MS = 5 * 60 * 1000;
+      const now = Date.now();
+      const fresh = matches.filter((m) => {
+        if (!m.last_applied_at) return true;
+        return now - new Date(m.last_applied_at).getTime() > RECENT_APPLY_MS;
+      });
+      const critical = fresh.find((m) => m.severity === 'critical');
+      if (critical) {
+        // BLOCK — record the apply so a second call within 5min lets the
+        // agent proceed after explicit owner override
+        void markLessonApplied(critical.id);
+        return {
+          content: `🚨 Refusing ${call.name} — critical lesson "${critical.title}" applies.\n  Avoid: ${critical.what_went_wrong}\n  Do instead: ${critical.corrective_action}\n\nIf the owner has explicitly authorized this specific action, call ${call.name} again within the next 5 minutes and the gate releases. To remove the rule entirely, owner says "resolve lesson ${critical.id.slice(0, 8)}".`,
+          success: false,
+        };
+      }
+      if (fresh.length > 0) {
+        // High-severity warning — agent should surface to owner before
+        // proceeding. Same 5-minute window applies for the retry.
+        const highest = fresh[0]!;
+        void markLessonApplied(highest.id);
+        return {
+          content: `⚠ Lesson "${highest.title}" matches this action — surface to owner before proceeding.\n  Avoid: ${highest.what_went_wrong}\n  Do instead: ${highest.corrective_action}\n\nIf the owner confirms they want to proceed anyway, call ${call.name} again — the gate releases for 5 minutes. To remove the rule, owner says "resolve lesson ${highest.id.slice(0, 8)}".`,
+          success: false,
+        };
+      }
+    } catch (err) {
+      // Pre-flight failure must never block a real action
+      console.warn('[executeTool] lesson pre-flight failed (continuing):', err);
+    }
   }
 
   try {
@@ -4818,6 +4930,73 @@ export async function executeTool(
           content: `${snaps.length} recent snapshot${snaps.length === 1 ? '' : 's'}:\n${lines.join('\n')}\n\nTo roll back, say "roll back to snap <id>" or "undo that send_email".`,
           success: true,
         };
+      }
+
+      case 'flag_lesson_learned': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const title = String(call.input.title ?? '').trim();
+        const whatWentWrong = String(call.input.what_went_wrong ?? '').trim();
+        const correctiveAction = String(call.input.corrective_action ?? '').trim();
+        const rawKeywords = Array.isArray(call.input.topic_keywords) ? (call.input.topic_keywords as string[]) : [];
+        const topicKeywords = rawKeywords.map((k) => String(k).trim()).filter((k) => k.length >= 3).slice(0, 8);
+        const severity = (call.input.severity as 'low' | 'medium' | 'high' | 'critical' | undefined) ?? 'medium';
+        if (!title || !whatWentWrong || !correctiveAction || topicKeywords.length === 0) {
+          return { content: 'title, what_went_wrong, corrective_action, and at least one topic_keyword are required.', success: false };
+        }
+        // Signature = lower-cased title squished to dashes — keeps dedup stable
+        const signature = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
+        const { logLesson } = await import('../../_lib/lessons-learned');
+        const id = await logLesson({
+          tenantPhone: cleanPhone,
+          signature,
+          title,
+          whatWentWrong,
+          correctiveAction,
+          topicKeywords,
+          severity,
+        });
+        if (!id) return { content: 'Could not save the lesson.', success: false };
+        return {
+          content: `✓ Lesson saved [${id.slice(0, 8)}] (${severity}). Future actions matching {${topicKeywords.join(', ')}} will trigger a pre-flight check.`,
+          success: true,
+        };
+      }
+
+      case 'list_lessons_learned': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 25) : 10;
+        const { listOpenLessons } = await import('../../_lib/lessons-learned');
+        const lessons = await listOpenLessons(cleanPhone, limit);
+        if (lessons.length === 0) {
+          return { content: 'No open lessons. Tell me "remember not to X" and I\'ll capture one.', success: true };
+        }
+        const lines = lessons.map((l, i) => {
+          const flag = l.severity === 'critical' ? '🚨' : l.severity === 'high' ? '⚠' : '·';
+          const stats = `consulted ${l.consult_count}×, applied ${l.apply_count}×`;
+          return `  ${i + 1}. ${flag} [${l.id.slice(0, 8)}] ${l.title}\n     Avoid: ${l.what_went_wrong.slice(0, 140)}\n     Do: ${l.corrective_action.slice(0, 140)}\n     ${stats}`;
+        });
+        return { content: `${lessons.length} open lesson${lessons.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'resolve_lesson_learned': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const rawId = String(call.input.lesson_id ?? '').trim();
+        if (!rawId) return { content: 'lesson_id required.', success: false };
+        const { listOpenLessons, markLessonResolved } = await import('../../_lib/lessons-learned');
+        let fullId = rawId;
+        if (rawId.length < 36) {
+          const open = await listOpenLessons(cleanPhone, 100);
+          const match = open.find((l) => l.id.startsWith(rawId));
+          if (!match) return { content: `No open lesson matching id "${rawId}".`, success: false };
+          fullId = match.id;
+        }
+        const ok = await markLessonResolved(fullId);
+        return ok
+          ? { content: `✓ Lesson resolved — agents will stop applying this rule.`, success: true }
+          : { content: 'Could not resolve the lesson.', success: false };
       }
 
       case 'set_professional_context': {
