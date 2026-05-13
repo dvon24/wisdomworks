@@ -95,16 +95,91 @@ function imapErrorDetail(err: any): string {
   return parts.length > 0 ? parts.join(' | ') : String(err);
 }
 
-async function parseBody(simpleParser: any, source: Buffer | undefined): Promise<{ text: string; html: string }> {
-  if (!source) return { text: '', html: '' };
+async function parseBody(
+  simpleParser: any,
+  source: Buffer | undefined,
+): Promise<{ text: string; html: string; attachments: ImapAttachmentMeta[] }> {
+  if (!source) return { text: '', html: '', attachments: [] };
   try {
     const parsed = await simpleParser(source);
+    const attachments: ImapAttachmentMeta[] = (parsed.attachments ?? [])
+      .filter((a: any) => a.filename) // skip inline images without filenames
+      .map((a: any) => ({
+        filename: String(a.filename),
+        contentType: String(a.contentType ?? 'application/octet-stream'),
+        size: typeof a.size === 'number' ? a.size : undefined,
+      }));
     return {
       text: (parsed.text ?? '').slice(0, 10000),
       html: (parsed.html || '').toString().slice(0, 20000),
+      attachments,
     };
   } catch {
-    return { text: '', html: '' };
+    return { text: '', html: '', attachments: [] };
+  }
+}
+
+interface ImapAttachmentMeta {
+  filename: string;
+  contentType: string;
+  size?: number;
+}
+
+/**
+ * Fetch a specific attachment from an IMAP message. Unlike Gmail/Outlook
+ * which have stable attachment ids, IMAP requires re-fetching the
+ * message and walking parsed.attachments by filename. Caller should
+ * already have the filename from the EmailMessage.attachments[] list.
+ *
+ * Returns the attachment bytes + the matched filename/contentType.
+ */
+export async function fetchImapAttachment(
+  conn: ImapConnection,
+  uid: string,
+  filename: string,
+): Promise<{ success: boolean; data?: { filename: string; mimeType: string; bytes: Uint8Array; sizeBytes: number }; error?: string }> {
+  if (!conn.account_email) return { success: false, error: 'IMAP connection missing account email' };
+
+  let ImapFlow: any;
+  let simpleParser: any;
+  try {
+    ImapFlow = await loadImapFlow();
+    if (!ImapFlow) return { success: false, error: 'imapflow not available' };
+    simpleParser = await loadMailparser();
+  } catch (err: any) {
+    return { success: false, error: `imap deps load failed: ${err?.message ?? err}` };
+  }
+
+  const client = makeClient(ImapFlow, conn);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      const numericUid = Number(uid);
+      if (!Number.isFinite(numericUid)) return { success: false, error: `invalid uid: ${uid}` };
+      const msg = await client.fetchOne(numericUid, { source: true }, { uid: true });
+      if (!msg?.source) return { success: false, error: 'message source not returned' };
+      const parsed = await simpleParser(msg.source);
+      const match = (parsed.attachments ?? []).find((a: any) => a.filename === filename);
+      if (!match) return { success: false, error: `attachment "${filename}" not found in message` };
+      const content: Buffer = match.content;
+      const bytes = new Uint8Array(content.buffer, content.byteOffset, content.byteLength);
+      return {
+        success: true,
+        data: {
+          filename: String(match.filename),
+          mimeType: String(match.contentType ?? 'application/octet-stream'),
+          bytes,
+          sizeBytes: bytes.length,
+        },
+      };
+    } finally {
+      lock.release();
+    }
+  } catch (err: any) {
+    return { success: false, error: `IMAP attachment fetch failed: ${imapErrorDetail(err)}` };
+  } finally {
+    try { await client.logout(); } catch {}
   }
 }
 
@@ -138,6 +213,15 @@ export async function listImapUnread(conn: ImapConnection, limit = 10): Promise<
         const fromAddr = env.from?.[0];
         const body = await parseBody(simpleParser, msg.source);
         const text = body.text || body.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        // For IMAP, the attachment "id" is just the filename — caller
+        // re-fetches the message via fetchImapAttachment(uid, filename)
+        // to get the bytes. No separate attachment endpoint exists.
+        const attachmentRefs = body.attachments.map((a) => ({
+          id: a.filename,
+          filename: a.filename,
+          mimeType: a.contentType,
+          sizeBytes: a.size,
+        }));
         out.push({
           id: msg.uid?.toString() ?? uid.toString(),
           threadId: env.messageId ?? '',
@@ -149,7 +233,8 @@ export async function listImapUnread(conn: ImapConnection, limit = 10): Promise<
           bodyPreview: text.slice(0, 200),
           date: env.date?.toISOString() ?? new Date().toISOString(),
           isUnread: true,
-          hasAttachments: false,
+          hasAttachments: attachmentRefs.length > 0,
+          attachments: attachmentRefs,
         });
       }
       return { success: true, data: out };

@@ -12,6 +12,8 @@ import * as ms from './microsoft';
 import * as apple from './apple-caldav';
 import type {
   EmailMessage,
+  EmailAttachmentRef,
+  FetchedAttachment,
   SendEmailRequest,
   CalendarEvent,
   CreateCalendarEvent,
@@ -65,6 +67,46 @@ export async function markEmailRead(
   if (conn.provider === 'google') return gmail.markAsRead(ctx, messageId);
   if (conn.provider === 'microsoft') return ms.markAsRead(ctx, messageId);
   return { success: false, error: `markRead not supported for provider: ${conn.provider}` };
+}
+
+// ─── Attachments (Story 2.16 Phase 2b) ───────────────────────────────────
+
+/**
+ * List attachment metadata for a message. Provider-routed:
+ *   - google → Gmail API (walks payload tree)
+ *   - microsoft → Graph API
+ *   - yahoo / imap → app-local IMAP runtime (call from apps/web directly)
+ */
+export async function listEmailAttachments(
+  conn: OAuthConnection,
+  messageId: string,
+): Promise<IntegrationResult<EmailAttachmentRef[]>> {
+  const ctx = { accessToken: conn.access_token, metadata: conn.metadata };
+  if (conn.provider === 'google') return gmail.listMessageAttachments(ctx, messageId);
+  if (conn.provider === 'microsoft') return ms.listMessageAttachments(ctx, messageId);
+  if (conn.provider === 'yahoo' || conn.provider === 'imap') {
+    return { success: false, error: 'IMAP attachments must be fetched via app-local runtime' };
+  }
+  return { success: false, error: `Attachments not supported for provider: ${conn.provider}` };
+}
+
+/**
+ * Fetch attachment bytes. The Gmail path leaves filename/mimeType
+ * generic — caller should override using the ref it got from
+ * listEmailAttachments. Microsoft path returns real filename/mimeType.
+ */
+export async function fetchEmailAttachment(
+  conn: OAuthConnection,
+  messageId: string,
+  attachmentId: string,
+): Promise<IntegrationResult<FetchedAttachment>> {
+  const ctx = { accessToken: conn.access_token, metadata: conn.metadata };
+  if (conn.provider === 'google') return gmail.fetchMessageAttachment(ctx, messageId, attachmentId);
+  if (conn.provider === 'microsoft') return ms.fetchMessageAttachment(ctx, messageId, attachmentId);
+  if (conn.provider === 'yahoo' || conn.provider === 'imap') {
+    return { success: false, error: 'IMAP attachments must be fetched via app-local runtime' };
+  }
+  return { success: false, error: `Attachments not supported for provider: ${conn.provider}` };
 }
 
 // ─── Calendar ───

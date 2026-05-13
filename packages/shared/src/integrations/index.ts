@@ -3,6 +3,8 @@
 
 export type {
   EmailMessage,
+  EmailAttachmentRef,
+  FetchedAttachment,
   SendEmailRequest,
   CalendarEvent,
   CreateCalendarEvent,
@@ -17,6 +19,8 @@ export {
   listEmails,
   sendEmail,
   markEmailRead,
+  listEmailAttachments,
+  fetchEmailAttachment,
   listCalendarEvents,
   createCalendarEvent,
   updateCalendarEvent,

@@ -7,6 +7,8 @@
 
 import type {
   EmailMessage,
+  EmailAttachmentRef,
+  FetchedAttachment,
   SendEmailRequest,
   IntegrationContext,
   IntegrationResult,
@@ -220,6 +222,84 @@ export async function markAsRead(
     });
     if (!res.ok) return { success: false, error: `Gmail markAsRead failed: ${res.status}` };
     return { success: true };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Attachments ───────────────────────────────────────────────────────────
+
+interface GmailPart {
+  partId: string;
+  mimeType: string;
+  filename: string;
+  body?: { attachmentId?: string; size?: number; data?: string };
+  parts?: GmailPart[];
+}
+
+/** Walk a Gmail message's payload tree, returning every leaf with a filename. */
+function flattenParts(part: GmailPart | undefined, out: GmailPart[] = []): GmailPart[] {
+  if (!part) return out;
+  if (part.filename && part.filename.length > 0 && part.body?.attachmentId) out.push(part);
+  for (const child of part.parts ?? []) flattenParts(child, out);
+  return out;
+}
+
+/** List attachment metadata for a Gmail message. Hits messages.get with
+ *  format=full so we can walk the payload tree for filenames. */
+export async function listMessageAttachments(
+  ctx: IntegrationContext,
+  messageId: string,
+): Promise<IntegrationResult<EmailAttachmentRef[]>> {
+  try {
+    const res = await fetch(
+      `${GMAIL_BASE}/messages/${messageId}?format=full`,
+      { headers: { Authorization: `Bearer ${ctx.accessToken}` } },
+    );
+    if (!res.ok) return { success: false, error: `Gmail message fetch failed: ${res.status}` };
+    const data = await res.json();
+    const parts = flattenParts(data.payload);
+    const refs: EmailAttachmentRef[] = parts.map((p) => ({
+      id: String(p.body!.attachmentId),
+      filename: p.filename,
+      mimeType: p.mimeType,
+      sizeBytes: p.body?.size,
+    }));
+    return { success: true, data: refs };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+/** Fetch attachment bytes — Gmail returns base64url-encoded data. */
+export async function fetchMessageAttachment(
+  ctx: IntegrationContext,
+  messageId: string,
+  attachmentId: string,
+): Promise<IntegrationResult<FetchedAttachment>> {
+  try {
+    const res = await fetch(
+      `${GMAIL_BASE}/messages/${messageId}/attachments/${attachmentId}`,
+      { headers: { Authorization: `Bearer ${ctx.accessToken}` } },
+    );
+    if (!res.ok) return { success: false, error: `Gmail attachment fetch failed: ${res.status}` };
+    const data = await res.json();
+    if (!data.data) return { success: false, error: 'Gmail attachment had no data field' };
+    // Gmail uses URL-safe base64; normalize before decoding
+    const b64 = data.data.replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(Buffer.from(b64, 'base64'));
+    // Gmail's attachments endpoint doesn't return filename/mime, so we
+    // accept those from the caller (who got them from listMessageAttachments).
+    // The caller passes through whatever ref they had.
+    return {
+      success: true,
+      data: {
+        filename: 'attachment',
+        mimeType: 'application/octet-stream',
+        bytes,
+        sizeBytes: bytes.length,
+      },
+    };
   } catch (err) {
     return { success: false, error: String(err) };
   }

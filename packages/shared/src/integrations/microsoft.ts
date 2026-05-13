@@ -5,6 +5,8 @@
 
 import type {
   EmailMessage,
+  EmailAttachmentRef,
+  FetchedAttachment,
   SendEmailRequest,
   CalendarEvent,
   CreateCalendarEvent,
@@ -128,6 +130,63 @@ export async function markAsRead(
     });
     if (!res.ok) return { success: false, error: `Graph markAsRead failed: ${res.status}` };
     return { success: true };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Attachments ───
+
+/** List attachment metadata for a message. Lightweight — just names + sizes. */
+export async function listMessageAttachments(
+  ctx: IntegrationContext,
+  messageId: string,
+): Promise<IntegrationResult<EmailAttachmentRef[]>> {
+  try {
+    const url = `${GRAPH_BASE}/me/messages/${messageId}/attachments?$select=id,name,contentType,size`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${ctx.accessToken}` } });
+    if (!res.ok) return { success: false, error: `Graph attachments list failed: ${res.status}` };
+    const data = await res.json();
+    const refs: EmailAttachmentRef[] = (data.value ?? [])
+      .filter((a: any) => a['@odata.type'] === '#microsoft.graph.fileAttachment')
+      .map((a: any) => ({
+        id: String(a.id),
+        filename: String(a.name ?? 'attachment'),
+        mimeType: String(a.contentType ?? 'application/octet-stream'),
+        sizeBytes: typeof a.size === 'number' ? a.size : undefined,
+      }));
+    return { success: true, data: refs };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+/** Fetch an attachment's bytes. Graph returns the file as base64 in
+ *  `contentBytes` for fileAttachment instances. */
+export async function fetchMessageAttachment(
+  ctx: IntegrationContext,
+  messageId: string,
+  attachmentId: string,
+): Promise<IntegrationResult<FetchedAttachment>> {
+  try {
+    const url = `${GRAPH_BASE}/me/messages/${messageId}/attachments/${attachmentId}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${ctx.accessToken}` } });
+    if (!res.ok) return { success: false, error: `Graph attachment fetch failed: ${res.status}` };
+    const a = await res.json();
+    if (a['@odata.type'] !== '#microsoft.graph.fileAttachment') {
+      return { success: false, error: `Unsupported attachment type: ${a['@odata.type']}` };
+    }
+    if (!a.contentBytes) return { success: false, error: 'Attachment had no contentBytes' };
+    const bytes = Uint8Array.from(Buffer.from(a.contentBytes, 'base64'));
+    return {
+      success: true,
+      data: {
+        filename: String(a.name ?? 'attachment'),
+        mimeType: String(a.contentType ?? 'application/octet-stream'),
+        bytes,
+        sizeBytes: bytes.length,
+      },
+    };
   } catch (err) {
     return { success: false, error: String(err) };
   }

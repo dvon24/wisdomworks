@@ -18,8 +18,28 @@ export interface EmailMessage {
   date: string;
   isUnread: boolean;
   hasAttachments: boolean;
+  /** Lightweight metadata for attachments on this message — populated
+   *  by listUnreadMessages when the provider exposes it cheaply. Use
+   *  fetchEmailAttachment() to pull the bytes. */
+  attachments?: EmailAttachmentRef[];
   /** Provider-specific raw data for advanced use */
   raw?: any;
+}
+
+export interface EmailAttachmentRef {
+  /** Provider attachment id (or part id for IMAP) */
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes?: number;
+}
+
+export interface FetchedAttachment {
+  filename: string;
+  mimeType: string;
+  /** Raw bytes of the attachment */
+  bytes: Uint8Array;
+  sizeBytes: number;
 }
 
 export interface SendEmailRequest {

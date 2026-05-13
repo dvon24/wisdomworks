@@ -46,11 +46,15 @@ const MODELS: Record<'fast' | 'standard' | 'premium', ModelConfigExt> = {
     fallbackModelRef: 'wan-video/wan-2.1-1.3b', // alt fast text-to-video
   },
   standard: {
-    modelRef: 'minimax/video-01',
-    defaultDurationSec: 6,
-    costPerGenUsd: 0.40,
-    inputDefaults: { prompt_optimizer: true },
+    // Bytedance's 720p variant — cleaner quality for the next tier up,
+    // brand-consistent with the fast tier so look-and-feel matches when
+    // owners upgrade a draft from fast to standard.
+    modelRef: 'bytedance/seedance-1-pro',
+    defaultDurationSec: 5,
+    costPerGenUsd: 0.50,
+    inputDefaults: { aspect_ratio: '9:16', resolution: '720p' },
     timeoutMinutes: 8, // typical 60-120s
+    fallbackModelRef: 'minimax/video-01', // prior standard, kept as alt
   },
   premium: {
     modelRef: 'google/veo-3',
