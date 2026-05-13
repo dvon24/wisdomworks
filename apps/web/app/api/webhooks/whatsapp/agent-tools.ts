@@ -81,6 +81,13 @@ import {
 import { generateVideo, estimateGenerationCost } from '../../_lib/integrations/replicate-video';
 import { sendWhatsAppVideo, sendWhatsAppImage } from '../../_lib/whatsapp-media-send';
 import {
+  saveMarketingStyle,
+  listMarketingStyles,
+  findStyleByName,
+  deleteMarketingStyle,
+  recordStyleUsed,
+} from '../../_lib/marketing-styles';
+import {
   loadActiveConnections,
   loadLatestSnapshot,
   fetchGitHubCommits,
@@ -639,7 +646,7 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
 const TOOL_GENERATE_MARKETING_VIDEO: AnthropicTool = {
   name: 'generate_marketing_video',
   description:
-    "Generate a short marketing video via Replicate AI. Use when the owner asks for a reel / video / marketing clip on a topic. ALWAYS mention the estimated cost before generating (third-party cost transparency rule). After generation, the next step is typically send_video_preview to show the owner on WhatsApp + ask for approval before publish_instagram_reel. Quality tiers: 'fast' (~$0.10, 5s, good for testing), 'standard' (~$0.40, 6s, polished), 'premium' (~$1.25, 8s, best). Default fast unless owner specifies.",
+    "Generate a short marketing video via Replicate AI. Use when the owner asks for a reel / video / marketing clip on a topic. ALWAYS mention the estimated cost before generating (third-party cost transparency rule). After generation, the next step is typically send_video_preview to show the owner on WhatsApp + ask for approval before publish_instagram_reel. Quality tiers: 'fast' (~$0.10, 5s), 'standard' (~$0.40, 6s, polished), 'premium' (~$1.25, 8s, best). Default fast unless owner specifies. To match a saved brand style (e.g. 'Au7o energetic'), pass style_name — the style's description is prepended to the prompt.",
   input_schema: {
     type: 'object',
     properties: {
@@ -647,8 +654,46 @@ const TOOL_GENERATE_MARKETING_VIDEO: AnthropicTool = {
       quality: { type: 'string', enum: ['fast', 'standard', 'premium'], description: 'Cost/quality tier. Default fast.' },
       duration_sec: { type: 'number', description: 'Video duration in seconds (model-dependent, typically 5-10).' },
       aspect_ratio: { type: 'string', enum: ['9:16', '16:9', '1:1'], description: '9:16 for Reels (default), 1:1 for square posts.' },
+      style_name: { type: 'string', description: 'Optional name of a saved marketing style (from save_marketing_style). Its description is prepended to the prompt for brand consistency.' },
     },
     required: ['prompt'],
+  },
+};
+
+const TOOL_SAVE_MARKETING_STYLE: AnthropicTool = {
+  name: 'save_marketing_style',
+  description:
+    "Save a named marketing style template the owner can reuse across reel generations. Examples: 'Au7o energetic' = 'cinematic, neon, fast cuts, modern tech aesthetic, dramatic lighting'. Once saved, the owner can pass style_name to generate_marketing_video and the description gets prepended automatically. Use when the owner says 'save this style as X', 'remember this look', or after they describe a style they like.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Short owner-friendly name (e.g. "Au7o energetic", "salon dreamy").' },
+      style_prompt: { type: 'string', description: 'The style description that gets prepended to future generation prompts. Be descriptive about visual elements: mood, color palette, motion, camera angles, lighting, brand vibe.' },
+      reference_video_url: { type: 'string', description: 'Optional URL to a reference video the owner sent.' },
+      reference_image_url: { type: 'string', description: 'Optional URL to a reference image (e.g. brand assets).' },
+      default_quality: { type: 'string', enum: ['fast', 'standard', 'premium'], description: 'Default tier when this style is used. Defaults to fast.' },
+    },
+    required: ['name', 'style_prompt'],
+  },
+};
+
+const TOOL_LIST_MARKETING_STYLES: AnthropicTool = {
+  name: 'list_marketing_styles',
+  description:
+    "List the owner's saved marketing styles with use counts. Use when owner asks 'what styles do I have', 'show my brand templates', 'which styles am I using most'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_DELETE_MARKETING_STYLE: AnthropicTool = {
+  name: 'delete_marketing_style',
+  description:
+    "Delete a saved marketing style by name. Use when owner says 'delete the X style', 'I don't want that template anymore'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+    },
+    required: ['name'],
   },
 };
 
@@ -1511,6 +1556,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_GENERATE_MARKETING_VIDEO);
   tools.push(TOOL_SEND_VIDEO_PREVIEW);
   tools.push(TOOL_VIDEO_GEN_COST);
+  tools.push(TOOL_SAVE_MARKETING_STYLE);
+  tools.push(TOOL_LIST_MARKETING_STYLES);
+  tools.push(TOOL_DELETE_MARKETING_STYLE);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2511,12 +2559,25 @@ export async function executeTool(
 
       case 'generate_marketing_video': {
         if (!user) return { content: 'Internal: user context required.', success: false };
-        const prompt = String(call.input.prompt ?? '').trim();
+        let prompt = String(call.input.prompt ?? '').trim();
         if (!prompt) return { content: 'prompt required.', success: false };
-        const quality = (call.input.quality as 'fast' | 'standard' | 'premium' | undefined) ?? 'fast';
+        let quality = (call.input.quality as 'fast' | 'standard' | 'premium' | undefined) ?? 'fast';
         if (!process.env.REPLICATE_API_TOKEN) {
           return { content: 'Video generation not yet configured (REPLICATE_API_TOKEN missing). Admin needs to set it up.', success: false };
         }
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+
+        // Optional style lookup — prepend style description for brand consistency
+        let usedStyle: { name: string; id: string } | null = null;
+        if (call.input.style_name) {
+          const style = await findStyleByName(cleanPhone, String(call.input.style_name));
+          if (style) {
+            prompt = `${style.style_prompt}. ${prompt}`;
+            quality = (call.input.quality as any) ?? style.default_quality;
+            usedStyle = { name: style.name, id: style.id };
+          }
+        }
+
         const result = await generateVideo({
           prompt,
           quality,
@@ -2526,10 +2587,60 @@ export async function executeTool(
         if (!result.ok) {
           return { content: `Video generation failed: ${result.error}`, success: false };
         }
+        if (usedStyle) {
+          void recordStyleUsed(usedStyle.id);
+        }
+        const styleNote = usedStyle ? ` (style: ${usedStyle.name})` : '';
         return {
-          content: `✓ Video generated (${result.modelRef}, est. $${(result.costEstimateUsd ?? 0).toFixed(2)}):\n${result.videoUrl}\n\nNext: send the video to the owner as a WhatsApp preview via send_video_preview, OR if they already approved, publish_instagram_reel.`,
+          content: `✓ Video generated${styleNote} (${result.modelRef}, est. $${(result.costEstimateUsd ?? 0).toFixed(2)}):\n${result.videoUrl}\n\nNext: send_video_preview to show the owner, then publish_instagram_reel on approval.`,
           success: true,
         };
+      }
+
+      case 'save_marketing_style': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const name = String(call.input.name ?? '').trim();
+        const stylePrompt = String(call.input.style_prompt ?? '').trim();
+        if (!name || !stylePrompt) return { content: 'name and style_prompt required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const result = await saveMarketingStyle({
+          tenantPhone: cleanPhone,
+          name,
+          stylePrompt,
+          referenceVideoUrl: call.input.reference_video_url ? String(call.input.reference_video_url) : undefined,
+          referenceImageUrl: call.input.reference_image_url ? String(call.input.reference_image_url) : undefined,
+          defaultQuality: (call.input.default_quality as any) ?? 'fast',
+        });
+        if (!result) return { content: 'Could not save style.', success: false };
+        return {
+          content: `✓ Saved style "${result.name}". Next time you ask for a reel, say "use ${result.name} style" and I'll match this look.`,
+          success: true,
+        };
+      }
+
+      case 'list_marketing_styles': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const styles = await listMarketingStyles(cleanPhone);
+        if (styles.length === 0) {
+          return { content: "No saved styles yet. Save one with 'save this style as X: <description>'.", success: true };
+        }
+        const lines = styles.map((s) => {
+          const last = s.last_used_at ? new Date(s.last_used_at).toISOString().slice(0, 10) : 'never';
+          return `  ${s.name}  · ${s.use_count} uses, last ${last}\n     "${s.style_prompt.slice(0, 120)}${s.style_prompt.length > 120 ? '…' : ''}"`;
+        });
+        return { content: `${styles.length} saved style${styles.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'delete_marketing_style': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const name = String(call.input.name ?? '').trim();
+        if (!name) return { content: 'name required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const ok = await deleteMarketingStyle(cleanPhone, name);
+        return ok
+          ? { content: `✓ Deleted style "${name}".`, success: true }
+          : { content: `No style named "${name}" found.`, success: false };
       }
 
       case 'send_video_preview': {

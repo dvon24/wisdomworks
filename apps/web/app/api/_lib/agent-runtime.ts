@@ -519,10 +519,15 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
     ? `\n\nCANONICAL MARKETING WORKFLOW (video reel pipeline):
 When the owner asks for marketing content (a reel, video, post about X), follow this sequence:
   1. estimate_video_cost(quality) → surface the cost up front (third-party cost transparency)
-  2. generate_marketing_video(prompt, quality) → produces an MP4 URL via Replicate
-  3. send_video_preview(video_url, caption) → drops the video into the owner's WhatsApp
-  4. Wait for explicit approval. If approved: publish_instagram_reel(video_url, caption). Optionally cross-post via publish_facebook_post.
-  5. If the owner asks to regenerate or change tone: loop back to step 2 with adjusted prompt.
+  2. Check for a saved style if relevant — list_marketing_styles or use style_name on generate
+  3. generate_marketing_video(prompt, quality, style_name?) → produces an MP4 URL via Replicate
+  4. send_video_preview(video_url, caption) → drops the video into the owner's WhatsApp
+  5. Wait for explicit approval. If approved: publish_instagram_reel(video_url, caption). Optionally cross-post via publish_facebook_post.
+  6. If the owner asks to regenerate or change tone: loop back to step 3 with adjusted prompt.
+
+STYLE MEMORY:
+- When the owner describes a "look" they want repeated, offer to save_marketing_style so it's reusable.
+- When asked for a reel about X, ALWAYS check if a saved style applies — brand consistency matters.
 
 This is the L2 (draft + approve) flow. Never publish without explicit approval. Always quote the AI generation cost before firing generate_marketing_video.`
     : '';
