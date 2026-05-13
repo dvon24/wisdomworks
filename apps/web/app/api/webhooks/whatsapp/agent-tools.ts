@@ -52,6 +52,11 @@ import {
   detectConflicts,
 } from '../../_lib/managed-calendar';
 import {
+  createApiKey as createWidgetApiKey,
+  listApiKeysForTenant,
+  revokeApiKey as revokeWidgetApiKey,
+} from '../../_lib/widget-auth';
+import {
   loadActiveConnections,
   loadLatestSnapshot,
   fetchGitHubCommits,
@@ -603,6 +608,46 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   description:
     "Generate a magic-link URL the owner can tap to sign into the Command Deck on their phone or laptop. Use when the owner says 'send me a login link', 'log me in to the deck', 'I need to sign in', or whenever they want to view the dashboard. Returns a fully-formed URL valid for 30 days that, when clicked, sets a secure session cookie. NEVER paste deck URLs that lack a token — the deck refuses unauthenticated access.",
   input_schema: { type: 'object', properties: {} },
+};
+
+// ─── Widget API keys (Story 2b.8 — embeddable chat widget) ───────────────
+
+const TOOL_CREATE_WIDGET_KEY: AnthropicTool = {
+  name: 'create_widget_api_key',
+  description:
+    "Generate an API key + embed snippet the owner can paste into their existing website (Wix, WordPress, Squarespace, custom). Returns the plain key ONCE — owner copies it into their site. Use when owner says 'add a chat widget to my site', 'I want a contact form on my website', 'generate a widget key', 'embed chat on Wix'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      label: { type: 'string', description: 'Descriptive name (e.g. "my wix site", "production").' },
+      allowed_origins: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional whitelist of allowed origins (e.g. ["https://salonbella.com"]). Empty = any origin (less safe).',
+      },
+    },
+    required: ['label'],
+  },
+};
+
+const TOOL_LIST_WIDGET_KEYS: AnthropicTool = {
+  name: 'list_widget_api_keys',
+  description:
+    "List the owner's widget API keys (id, label, scopes, last_used_at). Use when owner asks 'what widget keys do I have', 'which keys are active'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_REVOKE_WIDGET_KEY: AnthropicTool = {
+  name: 'revoke_widget_api_key',
+  description:
+    "Revoke a widget API key by its 11-char prefix (e.g. 'wk_abc12345') or full id. Use when owner says 'revoke my key', 'kill the wix key', 'turn off widget access'. Revocation is immediate and irreversible.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      key_or_id: { type: 'string', description: "The wk_xxxxxxxx prefix OR full UUID of the key to revoke." },
+    },
+    required: ['key_or_id'],
+  },
 };
 
 // ─── Managed calendar (native scheduling for owners without Google/Apple) ──
@@ -1202,6 +1247,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_SCHEDULE_EVENT);
   tools.push(TOOL_LIST_MY_SCHEDULE);
   tools.push(TOOL_CANCEL_EVENT);
+  tools.push(TOOL_CREATE_WIDGET_KEY);
+  tools.push(TOOL_LIST_WIDGET_KEYS);
+  tools.push(TOOL_REVOKE_WIDGET_KEY);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2189,6 +2237,61 @@ export async function executeTool(
         const ok = await cancelManagedEvent(eventId, cleanPhone);
         if (!ok) return { content: 'Could not cancel the event.', success: false };
         return { content: '✓ Cancelled.', success: true };
+      }
+
+      case 'create_widget_api_key': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const label = String(call.input.label ?? '').trim();
+        if (!label) return { content: 'Label is required (e.g. "my wix site").', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const allowedOrigins = Array.isArray(call.input.allowed_origins)
+          ? call.input.allowed_origins.map(String).filter(Boolean)
+          : [];
+        const result = await createWidgetApiKey({ tenantPhone: cleanPhone, label, allowedOrigins });
+        if (!result) return { content: 'Could not generate the API key.', success: false };
+
+        const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
+        const embedSnippet = `<script src="${base}/api/widget/embed.js?key=${result.plainKey}" defer></script>`;
+        const lines: string[] = [
+          `✓ Generated widget key for "${label}".`,
+          '',
+          `API key (save this — shown ONCE):`,
+          result.plainKey,
+          '',
+          `Paste this into your website's HTML just before </body>:`,
+          embedSnippet,
+          '',
+          allowedOrigins.length > 0
+            ? `Restricted to origins: ${allowedOrigins.join(', ')}`
+            : `⚠ No origin restrictions — anyone with the key can use it. To lock it down, say "restrict widget key wk_${result.plainKey.slice(3, 11)} to my domain".`,
+        ];
+        return { content: lines.join('\n'), success: true };
+      }
+
+      case 'list_widget_api_keys': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const keys = await listApiKeysForTenant(cleanPhone);
+        if (keys.length === 0) {
+          return { content: "No widget API keys yet. Say 'generate a widget key for my site' to create one.", success: true };
+        }
+        const lines = keys.map((k) => {
+          const status = k.status === 'revoked' ? '🚫 revoked' : '✓ active';
+          const lastUsed = k.last_used_at ? new Date(k.last_used_at).toISOString().slice(0, 10) : 'never';
+          const origins = k.allowed_origins.length > 0 ? k.allowed_origins.join(', ') : 'any';
+          return `  ${k.key_prefix}…  ${status}  "${k.label ?? '(no label)'}"  · ${k.use_count} uses, last ${lastUsed}  · origins: ${origins}`;
+        });
+        return { content: `${keys.length} widget API key${keys.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'revoke_widget_api_key': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const idIn = String(call.input.key_or_id ?? '').trim();
+        if (!idIn) return { content: 'Missing key_or_id.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const ok = await revokeWidgetApiKey(idIn, cleanPhone);
+        if (!ok) return { content: `Could not revoke ${idIn}. Check the key prefix is right.`, success: false };
+        return { content: `✓ Revoked ${idIn}. Widget will stop working on any site using it within seconds.`, success: true };
       }
 
       case 'find_booking_availability': {
