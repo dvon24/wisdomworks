@@ -1632,6 +1632,22 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2.16 Phase 2b — Analyze email attachment (capability-on-demand) ──
+
+const TOOL_ANALYZE_EMAIL_ATTACHMENT: AnthropicTool = {
+  name: 'analyze_email_attachment',
+  description:
+    "Fetch + analyze an attachment from a specific email. The owner must EXPLICITLY ask ('analyze the PDF on that email from John', 'pull the contract', 'look at the lease attached'). Never call this proactively or in the background — attachments stay in the inbox until owner asks. Pass the email_id (from a recent list_unread_emails or search_emails call); pass filename if the email has multiple attachments and the owner specified which one. Returns the structured analysis (summary + dates + parties + amounts + action items + risks).",
+  input_schema: {
+    type: 'object',
+    properties: {
+      email_id: { type: 'string', description: "The email's id — obtained from list_unread_emails or search_emails." },
+      filename: { type: 'string', description: 'Optional filename hint when the email has multiple attachments. Required for Yahoo/IMAP emails since IMAP needs to know which part to pull.' },
+    },
+    required: ['email_id'],
+  },
+};
+
 // ─── Video job status / debugging ────────────────────────────────────────
 
 const TOOL_CHECK_VIDEO_JOBS: AnthropicTool = {
@@ -1953,6 +1969,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_RESOLVE_LESSON);
   tools.push(TOOL_BUSINESS_TYPE_DICTIONARY);
   tools.push(TOOL_RECALL_DOCUMENTS);
+  tools.push(TOOL_ANALYZE_EMAIL_ATTACHMENT);
   tools.push(TOOL_CHECK_VIDEO_JOBS);
 
   return tools;
@@ -5113,6 +5130,55 @@ export async function executeTool(
         } catch (err: any) {
           return { content: `Job status check failed: ${err?.message ?? String(err)}`, success: false };
         }
+      }
+
+      case 'analyze_email_attachment': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const emailId = String(call.input.email_id ?? '').trim();
+        const filenameHint = call.input.filename ? String(call.input.filename).trim() : undefined;
+        if (!emailId) return { content: 'email_id required (get it from list_unread_emails or search_emails).', success: false };
+
+        // Find the email connection — caller needs Iris to know which
+        // provider this email is from. If there are multiple email
+        // connections, we can't disambiguate without a hint, so iterate
+        // and try each. For 99% of cases the tenant has one email conn.
+        const emailConns = (connections as any[]).filter((c) => c.service === 'email');
+        if (emailConns.length === 0) {
+          return { content: "No email connection active. Connect Gmail / Outlook / Yahoo first.", success: false };
+        }
+
+        const { analyzeEmailAttachment } = await import('../../_lib/email-attachment-ingestion');
+        // Try each email connection until one works (typical case is one)
+        let lastErr: string | undefined;
+        for (const conn of emailConns) {
+          const result = await analyzeEmailAttachment({
+            conn: { ...conn, phone_number: user.phoneNumber },
+            emailId,
+            filenameHint,
+          });
+          if (result.choices && result.choices.length > 0) {
+            const list = result.choices.map((r, i) => `  ${i + 1}. ${r.filename} (${r.mimeType}${r.sizeBytes ? `, ${(r.sizeBytes / 1024).toFixed(0)}KB` : ''})`).join('\n');
+            return {
+              content: `That email has ${result.choices.length} attachments. Which one?\n${list}\n\nTell me the filename and I'll pull it.`,
+              success: true,
+            };
+          }
+          if (result.ok) {
+            if (!result.analysis) {
+              return {
+                content: `📎 Stored ${result.filename} (non-PDF — ${result.mimeType}; deeper analysis for that format is coming later). It's in your document recall.`,
+                success: true,
+              };
+            }
+            const { renderAnalysisForWhatsApp } = await import('../../_lib/document-analysis');
+            return {
+              content: renderAnalysisForWhatsApp({ analysis: result.analysis, filename: result.filename }),
+              success: true,
+            };
+          }
+          lastErr = result.error;
+        }
+        return { content: `Couldn't fetch the attachment: ${lastErr ?? 'unknown error'}`, success: false };
       }
 
       case 'recall_recent_documents': {

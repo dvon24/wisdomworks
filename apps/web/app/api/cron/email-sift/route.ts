@@ -184,32 +184,11 @@ async function processCustomer(
     console.warn('[email-sift] data capture failed (non-blocking):', err);
   }
 
-  // Story 2.16 Phase 2b — attachment ingestion. For each business email
-  // with attachments, fetch the bytes, upload to received-docs bucket,
-  // and run Claude PDF analysis. Non-PDF formats are stored but marked
-  // analysis_failed (Phase 3 will add docx/xlsx parsing). Only fires for
-  // privacy=business mail; personal/uncertain attachments are never
-  // touched (privacy boundary).
-  try {
-    const businessIds = new Set(businessOnly.map((e) => e.id));
-    if (businessIds.size > 0 && emails.some((e) => e.hasAttachments)) {
-      const { ingestEmailAttachments } = await import('../../_lib/email-attachment-ingestion');
-      const ing = await ingestEmailAttachments({
-        conn: { ...decrypted, phone_number: conn.phone_number },
-        originalEmails: emails,
-        businessIds,
-        businessSummaries: businessOnly.map((e) => ({ id: e.id, subject: e.subject, from: e.from })),
-      });
-      if (ing.uploaded > 0 || ing.analyzed > 0) {
-        console.log(`[email-sift] attachments for ${conn.phone_number}: ${ing.uploaded} uploaded, ${ing.analyzed} analyzed (${ing.skipped} skipped)`);
-      }
-      if (ing.errors.length > 0) {
-        console.warn(`[email-sift] attachment errors for ${conn.phone_number}:`, ing.errors);
-      }
-    }
-  } catch (err) {
-    console.warn('[email-sift] attachment ingestion failed (non-blocking):', err);
-  }
+  // Story 2.16 Phase 2b — attachments are capability-only.
+  // Per feedback_attachment_consent.md, email-sift does NOT touch
+  // attachments automatically. Iris has the analyze_email_attachment
+  // agent tool to fetch + analyze on demand when the owner explicitly
+  // asks. No background detection, no pending queue, no approval cards.
 
   return { processed: emails.length, actionable: actionable.length };
 }
