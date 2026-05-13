@@ -21,7 +21,7 @@ import type { EmailMessage, OAuthConnection, EmailAttachmentRef } from '@wisdomw
 import { fetchEmailAttachment, listEmailAttachments } from '@wisdomworks/shared';
 import { fetchImapAttachment } from './imap-runtime';
 import { uploadReceivedDoc } from './received-doc-storage';
-import { analyzePdfDocument, type DocumentAnalysis } from './document-analysis';
+import { analyzeReceivedDocument, type DocumentAnalysis } from './document-analysis';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -152,9 +152,8 @@ export async function analyzeEmailAttachment(input: {
     input.conn.provider === 'google' ? 'gmail_attachment'
     : input.conn.provider === 'microsoft' ? 'outlook_attachment'
     : 'yahoo_attachment';
-  const isPdf = mimeType.toLowerCase().includes('pdf') || filename.toLowerCase().endsWith('.pdf');
 
-  // Insert received_documents row
+  // Insert received_documents row in processing state
   const insertBody: Record<string, unknown> = {
     tenant_phone: cleanPhone,
     source: sourceLabel,
@@ -163,12 +162,9 @@ export async function analyzeEmailAttachment(input: {
     size_bytes: fetched.data.sizeBytes,
     storage_path: upload.path,
     public_url: upload.publicUrl,
-    status: isPdf ? 'processing' : 'analysis_failed',
+    status: 'processing',
     metadata: { source_email_id: input.emailId },
   };
-  if (!isPdf) {
-    insertBody.summary = `Stored ${filename}. Analysis for ${mimeType} is coming in a future update (docx/xlsx parsing). PDFs are analyzed today.`;
-  }
   const insRes = await fetch(`${SUPABASE_URL}/rest/v1/received_documents`, {
     method: 'POST',
     headers: { ...headers(), Prefer: 'return=representation' },
@@ -177,21 +173,24 @@ export async function analyzeEmailAttachment(input: {
   if (!insRes.ok) return { ok: false, error: `received_documents insert failed: ${insRes.status}` };
   const docRowId = (await insRes.json())[0]?.id;
 
-  if (!isPdf) {
-    return { ok: true, receivedDocumentId: docRowId, filename, mimeType, isPdf: false };
-  }
-
-  // Run Claude PDF analysis
-  const pdfBase64 = Buffer.from(fetched.data.bytes).toString('base64');
-  const analysis = await analyzePdfDocument({ pdfBase64, hintFilename: filename });
+  // Unified analyzer dispatches by mime — PDF / DOCX / XLSX / TXT
+  const analysis = await analyzeReceivedDocument({
+    bytes: fetched.data.bytes,
+    mimeType,
+    filename,
+  });
 
   if (!analysis.ok) {
     await fetch(`${SUPABASE_URL}/rest/v1/received_documents?id=eq.${docRowId}`, {
       method: 'PATCH',
       headers: { ...headers(), Prefer: 'return=minimal' },
-      body: JSON.stringify({ status: 'analysis_failed', metadata: { error: analysis.error } }),
+      body: JSON.stringify({
+        status: 'analysis_failed',
+        summary: analysis.format === 'unsupported' ? `Stored ${filename}. ${analysis.error}` : null,
+        metadata: { error: analysis.error, format: analysis.format ?? null },
+      }),
     });
-    return { ok: false, error: analysis.error, receivedDocumentId: docRowId, filename, mimeType, isPdf: true };
+    return { ok: false, error: analysis.error, receivedDocumentId: docRowId, filename, mimeType, isPdf: analysis.format === 'pdf' };
   }
 
   await fetch(`${SUPABASE_URL}/rest/v1/received_documents?id=eq.${docRowId}`, {
@@ -206,6 +205,7 @@ export async function analyzeEmailAttachment(input: {
       action_items: analysis.analysis.actionItems,
       risks: analysis.analysis.risks,
       tags: analysis.analysis.tags,
+      metadata: { format: analysis.format },
     }),
   });
   return {
@@ -213,7 +213,7 @@ export async function analyzeEmailAttachment(input: {
     receivedDocumentId: docRowId,
     filename,
     mimeType,
-    isPdf: true,
+    isPdf: analysis.format === 'pdf',
     analysis: analysis.analysis,
   };
 }
@@ -251,18 +251,24 @@ export async function analyzeAttachmentsForSurfacedEmails(input: {
       if (listed.success && listed.data) refs = listed.data;
     }
 
-    // Only analyze PDFs at surface-time — other formats are noise (signatures,
-    // calendar invites, logos). Owner can ask later via analyze_email_attachment
-    // tool if they want something else.
-    const pdfRefs = refs.filter(
-      (r) =>
-        r.mimeType.toLowerCase().includes('pdf') ||
-        r.filename.toLowerCase().endsWith('.pdf'),
-    );
-    if (pdfRefs.length === 0) continue;
+    // Analyze surfaceable formats only — PDF / DOCX / XLSX / TXT.
+    // Skip calendar invites (.ics), signatures, logos, etc — they're
+    // usually noise at surface time. Owner can ask later via
+    // analyze_email_attachment for any specific non-doc file.
+    const surfaceable = refs.filter((r) => {
+      const mime = r.mimeType.toLowerCase();
+      const fn = r.filename.toLowerCase();
+      return (
+        mime.includes('pdf') || fn.endsWith('.pdf') ||
+        mime.includes('wordprocessingml') || fn.endsWith('.docx') ||
+        mime.includes('spreadsheetml') || fn.endsWith('.xlsx') || fn.endsWith('.xls') ||
+        mime.startsWith('text/') || fn.endsWith('.txt') || fn.endsWith('.md')
+      );
+    });
+    if (surfaceable.length === 0) continue;
 
     const emailAnalyses: Array<{ filename: string; analysis: DocumentAnalysis }> = [];
-    for (const ref of pdfRefs.slice(0, 3)) {
+    for (const ref of surfaceable.slice(0, 3)) {
       // Reuse the single-attachment path with the filename hint set so
       // listing/fetching converges on the exact ref.
       const r = await analyzeEmailAttachment({

@@ -124,6 +124,158 @@ export async function analyzePdfDocument(input: {
   }
 }
 
+/**
+ * Analyze a Word document. We extract raw text via mammoth, then feed
+ * the text to Claude using the same schema as the PDF path. Tables and
+ * headings survive the conversion; embedded images don't (acceptable
+ * tradeoff — docx images are rarely load-bearing for analysis).
+ */
+export async function analyzeDocxDocument(input: {
+  bytes: Uint8Array;
+  hintFilename?: string;
+}): Promise<{ ok: boolean; analysis: DocumentAnalysis; error?: string }> {
+  if (!ANTHROPIC_API_KEY) return { ok: false, analysis: EMPTY_ANALYSIS, error: 'ANTHROPIC_API_KEY not set' };
+  let extractedText: string;
+  try {
+    const mammothMod: any = await import('mammoth');
+    const result = await mammothMod.extractRawText({ buffer: Buffer.from(input.bytes) });
+    extractedText = (result.value ?? '').slice(0, 100_000); // cap at 100KB of text
+    if (!extractedText.trim()) {
+      return { ok: false, analysis: EMPTY_ANALYSIS, error: 'docx contained no extractable text' };
+    }
+  } catch (err: any) {
+    return { ok: false, analysis: EMPTY_ANALYSIS, error: `docx extraction failed: ${err?.message ?? String(err)}` };
+  }
+  return runTextAnalysis({ text: extractedText, hintFilename: input.hintFilename, sourceFormat: 'docx' });
+}
+
+/**
+ * Analyze an Excel/spreadsheet document. Each sheet becomes a markdown
+ * table (capped to first 50 rows × 20 cols per sheet to keep token cost
+ * sane) and we feed the joined output to Claude with the standard schema.
+ */
+export async function analyzeXlsxDocument(input: {
+  bytes: Uint8Array;
+  hintFilename?: string;
+}): Promise<{ ok: boolean; analysis: DocumentAnalysis; error?: string }> {
+  if (!ANTHROPIC_API_KEY) return { ok: false, analysis: EMPTY_ANALYSIS, error: 'ANTHROPIC_API_KEY not set' };
+  let extractedText: string;
+  try {
+    const xlsxMod: any = await import('xlsx');
+    const wb = xlsxMod.read(Buffer.from(input.bytes), { type: 'buffer' });
+    const sheetTexts: string[] = [];
+    for (const sheetName of wb.SheetNames as string[]) {
+      const ws = wb.Sheets[sheetName];
+      const rows: any[][] = xlsxMod.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      if (rows.length === 0) continue;
+      const capped = rows.slice(0, 50).map((r) => r.slice(0, 20));
+      const widths = (capped[0] ?? []).map((_: any, i: number) =>
+        Math.max(...capped.map((r) => String(r[i] ?? '').length)),
+      );
+      const lines = capped.map((r) =>
+        '| ' + r.map((c, i) => String(c ?? '').padEnd(widths[i] ?? 0, ' ')).join(' | ') + ' |',
+      );
+      const totalRowsNote = rows.length > 50 ? `\n(${rows.length - 50} additional rows truncated)` : '';
+      sheetTexts.push(`### Sheet: ${sheetName}\n${lines.join('\n')}${totalRowsNote}`);
+    }
+    extractedText = sheetTexts.join('\n\n').slice(0, 100_000);
+    if (!extractedText.trim()) {
+      return { ok: false, analysis: EMPTY_ANALYSIS, error: 'spreadsheet contained no data' };
+    }
+  } catch (err: any) {
+    return { ok: false, analysis: EMPTY_ANALYSIS, error: `xlsx extraction failed: ${err?.message ?? String(err)}` };
+  }
+  return runTextAnalysis({ text: extractedText, hintFilename: input.hintFilename, sourceFormat: 'xlsx' });
+}
+
+/**
+ * Shared text-analysis path for non-PDF formats. Same Claude call shape
+ * as analyzePdfDocument but feeds extracted text via a plain user
+ * message instead of the document content block.
+ */
+async function runTextAnalysis(input: {
+  text: string;
+  hintFilename?: string;
+  sourceFormat: 'docx' | 'xlsx' | 'txt';
+}): Promise<{ ok: boolean; analysis: DocumentAnalysis; error?: string }> {
+  const formatLabel = input.sourceFormat === 'docx' ? 'Word document'
+    : input.sourceFormat === 'xlsx' ? 'spreadsheet'
+    : 'text document';
+  const userText = input.hintFilename
+    ? `Analyze this ${formatLabel} (extracted text below). Filename: ${input.hintFilename}\n\n${input.text}`
+    : `Analyze this ${formatLabel} (extracted text below):\n\n${input.text}`;
+
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': ANTHROPIC_API_KEY!, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2000,
+        system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: userText }],
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return { ok: false, analysis: EMPTY_ANALYSIS, error: `Claude text-analysis call failed: ${res.status} ${body.slice(0, 300)}` };
+    }
+    const data = await res.json();
+    const text: string = data.content?.[0]?.text ?? '';
+    const jsonStart = text.indexOf('{');
+    const jsonEnd = text.lastIndexOf('}');
+    if (jsonStart < 0 || jsonEnd < jsonStart) {
+      return { ok: false, analysis: EMPTY_ANALYSIS, error: 'No JSON in model output' };
+    }
+    const parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+    return { ok: true, analysis: normalizeAnalysis(parsed) };
+  } catch (err: any) {
+    return { ok: false, analysis: EMPTY_ANALYSIS, error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * Unified analyzer — pick the right parser by mime type / filename.
+ * Falls back to "format not supported" for anything we can't handle.
+ *
+ * Pass `pdfBase64` and/or `bytes` — for PDFs either works (PDF path
+ * uses bytes via base64 if bytes given, else pdfBase64). For docx/xlsx
+ * we need raw bytes.
+ */
+export async function analyzeReceivedDocument(input: {
+  bytes: Uint8Array;
+  mimeType: string;
+  filename: string;
+}): Promise<{ ok: boolean; analysis: DocumentAnalysis; error?: string; format?: 'pdf' | 'docx' | 'xlsx' | 'txt' | 'unsupported' }> {
+  const mime = input.mimeType.toLowerCase();
+  const ext = (input.filename.split('.').pop() ?? '').toLowerCase();
+
+  if (mime.includes('pdf') || ext === 'pdf') {
+    const pdfBase64 = Buffer.from(input.bytes).toString('base64');
+    const r = await analyzePdfDocument({ pdfBase64, hintFilename: input.filename });
+    return { ...r, format: 'pdf' };
+  }
+  if (mime.includes('wordprocessingml') || ext === 'docx') {
+    const r = await analyzeDocxDocument({ bytes: input.bytes, hintFilename: input.filename });
+    return { ...r, format: 'docx' };
+  }
+  if (mime.includes('spreadsheetml') || ext === 'xlsx' || ext === 'xls') {
+    const r = await analyzeXlsxDocument({ bytes: input.bytes, hintFilename: input.filename });
+    return { ...r, format: 'xlsx' };
+  }
+  if (mime.startsWith('text/') || ext === 'txt' || ext === 'md') {
+    const text = Buffer.from(input.bytes).toString('utf8').slice(0, 100_000);
+    const r = await runTextAnalysis({ text, hintFilename: input.filename, sourceFormat: 'txt' });
+    return { ...r, format: 'txt' };
+  }
+  return {
+    ok: false,
+    analysis: EMPTY_ANALYSIS,
+    error: `Unsupported format: ${input.mimeType}. PDF / DOCX / XLSX / TXT supported.`,
+    format: 'unsupported',
+  };
+}
+
 /** Coerce the model output to the strict schema shape. */
 function normalizeAnalysis(raw: any): DocumentAnalysis {
   return {

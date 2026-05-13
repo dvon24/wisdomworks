@@ -320,7 +320,6 @@ export async function POST(request: Request) {
         }
 
         const mime = (documentMimeType ?? media.mimeType ?? '').toLowerCase();
-        const isPdf = mime.includes('pdf') || (documentFilename ?? '').toLowerCase().endsWith('.pdf');
 
         // Insert the row up-front in 'processing' status so we have a
         // record even if analysis fails
@@ -361,28 +360,12 @@ export async function POST(request: Request) {
           }
         }
 
-        if (!isPdf) {
-          // Store-only for non-PDF formats — Phase 3 will add docx/xlsx
-          if (docRowId && supaUrl && supaKey) {
-            await fetch(`${supaUrl}/rest/v1/received_documents?id=eq.${docRowId}`, {
-              method: 'PATCH',
-              headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-              body: JSON.stringify({
-                status: 'analysis_failed',
-                summary: `Stored ${documentFilename ?? 'document'} — analysis for ${mime || 'this format'} is coming in a future update. Currently I can analyze PDFs.`,
-              }),
-            });
-          }
-          await sendWhatsAppReply(from, `📎 Got ${documentFilename ?? 'the document'} (${(media.bytes.length / 1024).toFixed(0)}KB) — stored for you, but I can only analyze PDFs right now. If you can re-send as a PDF I'll pull dates, parties, amounts, and risks. Otherwise tell me what you want to know about it.`, 'webhook-image');
-          return NextResponse.json({ status: 'ok' });
-        }
-
-        // PDF analysis path — base64 the bytes for Claude's document input
-        const { analyzePdfDocument, renderAnalysisForWhatsApp } = await import('../../_lib/document-analysis');
-        const pdfBase64 = Buffer.from(media.bytes).toString('base64');
-        const result = await analyzePdfDocument({
-          pdfBase64,
-          hintFilename: documentFilename,
+        // Unified analyzer dispatches by mime type — PDF / DOCX / XLSX / TXT
+        const { analyzeReceivedDocument, renderAnalysisForWhatsApp } = await import('../../_lib/document-analysis');
+        const result = await analyzeReceivedDocument({
+          bytes: media.bytes,
+          mimeType: documentMimeType ?? media.mimeType,
+          filename: documentFilename ?? 'document',
         });
 
         if (!result.ok) {
@@ -390,10 +373,19 @@ export async function POST(request: Request) {
             await fetch(`${supaUrl}/rest/v1/received_documents?id=eq.${docRowId}`, {
               method: 'PATCH',
               headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-              body: JSON.stringify({ status: 'analysis_failed', metadata: { error: result.error } }),
+              body: JSON.stringify({
+                status: 'analysis_failed',
+                summary: result.format === 'unsupported'
+                  ? `Stored ${documentFilename ?? 'document'} — I can analyze PDF, DOCX, XLSX, and TXT. ${result.error}`
+                  : null,
+                metadata: { error: result.error, format: result.format ?? null },
+              }),
             });
           }
-          await sendWhatsAppReply(from, `📄 Stored the PDF but couldn't analyze it: ${result.error}. The file is on record — ask me about it later.`, 'webhook-image');
+          const msg = result.format === 'unsupported'
+            ? `📎 Got ${documentFilename ?? 'the document'} (${(media.bytes.length / 1024).toFixed(0)}KB) — stored for you, but ${result.error}`
+            : `📄 Stored ${documentFilename ?? 'the document'} but couldn't analyze it: ${result.error}. The file is on record — ask me about it later.`;
+          await sendWhatsAppReply(from, msg, 'webhook-image');
           return NextResponse.json({ status: 'ok' });
         }
 
@@ -411,6 +403,7 @@ export async function POST(request: Request) {
               action_items: result.analysis.actionItems,
               risks: result.analysis.risks,
               tags: result.analysis.tags,
+              metadata: { format: result.format },
             }),
           });
         }
