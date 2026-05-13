@@ -94,9 +94,54 @@ async function syncCustomer(conn: OAuthConnection & { phone_number: string }): P
   // Store in whatsapp_contexts so the AI brain can reference without API call
   await storeTodaysSchedule(conn.phone_number, events);
 
+  // Two-way sync — mirror each external event into tenant_events so the
+  // unified schedule + conflict detection see it from one source. Dedup
+  // happens via tenant_events.external_id (unique partial index from the
+  // 2026-05-12 migration).
+  if (events.length > 0) {
+    await mirrorIntoTenantEvents(conn.phone_number, conn.provider, events);
+  }
+
   // Send a brief schedule message (only if there are events)
   if (events.length > 0) {
     await sendScheduleBrief(conn.phone_number, events);
+  }
+}
+
+async function mirrorIntoTenantEvents(
+  phoneNumber: string,
+  provider: string,
+  events: CalendarEvent[],
+): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  const cleanPhone = phoneNumber.replace(/[\s\-+()]/g, '');
+  for (const e of events) {
+    try {
+      // INSERT with ON CONFLICT DO NOTHING via PostgREST. The partial
+      // unique index on (tenant, external_provider, external_id) makes
+      // this idempotent.
+      await fetch(`${SUPABASE_URL}/rest/v1/tenant_events`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=minimal,resolution=ignore-duplicates',
+        },
+        body: JSON.stringify({
+          tenant_phone: cleanPhone,
+          title: e.title,
+          location: e.location ?? null,
+          start_at: typeof e.start === 'string' ? e.start : new Date(e.start as any).toISOString(),
+          end_at: typeof e.end === 'string' ? e.end : new Date(e.end as any).toISOString(),
+          source: 'external_sync',
+          external_provider: provider,
+          external_id: e.id,
+        }),
+      });
+    } catch (err) {
+      console.warn('[calendar-sync] mirror upsert failed:', err);
+    }
   }
 }
 
