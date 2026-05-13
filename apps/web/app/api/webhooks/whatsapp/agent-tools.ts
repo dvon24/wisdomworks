@@ -65,6 +65,7 @@ import {
   listWebhooks as listEventWebhooks,
   revokeWebhook as revokeEventWebhook,
 } from '../../_lib/event-webhooks';
+import { detectConnectionGaps } from '../../_lib/connection-gap-detector';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -617,6 +618,20 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   description:
     "Generate a magic-link URL the owner can tap to sign into the Command Deck on their phone or laptop. Use when the owner says 'send me a login link', 'log me in to the deck', 'I need to sign in', or whenever they want to view the dashboard. Returns a fully-formed URL valid for 30 days that, when clicked, sets a secure session cookie. NEVER paste deck URLs that lack a token — the deck refuses unauthenticated access.",
   input_schema: { type: 'object', properties: {} },
+};
+
+// ─── Connection gap detector (Iris-as-onboarding-concierge) ──────────────
+
+const TOOL_OFFER_MISSING_CONNECTIONS: AnthropicTool = {
+  name: 'offer_missing_connections',
+  description:
+    "Detect integrations the owner's vertical recommends but hasn't connected yet, and return one-tap OAuth links so they connect via WhatsApp (no API key hunting, no dashboard). Use AFTER onboarding completes, or anytime the owner says 'what should I connect', 'help me set up', 'what's missing'. Iris should NOT spam these — call once at end of onboarding, and only re-surface if the owner asks. Each link is signed with their phone state token so the OAuth callback knows who they are.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      max: { type: 'number', description: 'Cap on how many gaps to surface (default 3).' },
+    },
+  },
 };
 
 // ─── Event webhooks (Zapier / Make / IFTTT / custom) ─────────────────────
@@ -1330,6 +1345,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_CONNECT_AUTOMATION);
   tools.push(TOOL_LIST_AUTOMATION_WEBHOOKS);
   tools.push(TOOL_REVOKE_AUTOMATION_WEBHOOK);
+  tools.push(TOOL_OFFER_MISSING_CONNECTIONS);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2317,6 +2333,28 @@ export async function executeTool(
         const ok = await cancelManagedEvent(eventId, cleanPhone);
         if (!ok) return { content: 'Could not cancel the event.', success: false };
         return { content: '✓ Cancelled.', success: true };
+      }
+
+      case 'offer_missing_connections': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const max = typeof call.input.max === 'number' ? Math.min(call.input.max, 6) : 3;
+        const gaps = await detectConnectionGaps(cleanPhone);
+        if (gaps.length === 0) {
+          return { content: "You're already connected to everything your vertical needs. Nice.", success: true };
+        }
+        const lines: string[] = [
+          `${gaps.length} integration${gaps.length === 1 ? '' : 's'} would help — tap the link to connect (no API keys needed, OAuth handles everything):`,
+          '',
+        ];
+        for (const g of gaps.slice(0, max)) {
+          lines.push(`${g.provider.emoji} ${g.provider.label}`);
+          lines.push(`   ${g.provider.tagline}`);
+          if (g.provider.costNote) lines.push(`   Note: ${g.provider.costNote}`);
+          lines.push(`   👉 ${g.oneTapUrl}`);
+          lines.push('');
+        }
+        return { content: lines.join('\n').trim(), success: true };
       }
 
       case 'connect_automation_webhook': {
