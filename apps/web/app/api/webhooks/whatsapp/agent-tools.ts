@@ -72,6 +72,13 @@ import {
   fetchStripeAccount,
 } from '../../_lib/integrations/stripe-connect';
 import {
+  fetchOutstandingAR,
+  listInvoices as qboListInvoices,
+  createInvoice as qboCreateInvoice,
+  findOrCreateCustomer as qboFindOrCreateCustomer,
+  refreshQuickBooksToken,
+} from '../../_lib/integrations/quickbooks';
+import {
   summarizeInstagramActivity,
   publishInstagramPhoto,
   publishInstagramReel,
@@ -931,6 +938,44 @@ const TOOL_LIST_RECENT_PAYMENTS: AnthropicTool = {
   },
 };
 
+// ─── QuickBooks Online (accounting) ──────────────────────────────────────
+
+const TOOL_QBO_OUTSTANDING_AR: AnthropicTool = {
+  name: 'qbo_outstanding_ar',
+  description:
+    "Show how much money the owner is currently owed via QuickBooks (sum of all unpaid invoice balances + count + oldest due date). Use when owner asks 'who owes me money', 'what's outstanding', 'how much is owed', 'how's my AR'. Requires QuickBooks Online connected.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_QBO_LIST_UNPAID_INVOICES: AnthropicTool = {
+  name: 'qbo_list_unpaid_invoices',
+  description:
+    "List the owner's unpaid QuickBooks invoices with customer, amount, balance, due date, and overdue flag. Use when owner asks for a specific list of who owes what. After listing, the owner often wants a draft follow-up — surface that.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Default 10.' },
+    },
+  },
+};
+
+const TOOL_QBO_CREATE_INVOICE: AnthropicTool = {
+  name: 'qbo_create_invoice',
+  description:
+    "Create an invoice in QuickBooks for a specific customer + amount. Pending-action safety: NEVER fire this from a vague request — ALWAYS confirm customer name, amount, what it's for, and due date with the owner first. Creates a customer record if one doesn't exist by that name. Returns the QuickBooks doc number.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      customer_name: { type: 'string', description: 'Customer display name. We find or create the customer by this name.' },
+      customer_email: { type: 'string', description: 'Optional — only used when creating a new customer.' },
+      amount_usd: { type: 'number', description: 'Invoice amount in USD.' },
+      description: { type: 'string', description: 'Description of the work / service.' },
+      due_date: { type: 'string', description: 'ISO date (YYYY-MM-DD). Defaults to net-30 if omitted.' },
+    },
+    required: ['customer_name', 'amount_usd', 'description'],
+  },
+};
+
 // ─── Connection gap detector (Iris-as-onboarding-concierge) ──────────────
 
 const TOOL_OFFER_MISSING_CONNECTIONS: AnthropicTool = {
@@ -1659,6 +1704,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_OFFER_MISSING_CONNECTIONS);
   tools.push(TOOL_CREATE_PAYMENT_LINK);
   tools.push(TOOL_LIST_RECENT_PAYMENTS);
+  tools.push(TOOL_QBO_OUTSTANDING_AR);
+  tools.push(TOOL_QBO_LIST_UNPAID_INVOICES);
+  tools.push(TOOL_QBO_CREATE_INVOICE);
   tools.push(TOOL_INSTAGRAM_ACTIVITY);
   tools.push(TOOL_PUBLISH_INSTAGRAM_POST);
   tools.push(TOOL_PUBLISH_INSTAGRAM_REEL);
@@ -3166,6 +3214,93 @@ export async function executeTool(
           return { content: `${charges.length} recent charge${charges.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
         } catch (err: any) {
           return { content: `Stripe fetch failed: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'qbo_outstanding_ar': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const qboConn = (connections as any[]).find((c) => c.provider === 'quickbooks' && c.service === 'accounting');
+        if (!qboConn) return { content: "No QuickBooks connected yet. Say 'connect QuickBooks' to set it up.", success: false };
+        const realmId = qboConn.metadata?.realm_id;
+        if (!realmId) return { content: 'QuickBooks connected but realm_id missing — reconnect to fix.', success: false };
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(qboConn.access_token);
+          const ar = await fetchOutstandingAR({ accessToken: token, realmId });
+          if (ar.invoiceCount === 0) return { content: '🎉 No outstanding invoices — everyone is paid up.', success: true };
+          const oldest = ar.oldestDueDate ? ` (oldest due ${ar.oldestDueDate})` : '';
+          return {
+            content: `📊 Outstanding AR: $${ar.totalOwed.toFixed(2)} across ${ar.invoiceCount} unpaid invoice${ar.invoiceCount === 1 ? '' : 's'}${oldest}.\n\nWant me to list them or draft follow-ups for the overdue ones?`,
+            success: true,
+          };
+        } catch (err: any) {
+          return { content: `QuickBooks fetch failed: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'qbo_list_unpaid_invoices': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const qboConn = (connections as any[]).find((c) => c.provider === 'quickbooks' && c.service === 'accounting');
+        if (!qboConn) return { content: "No QuickBooks connected yet.", success: false };
+        const realmId = qboConn.metadata?.realm_id;
+        if (!realmId) return { content: 'QuickBooks realm_id missing — reconnect to fix.', success: false };
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(qboConn.access_token);
+          const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 50) : 10;
+          const invoices = await qboListInvoices({ accessToken: token, realmId, onlyUnpaid: true, limit });
+          if (invoices.length === 0) return { content: 'No unpaid invoices. 💸', success: true };
+          const lines = invoices.map((inv) => {
+            const flag = inv.status === 'overdue' ? '🚨' : inv.status === 'partial' ? '⚠️' : '📄';
+            const due = inv.dueDate ? ` due ${inv.dueDate}` : '';
+            const doc = inv.docNumber ? ` #${inv.docNumber}` : '';
+            return `  ${flag} ${inv.customerName ?? '(no name)'}${doc} — $${inv.balance.toFixed(2)}${due}`;
+          });
+          return { content: `${invoices.length} unpaid invoice${invoices.length === 1 ? '' : 's'}:\n${lines.join('\n')}`, success: true };
+        } catch (err: any) {
+          return { content: `QuickBooks fetch failed: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'qbo_create_invoice': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const qboConn = (connections as any[]).find((c) => c.provider === 'quickbooks' && c.service === 'accounting');
+        if (!qboConn) return { content: "No QuickBooks connected yet.", success: false };
+        const realmId = qboConn.metadata?.realm_id;
+        if (!realmId) return { content: 'QuickBooks realm_id missing — reconnect to fix.', success: false };
+        const customerName = String(call.input.customer_name ?? '').trim();
+        const amount = Number(call.input.amount_usd);
+        const description = String(call.input.description ?? '').trim();
+        if (!customerName || !description || !Number.isFinite(amount) || amount <= 0) {
+          return { content: 'customer_name, amount_usd (positive), and description are required.', success: false };
+        }
+        const customerEmail = call.input.customer_email ? String(call.input.customer_email) : undefined;
+        const dueDate = call.input.due_date ? String(call.input.due_date) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(qboConn.access_token);
+          const customerId = await qboFindOrCreateCustomer({
+            accessToken: token,
+            realmId,
+            name: customerName,
+            email: customerEmail,
+          });
+          if (!customerId) return { content: `Could not find or create customer "${customerName}" in QuickBooks.`, success: false };
+          const invoice = await qboCreateInvoice({
+            accessToken: token,
+            realmId,
+            customerId,
+            amountUsd: amount,
+            description,
+            dueDate,
+          });
+          if (!invoice) return { content: 'Invoice creation failed in QuickBooks.', success: false };
+          return {
+            content: `✓ Invoice ${invoice.docNumber ? `#${invoice.docNumber}` : invoice.id} created in QuickBooks: $${amount.toFixed(2)} to ${customerName}, due ${dueDate}.`,
+            success: true,
+          };
+        } catch (err: any) {
+          return { content: `QuickBooks invoice creation failed: ${err?.message ?? String(err)}`, success: false };
         }
       }
 

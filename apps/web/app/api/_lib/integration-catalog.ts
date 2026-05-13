@@ -168,7 +168,6 @@ export const INTEGRATION_CATALOG: IntegrationDescriptor[] = [
     envVars: ['QUICKBOOKS_CLIENT_ID', 'QUICKBOOKS_CLIENT_SECRET'],
     recommendedFor: ['Legal / Accounting', 'Electrician', 'HVAC / Plumbing', 'Cleaning Service', 'Photography / Video', 'Restaurant', 'Real Estate'],
     costNote: 'QuickBooks Online subscription required ($30+/mo)',
-    hidden: true,
   },
 
   // ─── Marketing + Social ───────────────────────────────────────────────
