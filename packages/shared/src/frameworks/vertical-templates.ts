@@ -66,6 +66,62 @@ export const VIDEO_MARKETING_LOOP_SKILL: VerticalAgentSkill = {
   ],
 };
 
+/** Scheduler-lane standard skill: book a service or appointment. Order:
+ *  1. find_booking_availability — surface open slots from the connected
+ *     booking system (Square / Calendly / Mindbody / managed calendar).
+ *  2. find_calendar_conflicts — make sure the new slot doesn't clash
+ *     with the owner's personal calendar (cross-source check).
+ *  3. schedule_event — create the booking on the source-of-truth system.
+ *  4. record_client_visit — log the visit in client_profiles so the
+ *     agent has memory next time the same client books.
+ *  5. add_or_update_client_profile — capture new contact info if any. */
+export const BOOKING_FLOW_SKILL: VerticalAgentSkill = {
+  id: 'booking_flow',
+  label: 'Book a service or appointment',
+  description:
+    "Find an open time, confirm it doesn't conflict with the owner's calendar, create the booking on the connected booking system, and log the visit + client profile so the agent remembers next time. Always confirm the slot with the requester before calling schedule_event — bookings are hard to undo.",
+  toolFlow: [
+    'find_booking_availability',
+    'find_calendar_conflicts',
+    'schedule_event',
+    'record_client_visit',
+    'add_or_update_client_profile',
+  ],
+};
+
+/** Finance-lane standard skill: send-a-payment-link → reconcile. Order:
+ *  1. create_payment_link — Stripe-hosted, shareable.
+ *  2. send_email or surface link in chat — depending on what the owner
+ *     asked for. (agent chooses contextually; not in the rigid flow)
+ *  3. list_recent_payments — check Stripe Connect for the matching
+ *     charge, mark the visit/invoice paid when it lands. */
+export const PAYMENT_LINK_FLOW_SKILL: VerticalAgentSkill = {
+  id: 'payment_link_flow',
+  label: 'Send a payment link + reconcile',
+  description:
+    "Create a Stripe payment link for an invoice or service charge, share it with the client, and reconcile against incoming charges. ALWAYS quote the amount + currency + what it's for before creating the link — money flows are pending-action safety territory. Surface processor fees so the owner sees the net.",
+  toolFlow: [
+    'create_payment_link',
+    'send_email',
+    'list_recent_payments',
+    'record_client_visit',
+  ],
+};
+
+/** Operations-lane / customer-service standard skill: respond to an IG
+ *  comment or DM with owner approval. Reply text goes through the
+ *  pending-action gate — agent drafts, owner approves, then post. */
+export const SOCIAL_REPLY_SKILL: VerticalAgentSkill = {
+  id: 'social_reply_flow',
+  label: 'Reply to social comments with approval',
+  description:
+    "When a notable comment or DM lands on Instagram, draft a reply in the owner's voice, surface it for explicit approval, then post via Meta. Never auto-post replies that mention pricing, scheduling commitments, or refunds — those always need the owner.",
+  toolFlow: [
+    'instagram_recent_activity',
+    'reply_to_instagram_comment',
+  ],
+};
+
 export interface VerticalTemplate {
   /** Canonical business-type IDs this template applies to */
   matches: string[];

@@ -513,10 +513,12 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
     ? `YOU ARE THE ORCHESTRATOR\nYou span all lanes by design. Your job is to spot work that needs multiple specialists and fan it out. When something needs multi-lane input, populate the "delegations" array (plural) with one entry per lane that should weigh in. When something is straightforward and belongs to a single lane, use "delegate_to_lane" (singular). When you can answer it yourself, do.`
     : `STAY IN YOUR LANE\nYou only own work that fits the category above. If you observe something that belongs to a different lane (sales/marketing/operations/finance/support/technical/etc), set "delegate_to_lane" to that lane and explain in "delegation_reason". Do NOT claim other domains' work. Do NOT use the "delegations" plural array — that's only for the orchestrator.`;
 
-  // Lane-specific template workflows — marketing-lane agents get the canonical
-  // video-reel pipeline pre-baked so they reach for the right tools first.
-  const templateWorkflow = cat.category === 'marketing'
-    ? `\n\nCANONICAL MARKETING WORKFLOW (video reel pipeline):
+  // Lane-specific template workflows — each lane gets canonical tool
+  // sequences baked into the prompt so agents reach for the right tools
+  // in the right order rather than improvising every time.
+  let templateWorkflow = '';
+  if (cat.category === 'marketing') {
+    templateWorkflow = `\n\nCANONICAL MARKETING WORKFLOW (video reel pipeline):
 When the owner asks for marketing content (a reel, video, post about X), follow this sequence:
   1. estimate_video_cost(quality) → surface the cost up front (third-party cost transparency)
   2. Check for a saved style if relevant — list_marketing_styles or use style_name on generate
@@ -535,8 +537,50 @@ PROACTIVE DRAFTS (L3):
 - approve_marketing_draft defaults to preview-only — it generates the video AND sends a WhatsApp preview but does NOT publish until owner replies "publish <id>". Only pass auto_publish=true after the owner has confirmed THIS specific video.
 - If owner asks to change autonomy level, use set_marketing_autonomy. L4 (autonomous publish) requires explicit channels and a daily cap — never enable silently. Always confirm tradeoffs before raising autonomy.
 
-This is the L2 (draft + approve) flow. Never publish without explicit approval. Always quote the AI generation cost before firing generate_marketing_video.`
-    : '';
+PERFORMANCE FEEDBACK LOOP:
+- Use marketing_performance_summary when the owner asks how posts are doing or when picking what to draft next — recent performance informs concept selection.
+
+This is the L2 (draft + approve) flow. Never publish without explicit approval. Always quote the AI generation cost before firing generate_marketing_video.`;
+  } else if (cat.category === 'scheduler') {
+    templateWorkflow = `\n\nCANONICAL SCHEDULER WORKFLOW (booking pipeline):
+When someone wants to book an appointment, service, or class:
+  1. find_booking_availability(date_range) → surface open slots from the connected booking system. If multiple booking systems are connected, prefer the one matching the service.
+  2. find_calendar_conflicts(start, end) → check the slot against the owner's personal calendar BEFORE confirming. Cross-source conflicts are easy to miss.
+  3. Confirm the slot with the requester (or the owner if booking on their behalf). Pending-action safety: NEVER fire schedule_event until the slot is explicitly confirmed in the current conversation.
+  4. schedule_event(slot, customer, service) → create the booking on the source-of-truth system.
+  5. record_client_visit(client, visit_details) + add_or_update_client_profile if new → so the agent has memory next time.
+
+RESCHEDULES + CANCELS:
+- cancel_event before re-booking. Never silently overwrite an existing booking — bookings are hard to undo.
+- When cancelling close to the appointment time, surface a notification so the owner sees the gap and can re-fill it.
+
+CONFLICTS:
+- If find_calendar_conflicts returns anything, surface it FIRST. Don't paper over conflicts — the owner needs to choose.`;
+  } else if (cat.category === 'finance') {
+    templateWorkflow = `\n\nCANONICAL FINANCE WORKFLOW (payment-link pipeline):
+When the owner wants to bill a client or send a payment link:
+  1. Confirm: amount + currency + what it's for + recipient. Money is pending-action safety territory — NEVER call create_payment_link from a vague request.
+  2. create_payment_link(amount, currency, description) → Stripe-hosted, shareable URL.
+  3. Surface the processor fee in the same response so the owner sees the net. Third-party cost transparency rule.
+  4. send_email OR drop the link in chat — depending on whether the owner asked you to email the client or just wants the link.
+  5. list_recent_payments later to reconcile when the charge lands. record_client_visit to mark the invoice paid in the visit log.
+
+REFUNDS + DISPUTES:
+- Refunds and disputes ALWAYS need owner approval. Surface them; don't act.
+
+OVERDUE INVOICES:
+- For unpaid balances, list_recent_payments first to verify nothing came in via another channel. Draft a polite follow-up, surface for owner approval, then send.`;
+  } else if (cat.category === 'customer_service' || cat.category === 'operations') {
+    templateWorkflow = `\n\nCANONICAL CUSTOMER-SERVICE WORKFLOW (reply pipeline):
+When a customer message or social comment needs a response:
+  1. Pull context: list_client_history for known clients, knowledge atoms for prior interactions.
+  2. Draft a reply in the owner's voice. Use list_pending_followups if it ties to an existing thread.
+  3. Pending-action safety: surface the draft, wait for explicit owner approval. NEVER auto-send replies that mention pricing, scheduling commitments, refunds, medical/legal claims, or anything binding.
+  4. After approval: reply_to_instagram_comment (for IG) or send_email (for email threads). approve_followup if it was a queued draft.
+
+ESCALATION:
+- If the message expresses anger, mentions a complaint, or names a competitor, mark it high-severity and surface immediately — don't bury it in the digest.`;
+  }
 
   // Adaptive cadence guidance — agents change tone based on whether the
   // user is engaged right now or sleeping.
