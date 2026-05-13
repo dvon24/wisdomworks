@@ -15,7 +15,12 @@
  */
 
 import { NextResponse } from 'next/server';
-import { getPredictionStatus } from '../../_lib/integrations/replicate-video';
+import {
+  getPredictionStatus,
+  startVideoGeneration,
+  getFallbackModelRef,
+  getQualityTimeoutMinutes,
+} from '../../_lib/integrations/replicate-video';
 import { sendWhatsAppVideo } from '../../_lib/whatsapp-media-send';
 import { recordStyleUsed } from '../../_lib/marketing-styles';
 import { sendOwnerMessage } from '../../_lib/owner-message';
@@ -48,6 +53,7 @@ interface PendingJob {
   started_at: string;
   draft_id: string | null;
   auto_publish: boolean;
+  metadata?: Record<string, unknown>;
 }
 
 export async function GET(request: Request) {
@@ -74,13 +80,52 @@ export async function GET(request: Request) {
     let delivered = 0;
     let failed = 0;
     let timedOut = 0;
+    let fallbackRetried = 0;
     const errors: string[] = [];
 
     for (const job of jobs) {
-      // Timeout check first — if stuck >20min, abandon
+      // Timeout check first — if stuck past timeout_at, abandon OR retry
+      // with a fallback model. For "fast" tier we have an alternate model
+      // configured (seedance → wan-2.1) so we don't waste the owner's
+      // time when the primary model is hung.
       if (Date.now() > new Date(job.timeout_at).getTime()) {
-        await markJob(job.id, { status: 'timed_out', error: 'Stuck pending >20min', completed_at: new Date().toISOString() });
-        await notifyOwner(job, `⏱ Video generation timed out (${job.model_ref}). The model didn't respond in 20 minutes. Try again, or switch quality tiers — "fast" is the most reliable.`);
+        const quality = job.quality as 'fast' | 'standard' | 'premium';
+        const fallbackRef = getFallbackModelRef(quality);
+        const alreadyTriedFallback = !!(job.metadata && (job.metadata as any).fallback_attempted);
+
+        if (fallbackRef && !alreadyTriedFallback) {
+          // Auto-retry with the alt model. Same job row gets re-pointed
+          // at the new prediction_id; metadata records what happened so
+          // a second timeout doesn't loop forever.
+          const retry = await startVideoGeneration({
+            prompt: job.prompt,
+            quality,
+            modelRefOverride: fallbackRef,
+          });
+          if (retry.ok && retry.predictionId) {
+            const newTimeoutAt = new Date(Date.now() + getQualityTimeoutMinutes(quality) * 60_000).toISOString();
+            await markJob(job.id, {
+              prediction_id: retry.predictionId,
+              model_ref: retry.modelRef ?? fallbackRef,
+              timeout_at: newTimeoutAt,
+              metadata: {
+                ...(job.metadata as any ?? {}),
+                fallback_attempted: true,
+                original_prediction_id: job.prediction_id,
+                original_model_ref: job.model_ref,
+              },
+            });
+            await notifyOwner(job, `⏱ ${job.model_ref} hung — auto-retrying with the fallback model (${retry.modelRef}). Should land in another 30-90 seconds.`);
+            fallbackRetried++;
+            continue;
+          }
+          // Fallback start itself failed — fall through to the regular timeout
+          errors.push(`fallback start failed for ${job.id}: ${retry.error}`);
+        }
+
+        const timeoutLabel = job.quality === 'fast' ? '5 minutes' : job.quality === 'standard' ? '8 minutes' : '15 minutes';
+        await markJob(job.id, { status: 'timed_out', error: `Stuck pending >${timeoutLabel}`, completed_at: new Date().toISOString() });
+        await notifyOwner(job, `⏱ Video generation timed out (${job.model_ref}). The model didn't respond in ${timeoutLabel}${alreadyTriedFallback ? ' even after a fallback retry' : ''}. This is usually a Replicate-side capacity issue with that specific model — try again in a few minutes, or use a different quality tier.`);
         timedOut++;
         continue;
       }

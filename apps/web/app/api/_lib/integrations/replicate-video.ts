@@ -27,26 +27,53 @@ interface ModelConfig {
   inputDefaults: Record<string, any>;
 }
 
-const MODELS: Record<'fast' | 'standard' | 'premium', ModelConfig> = {
+interface ModelConfigExt extends ModelConfig {
+  /** How long should the poller wait before marking a job 'timed_out'.
+   *  Should be ~3-4x typical generation time so transient Replicate
+   *  slowness doesn't false-positive into a failure. */
+  timeoutMinutes: number;
+  /** Optional fallback model to retry with if this one times out. */
+  fallbackModelRef?: string;
+}
+
+const MODELS: Record<'fast' | 'standard' | 'premium', ModelConfigExt> = {
   fast: {
     modelRef: 'bytedance/seedance-1-lite',
     defaultDurationSec: 5,
     costPerGenUsd: 0.10,
     inputDefaults: { aspect_ratio: '9:16', resolution: '480p' },
+    timeoutMinutes: 5, // typical 30-60s; 5min gives ~5x headroom
+    fallbackModelRef: 'wan-video/wan-2.1-1.3b', // alt fast text-to-video
   },
   standard: {
     modelRef: 'minimax/video-01',
     defaultDurationSec: 6,
     costPerGenUsd: 0.40,
     inputDefaults: { prompt_optimizer: true },
+    timeoutMinutes: 8, // typical 60-120s
   },
   premium: {
     modelRef: 'google/veo-3',
     defaultDurationSec: 8,
     costPerGenUsd: 1.25,
     inputDefaults: { aspect_ratio: '9:16' },
+    timeoutMinutes: 15, // typical 90-180s
   },
 };
+
+/** Public helper — caller (job insert path) reads this to compute a
+ *  per-quality timeout_at instead of relying on the migration's 20-min
+ *  default which is too generous for the fast tier. */
+export function getQualityTimeoutMinutes(quality: 'fast' | 'standard' | 'premium' = 'fast'): number {
+  return MODELS[quality].timeoutMinutes;
+}
+
+/** The fallback model for a given tier, if any. The poller uses this to
+ *  auto-retry a timed-out job with a different model rather than fail
+ *  outright. Only `fast` has a fallback today (seedance → wan). */
+export function getFallbackModelRef(quality: 'fast' | 'standard' | 'premium' = 'fast'): string | null {
+  return MODELS[quality].fallbackModelRef ?? null;
+}
 
 export interface VideoGenResult {
   ok: boolean;
@@ -180,17 +207,23 @@ export interface StartGenerationResult {
 /**
  * Kick off a Replicate prediction WITHOUT waiting. Returns the
  * prediction id which the poller uses to check status.
+ *
+ * Pass `modelRefOverride` to use a specific model regardless of tier —
+ * the poller uses this to retry a timed-out job with the tier's
+ * fallback model (e.g. seedance hung → retry with wan-2.1).
  */
 export async function startVideoGeneration(input: {
   prompt: string;
   quality?: 'fast' | 'standard' | 'premium';
   durationSec?: number;
   aspectRatio?: '9:16' | '16:9' | '1:1';
+  modelRefOverride?: string;
 }): Promise<StartGenerationResult> {
   const token = process.env.REPLICATE_API_TOKEN;
   if (!token) return { ok: false, error: 'REPLICATE_API_TOKEN not configured' };
   const quality = input.quality ?? 'fast';
   const model = MODELS[quality];
+  const modelRef = input.modelRefOverride ?? model.modelRef;
 
   const modelInput: Record<string, any> = {
     ...model.inputDefaults,
@@ -201,7 +234,7 @@ export async function startVideoGeneration(input: {
 
   try {
     // NO `Prefer: wait` header — fire and return immediately
-    const res = await fetch(`${REPLICATE_API_BASE}/models/${model.modelRef}/predictions`, {
+    const res = await fetch(`${REPLICATE_API_BASE}/models/${modelRef}/predictions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ input: modelInput }),
@@ -214,7 +247,7 @@ export async function startVideoGeneration(input: {
     return {
       ok: true,
       predictionId: prediction.id,
-      modelRef: model.modelRef,
+      modelRef,
       costEstimateUsd: model.costPerGenUsd,
     };
   } catch (err: any) {

@@ -85,7 +85,7 @@ import {
   publishFacebookPagePost,
   replyToInstagramComment,
 } from '../../_lib/integrations/meta-business';
-import { generateVideo, estimateGenerationCost, startVideoGeneration } from '../../_lib/integrations/replicate-video';
+import { generateVideo, estimateGenerationCost, startVideoGeneration, getQualityTimeoutMinutes } from '../../_lib/integrations/replicate-video';
 import { sendWhatsAppVideo, sendWhatsAppImage } from '../../_lib/whatsapp-media-send';
 import {
   saveMarketingStyle,
@@ -3154,11 +3154,14 @@ export async function executeTool(
           return { content: `Video generation failed to start: ${start.error}`, success: false };
         }
 
-        // Persist the job so the poller can pick it up
+        // Persist the job so the poller can pick it up. Per-quality
+        // timeout — fast tier gets 5min not the migration's 20min default
+        // so owners get faster failure feedback when models hang.
         try {
           const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
           const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
           if (supaUrl && supaKey) {
+            const timeoutAt = new Date(Date.now() + getQualityTimeoutMinutes(quality) * 60_000).toISOString();
             await fetch(`${supaUrl}/rest/v1/video_generation_jobs`, {
               method: 'POST',
               headers: {
@@ -3177,6 +3180,7 @@ export async function executeTool(
                 style_id: usedStyle?.id ?? null,
                 style_name: usedStyle?.name ?? null,
                 estimated_cost_usd: start.costEstimateUsd ?? 0,
+                timeout_at: timeoutAt,
               }),
             });
           }
@@ -3355,7 +3359,9 @@ export async function executeTool(
               headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
               body: JSON.stringify({ status: 'approved', approved_at: new Date().toISOString() }),
             });
-            // Insert the video job with draft linkage
+            // Insert the video job with draft linkage. Per-quality
+            // timeout for faster failure feedback than the migration default.
+            const timeoutAt = new Date(Date.now() + getQualityTimeoutMinutes(quality) * 60_000).toISOString();
             await fetch(`${supaUrl}/rest/v1/video_generation_jobs`, {
               method: 'POST',
               headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
@@ -3371,6 +3377,7 @@ export async function executeTool(
                 estimated_cost_usd: start.costEstimateUsd ?? 0,
                 draft_id: fullId,
                 auto_publish: autoPublish,
+                timeout_at: timeoutAt,
               }),
             });
           }
