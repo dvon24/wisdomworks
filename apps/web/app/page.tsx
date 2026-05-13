@@ -1251,11 +1251,11 @@ export default function CommandDeck() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
                 {(() => {
                   const renderProviderCard = (
-                    provider: 'yahoo' | 'apple' | 'google' | 'microsoft' | 'square' | 'calendly' | 'mindbody' | 'stripe',
+                    provider: 'yahoo' | 'apple' | 'google' | 'microsoft' | 'square' | 'calendly' | 'mindbody' | 'stripe' | 'meta',
                     label: string,
                     icon: string,
                     sub: string,
-                    service: 'email' | 'calendar' | 'booking' | 'payments',
+                    service: 'email' | 'calendar' | 'booking' | 'payments' | 'instagram',
                     onClick: () => void,
                     isLink?: string,
                   ) => {
@@ -1300,6 +1300,7 @@ export default function CommandDeck() {
                       {renderProviderCard('calendly', 'Calendly', '🔵', 'Pulls invitee roster + scheduled events.', 'booking', () => {}, phoneNumber ? `${oauthBase}/api/oauth/calendly?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                       {renderProviderCard('mindbody', 'Mindbody', '🟢', 'Fitness/spa: client roster + class history.', 'booking', () => {}, phoneNumber ? `${oauthBase}/api/oauth/mindbody?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                       {renderProviderCard('stripe', 'Stripe', '💳', 'Payments + invoicing — 2.9% + $0.30 per transaction.', 'payments', () => {}, phoneNumber ? `${oauthBase}/api/oauth/stripe?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                      {renderProviderCard('meta', 'Instagram + Facebook', '📸', 'Posts, comments, leads. One-click OAuth via Meta Business.', 'instagram', () => {}, phoneNumber ? `${(process.env.NEXT_PUBLIC_WEBSITE_URL || oauthBase)}/api/oauth/meta?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                     </>
                   );
                 })()}

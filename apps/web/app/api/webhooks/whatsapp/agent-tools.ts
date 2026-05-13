@@ -72,6 +72,11 @@ import {
   fetchStripeAccount,
 } from '../../_lib/integrations/stripe-connect';
 import {
+  summarizeInstagramActivity,
+  publishInstagramPhoto,
+  replyToInstagramComment,
+} from '../../_lib/integrations/meta-business';
+import {
   loadActiveConnections,
   loadLatestSnapshot,
   fetchGitHubCommits,
@@ -623,6 +628,44 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   description:
     "Generate a magic-link URL the owner can tap to sign into the Command Deck on their phone or laptop. Use when the owner says 'send me a login link', 'log me in to the deck', 'I need to sign in', or whenever they want to view the dashboard. Returns a fully-formed URL valid for 30 days that, when clicked, sets a secure session cookie. NEVER paste deck URLs that lack a token — the deck refuses unauthenticated access.",
   input_schema: { type: 'object', properties: {} },
+};
+
+// ─── Meta Business (Instagram + Facebook) ────────────────────────────────
+
+const TOOL_INSTAGRAM_ACTIVITY: AnthropicTool = {
+  name: 'instagram_recent_activity',
+  description:
+    "Pull the owner's last 6 Instagram posts with like/comment counts + the latest comment per post. Use when owner asks 'how's instagram doing', 'any new comments', 'what's the engagement on my recent posts', 'check IG'. Requires Meta Business connected.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_PUBLISH_INSTAGRAM_POST: AnthropicTool = {
+  name: 'publish_instagram_post',
+  description:
+    "Publish a photo to the owner's Instagram. NEVER call without explicit owner approval of THIS specific caption + image (pending-action safety rule applies). Image must be a public HTTPS URL. After approval, hits Meta Graph API two-step: create container → publish. Returns the new post id and permalink.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      image_url: { type: 'string', description: 'Public HTTPS URL of the image to post.' },
+      caption: { type: 'string', description: 'Caption (max 2200 chars). Include hashtags inline.' },
+    },
+    required: ['image_url', 'caption'],
+  },
+};
+
+const TOOL_REPLY_INSTAGRAM_COMMENT: AnthropicTool = {
+  name: 'reply_to_instagram_comment',
+  description:
+    "Reply to a specific Instagram comment. NEVER call without explicit owner approval of THIS specific reply (pending-action rule). Use after instagram_recent_activity surfaces a comment worth responding to.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      media_id: { type: 'string', description: 'The Instagram post id (from instagram_recent_activity).' },
+      comment_id: { type: 'string', description: 'The parent comment id to reply to.' },
+      message: { type: 'string', description: 'Reply text.' },
+    },
+    required: ['media_id', 'comment_id', 'message'],
+  },
 };
 
 // ─── Stripe Connect (payments) ────────────────────────────────────────────
@@ -1382,6 +1425,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_OFFER_MISSING_CONNECTIONS);
   tools.push(TOOL_CREATE_PAYMENT_LINK);
   tools.push(TOOL_LIST_RECENT_PAYMENTS);
+  tools.push(TOOL_INSTAGRAM_ACTIVITY);
+  tools.push(TOOL_PUBLISH_INSTAGRAM_POST);
+  tools.push(TOOL_REPLY_INSTAGRAM_COMMENT);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2369,6 +2415,74 @@ export async function executeTool(
         const ok = await cancelManagedEvent(eventId, cleanPhone);
         if (!ok) return { content: 'Could not cancel the event.', success: false };
         return { content: '✓ Cancelled.', success: true };
+      }
+
+      case 'instagram_recent_activity': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const igConn = (connections as any[]).find((c) => c.provider === 'meta' && c.service === 'instagram');
+        if (!igConn) {
+          return { content: "No Instagram connected yet. Say 'connect Instagram' for the one-tap link.", success: false };
+        }
+        const igAccountId = igConn.metadata?.instagram_account_id;
+        if (!igAccountId) {
+          return { content: 'Meta connected but no Instagram Business Account linked to your Facebook Page. Set that up at business.facebook.com.', success: false };
+        }
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(igConn.access_token);
+          const summary = await summarizeInstagramActivity({ accessToken: token, igAccountId });
+          if (summary.posts.length === 0) return { content: 'No recent Instagram posts.', success: true };
+          const lines = summary.posts.map((p, i) => {
+            const cap = p.caption ? `"${p.caption.slice(0, 80)}"` : '(no caption)';
+            const cmt = p.latestComment
+              ? `\n     💬 @${p.latestComment.username}: "${(p.latestComment.text ?? '').slice(0, 100)}"`
+              : '';
+            return `  ${i + 1}. ${cap}\n     ❤️ ${p.likeCount}  💬 ${p.commentsCount}${cmt}`;
+          });
+          return { content: `Recent IG activity:\n${lines.join('\n')}`, success: true };
+        } catch (err: any) {
+          return { content: `IG fetch failed: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'publish_instagram_post': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const imageUrl = String(call.input.image_url ?? '').trim();
+        const caption = String(call.input.caption ?? '').trim();
+        if (!imageUrl || !caption) return { content: 'image_url and caption required.', success: false };
+        if (!imageUrl.startsWith('https://')) return { content: 'image_url must be HTTPS.', success: false };
+        const igConn = (connections as any[]).find((c) => c.provider === 'meta' && c.service === 'instagram');
+        if (!igConn) return { content: "No Instagram connected yet.", success: false };
+        const igAccountId = igConn.metadata?.instagram_account_id;
+        if (!igAccountId) return { content: 'No Instagram Business Account linked to your Page.', success: false };
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(igConn.access_token);
+          const result = await publishInstagramPhoto({ accessToken: token, igAccountId, imageUrl, caption });
+          if (!result.ok) return { content: `Publish failed: ${result.error}`, success: false };
+          return { content: `✓ Posted to Instagram. Post id: ${result.postId}`, success: true };
+        } catch (err: any) {
+          return { content: `IG publish failed: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'reply_to_instagram_comment': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const mediaId = String(call.input.media_id ?? '').trim();
+        const commentId = String(call.input.comment_id ?? '').trim();
+        const message = String(call.input.message ?? '').trim();
+        if (!mediaId || !commentId || !message) return { content: 'media_id, comment_id, and message required.', success: false };
+        const igConn = (connections as any[]).find((c) => c.provider === 'meta' && c.service === 'instagram');
+        if (!igConn) return { content: "No Instagram connected yet.", success: false };
+        try {
+          const { decryptToken } = await import('@wisdomworks/shared');
+          const token = await decryptToken(igConn.access_token);
+          const result = await replyToInstagramComment({ accessToken: token, igMediaId: mediaId, parentCommentId: commentId, message });
+          if (!result.ok) return { content: `Reply failed: ${result.error}`, success: false };
+          return { content: `✓ Replied. New comment id: ${result.commentId}`, success: true };
+        } catch (err: any) {
+          return { content: `IG reply failed: ${err?.message ?? String(err)}`, success: false };
+        }
       }
 
       case 'create_payment_link': {
