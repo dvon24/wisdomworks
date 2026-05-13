@@ -69,6 +69,26 @@ export async function markEmailRead(
   return { success: false, error: `markRead not supported for provider: ${conn.provider}` };
 }
 
+// ─── Engagement signal (Story 2.16 Phase 2c) ────────────────────────────
+
+/**
+ * Cheap read-state check used by the engagement-poll cron. Returns the
+ * current isRead status of an email. Yahoo/IMAP routes to the local
+ * runtime via the apps/web caller.
+ */
+export async function getEmailReadState(
+  conn: OAuthConnection,
+  messageId: string,
+): Promise<IntegrationResult<{ isRead: boolean } | null>> {
+  const ctx = { accessToken: conn.access_token, metadata: conn.metadata };
+  if (conn.provider === 'google') return gmail.getMessageReadState(ctx, messageId);
+  if (conn.provider === 'microsoft') return ms.getMessageReadState(ctx, messageId);
+  if (conn.provider === 'yahoo' || conn.provider === 'imap') {
+    return { success: false, error: 'IMAP read state must be checked via app-local runtime' };
+  }
+  return { success: false, error: `Engagement signal not supported for ${conn.provider}` };
+}
+
 // ─── Attachments (Story 2.16 Phase 2b) ───────────────────────────────────
 
 /**

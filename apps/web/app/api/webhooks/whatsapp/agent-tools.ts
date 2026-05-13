@@ -1632,6 +1632,15 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2.16 Phase 2c — Email engagement summary ──────────────────────
+
+const TOOL_SHOW_EMAIL_ENGAGEMENT: AnthropicTool = {
+  name: 'show_email_engagement',
+  description:
+    "Show the owner their email engagement patterns — which senders they reliably open vs ignore. The classifier already uses this signal silently to bias toward business mail from high-engagement senders, but the owner may want to see the data. Returns top 10 engaged + top 10 ignored senders by 90-day open rate. Use when owner asks 'which emails do I open', 'who am I ignoring', 'show my engagement', 'who are my high-engagement senders'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 // ─── Story 2.16 Phase 2b — Analyze email attachment (capability-on-demand) ──
 
 const TOOL_ANALYZE_EMAIL_ATTACHMENT: AnthropicTool = {
@@ -1970,6 +1979,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_BUSINESS_TYPE_DICTIONARY);
   tools.push(TOOL_RECALL_DOCUMENTS);
   tools.push(TOOL_ANALYZE_EMAIL_ATTACHMENT);
+  tools.push(TOOL_SHOW_EMAIL_ENGAGEMENT);
   tools.push(TOOL_CHECK_VIDEO_JOBS);
 
   return tools;
@@ -5130,6 +5140,42 @@ export async function executeTool(
         } catch (err: any) {
           return { content: `Job status check failed: ${err?.message ?? String(err)}`, success: false };
         }
+      }
+
+      case 'show_email_engagement': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const { getEngagementBySender } = await import('../../_lib/email-engagement');
+        const senders = await getEngagementBySender(cleanPhone, { windowDays: 90, limit: 50, minTotal: 3 });
+        if (senders.length === 0) {
+          return {
+            content: 'No engagement data yet. I need at least 3 emails from a sender in the last 90 days before I can compute a meaningful open rate. Check back after the email-engagement-poll has run a few times.',
+            success: true,
+          };
+        }
+        const engaged = senders
+          .filter((s) => s.openRate >= 0.7 && s.total >= 5)
+          .sort((a, b) => b.openRate - a.openRate || b.total - a.total)
+          .slice(0, 10);
+        const ignored = senders
+          .filter((s) => s.openRate <= 0.2 && s.total >= 5)
+          .sort((a, b) => a.openRate - b.openRate || b.total - a.total)
+          .slice(0, 10);
+        const lines: string[] = [`📊 Email engagement (last 90 days, ${senders.length} senders with ≥3 emails):`];
+        if (engaged.length > 0) {
+          lines.push('', '✓ You reliably open:');
+          for (const s of engaged) lines.push(`   ${s.sender} — ${Math.round(s.openRate * 100)}% open (${s.total} emails)`);
+        }
+        if (ignored.length > 0) {
+          lines.push('', '✗ You reliably ignore:');
+          for (const s of ignored) lines.push(`   ${s.sender} — ${Math.round(s.openRate * 100)}% open (${s.total} emails)`);
+        }
+        if (engaged.length === 0 && ignored.length === 0) {
+          lines.push('', "No strong signals yet. Most senders are in the middle (20-70% open rate).");
+        } else {
+          lines.push('', "The classifier silently uses these to bias future emails. No action needed from you.");
+        }
+        return { content: lines.join('\n'), success: true };
       }
 
       case 'analyze_email_attachment': {

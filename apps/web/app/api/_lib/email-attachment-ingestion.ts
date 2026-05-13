@@ -218,6 +218,67 @@ export async function analyzeEmailAttachment(input: {
   };
 }
 
+/**
+ * Surface-time attachment analysis. Used by email-sift when Iris has
+ * already decided to surface an email to the owner (urgent /
+ * needs_response classification). For each such email with attachments,
+ * we pull the PDFs and include the analyses in the surfacing context
+ * so Iris's digest can carry the doc summary alongside the email summary.
+ *
+ * Devon's rule: surfacing IS the consent signal. Skip surfacing → skip
+ * attachment fetch. Only PDFs are analyzed (other formats stored but
+ * not enriched into the digest).
+ *
+ * Returns a map: email_id → analyses (array, may be multiple PDFs per email).
+ */
+export async function analyzeAttachmentsForSurfacedEmails(input: {
+  conn: OAuthConnection & { phone_number: string };
+  surfacedEmailIds: string[];
+  originalEmails: EmailMessage[];
+}): Promise<Map<string, Array<{ filename: string; analysis: DocumentAnalysis }>>> {
+  const results = new Map<string, Array<{ filename: string; analysis: DocumentAnalysis }>>();
+  if (input.surfacedEmailIds.length === 0) return results;
+  const surfaced = new Set(input.surfacedEmailIds);
+
+  for (const email of input.originalEmails) {
+    if (!surfaced.has(email.id) || !email.hasAttachments) continue;
+
+    // Get attachment refs — IMAP path has them inline from listImapUnread,
+    // Gmail/Outlook need a follow-up listEmailAttachments call.
+    let refs = email.attachments ?? [];
+    if (refs.length === 0 && (input.conn.provider === 'google' || input.conn.provider === 'microsoft')) {
+      const listed = await listEmailAttachments(input.conn, email.id);
+      if (listed.success && listed.data) refs = listed.data;
+    }
+
+    // Only analyze PDFs at surface-time — other formats are noise (signatures,
+    // calendar invites, logos). Owner can ask later via analyze_email_attachment
+    // tool if they want something else.
+    const pdfRefs = refs.filter(
+      (r) =>
+        r.mimeType.toLowerCase().includes('pdf') ||
+        r.filename.toLowerCase().endsWith('.pdf'),
+    );
+    if (pdfRefs.length === 0) continue;
+
+    const emailAnalyses: Array<{ filename: string; analysis: DocumentAnalysis }> = [];
+    for (const ref of pdfRefs.slice(0, 3)) {
+      // Reuse the single-attachment path with the filename hint set so
+      // listing/fetching converges on the exact ref.
+      const r = await analyzeEmailAttachment({
+        conn: input.conn,
+        emailId: email.id,
+        filenameHint: ref.filename,
+      });
+      if (r.ok && r.analysis) {
+        emailAnalyses.push({ filename: r.filename ?? ref.filename, analysis: r.analysis });
+      }
+    }
+    if (emailAnalyses.length > 0) results.set(email.id, emailAnalyses);
+  }
+  return results;
+}
+
 /** Provider-routed attachment fetch (internal). */
 async function fetchAttachmentForProvider(input: {
   conn: OAuthConnection & { phone_number: string };

@@ -133,6 +133,54 @@ interface ImapAttachmentMeta {
  *
  * Returns the attachment bytes + the matched filename/contentType.
  */
+/**
+ * Read-state check for Phase 2c engagement polling — batches multiple
+ * uids in one IMAP connection. Returns a Map<uid, isRead>. Yahoo's
+ * \Seen flag is the engagement signal — set when the owner opens the
+ * email (or marks it read).
+ *
+ * Designed for the engagement-poll cron which checks dozens of recent
+ * messages per tick. Single connection + multi-fetch keeps it cheap.
+ */
+export async function checkImapReadStates(
+  conn: ImapConnection,
+  uids: string[],
+): Promise<{ success: boolean; data?: Map<string, boolean>; error?: string }> {
+  if (!conn.account_email) return { success: false, error: 'IMAP connection missing account email' };
+  if (uids.length === 0) return { success: true, data: new Map() };
+
+  let ImapFlow: any;
+  try {
+    ImapFlow = await loadImapFlow();
+    if (!ImapFlow) return { success: false, error: 'imapflow not available' };
+  } catch (err: any) {
+    return { success: false, error: `imap load failed: ${err?.message ?? err}` };
+  }
+
+  const out = new Map<string, boolean>();
+  const client = makeClient(ImapFlow, conn);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      const numeric = uids.map((u) => Number(u)).filter((u) => Number.isFinite(u));
+      // imapflow fetch by UID — flags only, no source
+      for await (const msg of client.fetch(numeric, { flags: true, uid: true })) {
+        const flags: Set<string> | undefined = msg.flags;
+        const seen = !!flags && (flags.has('\\Seen') || flags.has('\\\\Seen'));
+        out.set(String(msg.uid), seen);
+      }
+      return { success: true, data: out };
+    } finally {
+      lock.release();
+    }
+  } catch (err: any) {
+    return { success: false, error: `IMAP flag fetch failed: ${imapErrorDetail(err)}` };
+  } finally {
+    try { await client.logout(); } catch {}
+  }
+}
+
 export async function fetchImapAttachment(
   conn: ImapConnection,
   uid: string,

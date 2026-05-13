@@ -135,6 +135,26 @@ export async function markAsRead(
   }
 }
 
+/** Read-state check — for Phase 2c engagement polling. Cheap (single
+ *  $select=isRead query). Returns null if the message no longer exists
+ *  (deleted from inbox). */
+export async function getMessageReadState(
+  ctx: IntegrationContext,
+  messageId: string,
+): Promise<IntegrationResult<{ isRead: boolean } | null>> {
+  try {
+    const res = await fetch(`${GRAPH_BASE}/me/messages/${messageId}?$select=isRead`, {
+      headers: { Authorization: `Bearer ${ctx.accessToken}` },
+    });
+    if (res.status === 404) return { success: true, data: null };
+    if (!res.ok) return { success: false, error: `Graph readState failed: ${res.status}` };
+    const data = await res.json();
+    return { success: true, data: { isRead: !!data.isRead } };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
 // ─── Attachments ───
 
 /** List attachment metadata for a message. Lightweight — just names + sizes. */

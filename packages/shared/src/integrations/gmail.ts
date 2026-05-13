@@ -227,6 +227,28 @@ export async function markAsRead(
   }
 }
 
+/** Read-state check — for Phase 2c engagement polling. Gmail tracks read
+ *  via the UNREAD label. Cheap (just label list). Returns null if the
+ *  message no longer exists (deleted/expunged). */
+export async function getMessageReadState(
+  ctx: IntegrationContext,
+  messageId: string,
+): Promise<IntegrationResult<{ isRead: boolean } | null>> {
+  try {
+    const res = await fetch(
+      `${GMAIL_BASE}/messages/${messageId}?format=minimal&fields=labelIds`,
+      { headers: { Authorization: `Bearer ${ctx.accessToken}` } },
+    );
+    if (res.status === 404) return { success: true, data: null };
+    if (!res.ok) return { success: false, error: `Gmail readState failed: ${res.status}` };
+    const data = await res.json();
+    const labels: string[] = Array.isArray(data.labelIds) ? data.labelIds : [];
+    return { success: true, data: { isRead: !labels.includes('UNREAD') } };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
 // ─── Attachments ───────────────────────────────────────────────────────────
 
 interface GmailPart {

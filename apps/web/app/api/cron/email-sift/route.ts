@@ -15,6 +15,7 @@ import { NextResponse } from 'next/server';
 import { listEmails, decryptToken, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
 import { listImapUnread } from '../../_lib/imap-runtime';
 import { logSample, buildFewShotExamples, buildProfessionalContext } from '../../_lib/classification-learning';
+import { recordClassifiedForEngagement, buildEngagementContext } from '../../_lib/email-engagement';
 import { getTopContacts, renderTrustedContactsForClassifier } from '../../_lib/email-intelligence';
 
 export const dynamic = 'force-dynamic';
@@ -152,9 +153,32 @@ async function processCustomer(
   const personalCount = processed.filter((e) => e.privacyClass === 'personal').length;
   const uncertainCount = processed.filter((e) => e.privacyClass === 'uncertain').length;
 
+  // Surface-time attachment analysis — Devon's rule
+  // (feedback_attachment_consent.md): when Iris is bringing an email to
+  // the owner's attention, that's the consent signal. Pull the PDF
+  // attachments for actionable emails and weave the analyses into the
+  // notification + draft so the owner sees the doc context inline.
+  let surfaceAttachments: Map<string, Array<{ filename: string; analysis: any }>> | undefined;
   if (actionable.length > 0) {
-    await sendEmailSummary(conn.phone_number, actionable);
-    await storePendingDrafts(conn.phone_number, actionable);
+    const actionableIds = new Set(actionable.map((e) => e.id));
+    const hasSurfacedAttachments = emails.some((e) => actionableIds.has(e.id) && e.hasAttachments);
+    if (hasSurfacedAttachments) {
+      try {
+        const { analyzeAttachmentsForSurfacedEmails } = await import('../../_lib/email-attachment-ingestion');
+        surfaceAttachments = await analyzeAttachmentsForSurfacedEmails({
+          conn: { ...decrypted, phone_number: conn.phone_number },
+          surfacedEmailIds: Array.from(actionableIds),
+          originalEmails: emails,
+        });
+        if (surfaceAttachments.size > 0) {
+          console.log(`[email-sift] surface attachments analyzed for ${conn.phone_number}: ${surfaceAttachments.size} email${surfaceAttachments.size === 1 ? '' : 's'}`);
+        }
+      } catch (err) {
+        console.warn('[email-sift] surface attachment analysis failed (non-blocking):', err);
+      }
+    }
+    await sendEmailSummary(conn.phone_number, actionable, surfaceAttachments);
+    await storePendingDrafts(conn.phone_number, actionable, surfaceAttachments);
   }
 
   // Story 2.2 + 2.3 — log this batch as a 'signal' run with privacy counts.
@@ -164,6 +188,24 @@ async function processCustomer(
   // future agent prompts know about the people, projects, and tasks
   // mentioned. Personal/uncertain mail never reaches this step.
   await mapExtractionsToOntology(conn.phone_number, businessOnly);
+
+  // Phase 2c — seed engagement tracking rows for ALL classified emails
+  // (not just business). We want the open-rate signal across the whole
+  // inbox so the classifier learns which senders the owner reliably
+  // engages with vs ignores. The engagement-poll cron flips
+  // currently_unread → false when the owner reads them.
+  try {
+    const seeded = await recordClassifiedForEngagement({
+      tenantPhone: conn.phone_number,
+      provider: decrypted.provider,
+      emails: emails.map((e) => ({ id: e.id, from: e.from, subject: e.subject, date: e.date, isUnread: e.isUnread })),
+    });
+    if (seeded > 0) {
+      console.log(`[email-sift] engagement tracking seeded for ${conn.phone_number}: ${seeded}`);
+    }
+  } catch (err) {
+    console.warn('[email-sift] engagement seed failed (non-blocking):', err);
+  }
 
   // Story 2.16 Phase 2a — email data capture framework. Folds the same
   // extracted entities into knowledge_atoms (fast in-prompt context),
@@ -327,6 +369,10 @@ async function classifyAndDraft(emails: EmailMessage[], tenantPhone?: string): P
   // FR102 — professional context atoms so the classifier knows the user's
   // role / focus / responsibilities when disambiguating
   const profContext = tenantPhone ? await buildProfessionalContext(tenantPhone) : '';
+  // Phase 2c — sender engagement context. Senders the owner reliably
+  // opens get classified toward business; senders they ignore drift
+  // toward spam. Passive learning, no notifications.
+  const engagementContext = tenantPhone ? await buildEngagementContext(tenantPhone) : '';
   // Email intelligence — trusted senders bias classification toward business
   // and away from spam, even when subject lines look promotional.
   const trustedContacts = tenantPhone ? await getTopContacts(tenantPhone, 30) : [];
@@ -414,7 +460,7 @@ LANE ROUTING (which agent handles this on the tenant's team):
 - orchestrator: anything addressed personally to the owner that needs their attention (most personal-tinged business mail)
 - specialist: anything else / vertical-specific that doesn't fit cleanly above
 
-For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's eyes only).${profContext}${trustBlock}`,
+For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's eyes only).${profContext}${engagementContext}${trustBlock}`,
             cache_control: { type: 'ephemeral' },
           },
         ],
@@ -487,7 +533,11 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
   }
 }
 
-async function sendEmailSummary(phoneNumber: string, emails: EmailSummary[]): Promise<void> {
+async function sendEmailSummary(
+  phoneNumber: string,
+  emails: EmailSummary[],
+  attachmentAnalyses?: Map<string, Array<{ filename: string; analysis: any }>>,
+): Promise<void> {
   // Enqueue ONE notification per email (or one summary if there are many)
   // so the next scheduled digest bundles them together. No more individual
   // texts each time email-sift runs.
@@ -497,15 +547,29 @@ async function sendEmailSummary(phoneNumber: string, emails: EmailSummary[]): Pr
   if (emails.length <= 3) {
     for (const e of emails) {
       const sev = e.classification === 'urgent' ? 'high' : 'medium';
+      // Surface-time attachment analysis — if the email has PDFs and
+      // Iris already decided to surface it (urgent / needs_response),
+      // include a one-line attachment summary so the owner sees the
+      // doc context in the same notification.
+      const analyses = attachmentAnalyses?.get(e.id) ?? [];
+      const attachmentLine = analyses.length > 0
+        ? `\n📎 ${analyses.map((a) => `${a.filename}: ${(a.analysis?.summary ?? '').slice(0, 140)}`).join('; ')}`
+        : '';
       await enqueueNotification({
         tenantPhone: cleanPhone,
         kind: 'email_attention',
         severity: sev,
         title: `${e.classification === 'urgent' ? 'Urgent email' : 'Email needs reply'} from ${e.from}`,
-        body: `Subject: ${e.subject}${e.draftReply ? ` — draft ready: "${e.draftReply.slice(0, 80)}${e.draftReply.length > 80 ? '...' : ''}"` : ''}`,
+        body: `Subject: ${e.subject}${e.draftReply ? ` — draft ready: "${e.draftReply.slice(0, 80)}${e.draftReply.length > 80 ? '...' : ''}"` : ''}${attachmentLine}`,
         sourceAgent: 'email-sift',
         sourceId: e.id,
-        metadata: { from: e.from, subject: e.subject, has_draft: !!e.draftReply },
+        metadata: {
+          from: e.from,
+          subject: e.subject,
+          has_draft: !!e.draftReply,
+          attachment_count: analyses.length,
+          attachment_summaries: analyses.map((a) => ({ filename: a.filename, summary: a.analysis?.summary })),
+        },
       });
     }
   } else {
@@ -524,7 +588,11 @@ async function sendEmailSummary(phoneNumber: string, emails: EmailSummary[]): Pr
   }
 }
 
-async function storePendingDrafts(phoneNumber: string, emails: EmailSummary[]): Promise<void> {
+async function storePendingDrafts(
+  phoneNumber: string,
+  emails: EmailSummary[],
+  attachmentAnalyses?: Map<string, Array<{ filename: string; analysis: any }>>,
+): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return;
 
   const cleanPhone = phoneNumber.replace(/[\s\-\+\(\)]/g, '');
@@ -543,14 +611,23 @@ async function storePendingDrafts(phoneNumber: string, emails: EmailSummary[]): 
   if (!rows.length) return;
 
   const profile = rows[0].profile ?? { preferences: {}, activeTopics: [] };
-  profile.pendingEmailDrafts = emails.map((e) => ({
-    id: e.id,
-    from: e.from,
-    subject: e.subject,
-    draftReply: e.draftReply,
-    classification: e.classification,
-    lane: e.lane ?? 'orchestrator',
-  }));
+  profile.pendingEmailDrafts = emails.map((e) => {
+    const analyses = attachmentAnalyses?.get(e.id) ?? [];
+    return {
+      id: e.id,
+      from: e.from,
+      subject: e.subject,
+      draftReply: e.draftReply,
+      classification: e.classification,
+      lane: e.lane ?? 'orchestrator',
+      attachmentAnalyses: analyses.length > 0 ? analyses.map((a) => ({
+        filename: a.filename,
+        summary: a.analysis?.summary,
+        keyDates: a.analysis?.keyDates,
+        risks: a.analysis?.risks,
+      })) : undefined,
+    };
+  });
 
   await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
     method: 'PATCH',

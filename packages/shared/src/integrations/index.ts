@@ -21,6 +21,7 @@ export {
   markEmailRead,
   listEmailAttachments,
   fetchEmailAttachment,
+  getEmailReadState,
   listCalendarEvents,
   createCalendarEvent,
   updateCalendarEvent,
