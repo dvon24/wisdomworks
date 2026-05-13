@@ -384,6 +384,30 @@ export async function runDraftDetector(tenantPhone: string): Promise<{
   return { proposed: count };
 }
 
+/**
+ * Pull the owner's last N captions that they approved or published — these
+ * are the canonical "owner voice" examples. Used to anchor concept-gen
+ * to their actual tone instead of generic AI phrasing. Falls back to []
+ * for new tenants so first-time draft-gen still works.
+ */
+async function loadRecentApprovedCaptions(tenantPhone: string, limit: number): Promise<string[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/marketing_drafts?tenant_phone=eq.${cleanPhone}&status=in.(approved,published)&order=approved_at.desc.nullslast,proposed_at.desc&limit=${limit}&select=caption`,
+      { headers: headers() },
+    );
+    if (!res.ok) return [];
+    const rows = (await res.json()) as { caption: string }[];
+    return rows
+      .map((r) => (r.caption ?? '').slice(0, 400))
+      .filter((c) => c.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 interface ConceptSeed {
   topic: string;
   caption: string;
@@ -432,7 +456,14 @@ async function generateDraftConcepts(tenantPhone: string): Promise<ConceptSeed[]
     }
   } catch {}
 
-  const system = `You are the marketing strategist for ${businessName} (${vertical}). Propose 1-2 short-form video concepts (Instagram Reel, 5-8s) that the owner could publish this week. Each concept must be grounded in something concrete about the business — current promotions, recent reviews, services they offer, seasonal context. Avoid generic "engagement bait."
+  // Voice learning — pull the last 5 captions the owner approved or
+  // published so Sonnet matches their tone instead of inventing one.
+  const approvedCaptions = await loadRecentApprovedCaptions(cleanPhone, 5);
+  const voiceBlock = approvedCaptions.length > 0
+    ? `\n\nOWNER'S VOICE (recent approved captions — match this tone exactly):\n${approvedCaptions.map((c, i) => `Example ${i + 1}: "${c}"`).join('\n')}`
+    : '';
+
+  const system = `You are the marketing strategist for ${businessName} (${vertical}). Propose 1-2 short-form video concepts (Instagram Reel, 5-8s) that the owner could publish this week. Each concept must be grounded in something concrete about the business — current promotions, recent reviews, services they offer, seasonal context. Avoid generic "engagement bait."${voiceBlock}
 
 Output STRICT JSON:
 {
