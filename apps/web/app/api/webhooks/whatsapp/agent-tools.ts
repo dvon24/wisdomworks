@@ -1632,6 +1632,20 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Video job status / debugging ────────────────────────────────────────
+
+const TOOL_CHECK_VIDEO_JOBS: AnthropicTool = {
+  name: 'check_video_jobs',
+  description:
+    "Diagnose video generation status. Returns the owner's recent video_generation_jobs rows: prediction_id, status (pending/succeeded/failed/timed_out/delivered), elapsed time, model, and error if any. Use when owner says 'where's my video', 'what happened to that reel', 'video never came', 'check on the generation'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Default 5.' },
+    },
+  },
+};
+
 // ─── Story 2.16 — Recall analyzed documents ──────────────────────────────
 
 const TOOL_RECALL_DOCUMENTS: AnthropicTool = {
@@ -1939,6 +1953,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_RESOLVE_LESSON);
   tools.push(TOOL_BUSINESS_TYPE_DICTIONARY);
   tools.push(TOOL_RECALL_DOCUMENTS);
+  tools.push(TOOL_CHECK_VIDEO_JOBS);
 
   return tools;
 }
@@ -5039,6 +5054,58 @@ export async function executeTool(
           content: `${snaps.length} recent snapshot${snaps.length === 1 ? '' : 's'}:\n${lines.join('\n')}\n\nTo roll back, say "roll back to snap <id>" or "undo that send_email".`,
           success: true,
         };
+      }
+
+      case 'check_video_jobs': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 20) : 5;
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!supaUrl || !supaKey) return { content: 'Supabase not configured.', success: false };
+        try {
+          const res = await fetch(
+            `${supaUrl}/rest/v1/video_generation_jobs?tenant_phone=eq.${cleanPhone}&order=started_at.desc&limit=${limit}&select=id,prediction_id,model_ref,quality,status,started_at,completed_at,delivered_at,error,video_url,draft_id`,
+            { headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` } },
+          );
+          if (!res.ok) {
+            // Table missing = migration not run yet
+            if (res.status === 404 || res.status === 400) {
+              return {
+                content: 'video_generation_jobs table not found. The migration db/migrations/2026-05-13c-video-generation-jobs.sql may not have been run in Supabase yet. Without it, generation jobs can\'t be tracked.',
+                success: false,
+              };
+            }
+            return { content: `Job fetch failed: ${res.status} ${await res.text()}`, success: false };
+          }
+          const jobs = await res.json();
+          if (jobs.length === 0) {
+            return {
+              content: 'No video generation jobs in your history. Either no generations have been started, or the generation tool failed to insert the job row (check Vercel logs for [generate_marketing_video] job insert failed).',
+              success: true,
+            };
+          }
+          const now = Date.now();
+          const lines = jobs.map((j: any, i: number) => {
+            const elapsedSec = Math.round((now - new Date(j.started_at).getTime()) / 1000);
+            const elapsedLabel = elapsedSec < 90 ? `${elapsedSec}s ago` : `${Math.round(elapsedSec / 60)}m ago`;
+            const statusFlag = j.status === 'delivered' ? '✅'
+              : j.status === 'succeeded' ? '🟡 (generated, awaiting send)'
+              : j.status === 'pending' ? '🔄'
+              : j.status === 'timed_out' ? '⏱'
+              : '❌';
+            const errLine = j.error ? `\n     error: ${String(j.error).slice(0, 160)}` : '';
+            const urlLine = j.video_url ? `\n     video: ${j.video_url}` : '';
+            const draftLine = j.draft_id ? `\n     draft: ${j.draft_id.slice(0, 8)}` : '';
+            return `  ${i + 1}. ${statusFlag} ${j.status} · ${j.quality} · ${elapsedLabel}\n     prediction: ${j.prediction_id.slice(0, 24)} · ${j.model_ref}${draftLine}${urlLine}${errLine}`;
+          });
+          return {
+            content: `${jobs.length} recent video job${jobs.length === 1 ? '' : 's'}:\n${lines.join('\n\n')}\n\nIf jobs are stuck in 🔄 pending more than ~3 minutes, the video-job-poller cron may not be running. Check Vercel cron logs for /api/cron/video-job-poller.`,
+            success: true,
+          };
+        } catch (err: any) {
+          return { content: `Job status check failed: ${err?.message ?? String(err)}`, success: false };
+        }
       }
 
       case 'recall_recent_documents': {
