@@ -85,7 +85,7 @@ import {
   publishFacebookPagePost,
   replyToInstagramComment,
 } from '../../_lib/integrations/meta-business';
-import { generateVideo, estimateGenerationCost } from '../../_lib/integrations/replicate-video';
+import { generateVideo, estimateGenerationCost, startVideoGeneration } from '../../_lib/integrations/replicate-video';
 import { sendWhatsAppVideo, sendWhatsAppImage } from '../../_lib/whatsapp-media-send';
 import {
   saveMarketingStyle,
@@ -3109,21 +3109,53 @@ export async function executeTool(
           }
         }
 
-        const result = await generateVideo({
+        // ASYNC FLOW — the WhatsApp webhook is 60s capped but video gen
+        // is 30-180s. Start the prediction, persist the job, return
+        // immediately. The video-job-poller cron sends the preview when
+        // ready (every 2 min).
+        const start = await startVideoGeneration({
           prompt,
           quality,
           durationSec: typeof call.input.duration_sec === 'number' ? call.input.duration_sec : undefined,
           aspectRatio: (call.input.aspect_ratio as any) ?? undefined,
         });
-        if (!result.ok) {
-          return { content: `Video generation failed: ${result.error}`, success: false };
+        if (!start.ok || !start.predictionId) {
+          return { content: `Video generation failed to start: ${start.error}`, success: false };
         }
-        if (usedStyle) {
-          void recordStyleUsed(usedStyle.id);
+
+        // Persist the job so the poller can pick it up
+        try {
+          const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+          if (supaUrl && supaKey) {
+            await fetch(`${supaUrl}/rest/v1/video_generation_jobs`, {
+              method: 'POST',
+              headers: {
+                apikey: supaKey,
+                Authorization: `Bearer ${supaKey}`,
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal',
+              },
+              body: JSON.stringify({
+                tenant_phone: cleanPhone,
+                prediction_id: start.predictionId,
+                model_ref: start.modelRef ?? '',
+                quality,
+                prompt,
+                caption: typeof call.input.caption === 'string' ? call.input.caption.slice(0, 1024) : null,
+                style_id: usedStyle?.id ?? null,
+                style_name: usedStyle?.name ?? null,
+                estimated_cost_usd: start.costEstimateUsd ?? 0,
+              }),
+            });
+          }
+        } catch (err) {
+          console.warn('[generate_marketing_video] job insert failed:', err);
         }
+
         const styleNote = usedStyle ? ` (style: ${usedStyle.name})` : '';
         return {
-          content: `✓ Video generated${styleNote} (${result.modelRef}, est. $${(result.costEstimateUsd ?? 0).toFixed(2)}):\n${result.videoUrl}\n\nNext: send_video_preview to show the owner, then publish_instagram_reel on approval.`,
+          content: `🎬 Generating video now${styleNote} — ${start.modelRef}, est. $${(start.costEstimateUsd ?? 0).toFixed(2)}. Typical wait: 30-90 seconds. I'll text you the preview the moment it's ready. (Job: ${start.predictionId.slice(0, 12)})`,
           success: true,
         };
       }
@@ -3231,44 +3263,95 @@ export async function executeTool(
         const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
         // Accept 8-char prefix — resolve to full UUID
         let fullId = rawId;
+        let resolvedDraft: any = null;
         if (rawId.length < 36) {
           const open = await listDrafts(cleanPhone);
           const match = open.find((d) => d.id.startsWith(rawId));
           if (!match) return { content: `No draft matching id "${rawId}".`, success: false };
           fullId = match.id;
+          resolvedDraft = match;
         } else {
-          // Verify tenant ownership
           const d = await getDraft(fullId);
           if (!d || d.tenant_phone !== cleanPhone) return { content: 'Draft not found.', success: false };
+          resolvedDraft = d;
         }
         const autoPublish = call.input.auto_publish === true;
         const styleNameOverride = call.input.style_name ? String(call.input.style_name) : undefined;
-        const result = await approveDraft(fullId, { generate: true, autoPublish, styleNameOverride });
-        if (!result.ok) {
-          return { content: `Approval failed: ${result.error}`, success: false };
+
+        // If the draft already has a video_url (re-running after preview),
+        // skip generation and go straight through approveDraft — it'll
+        // hit the synchronous publish path which is short.
+        if (resolvedDraft.video_url) {
+          const result = await approveDraft(fullId, { generate: false, autoPublish, styleNameOverride });
+          if (!result.ok) return { content: `Approval failed: ${result.error}`, success: false };
+          if (autoPublish) {
+            return { content: `✓ Published. Post id: ${result.publishedPostId ?? 'pending'}.`, success: true };
+          }
+          return { content: `Draft already has video. Reply "publish ${fullId.slice(0, 8)}" to post.`, success: true };
         }
-        if (autoPublish) {
-          return {
-            content: `✓ Published. Post id: ${result.publishedPostId ?? 'pending'}.`,
-            success: true,
-          };
+
+        // No video yet — async generation. The video-job-poller picks it
+        // up within 2 min, sends the preview to WhatsApp, and (if
+        // auto_publish) publishes it without further owner gating.
+        if (!process.env.REPLICATE_API_TOKEN) {
+          return { content: 'Video generation not configured (REPLICATE_API_TOKEN missing).', success: false };
         }
-        // Send preview to WhatsApp so owner can confirm the actual video
-        if (result.videoUrl) {
-          const preview = await sendWhatsAppVideo({
-            to: user.phoneNumber,
-            videoUrl: result.videoUrl,
-            caption: result.draft?.caption?.slice(0, 1024),
-          });
-          if (!preview.ok) {
-            return {
-              content: `✓ Video generated (${result.videoUrl}) but preview send failed: ${preview.error}. Reply "publish ${fullId.slice(0, 8)}" to post anyway.`,
-              success: true,
-            };
+        let prompt = resolvedDraft.prompt ?? '';
+        let usedStyle: { name: string; id: string } | null = null;
+        if (styleNameOverride) {
+          const style = await findStyleByName(cleanPhone, styleNameOverride);
+          if (style) {
+            prompt = `${style.style_prompt}. ${prompt}`;
+            usedStyle = { name: style.name, id: style.id };
           }
         }
+        const meta = (resolvedDraft.metadata ?? {}) as any;
+        const quality = (meta.quality as 'fast' | 'standard' | 'premium' | undefined) ?? 'fast';
+
+        const start = await startVideoGeneration({ prompt, quality });
+        if (!start.ok || !start.predictionId) {
+          return { content: `Couldn't start video generation: ${start.error}`, success: false };
+        }
+
+        // Move draft to approved status now so the lifecycle reflects intent
+        const { approveDraft: _ } = { approveDraft }; // silence unused-import nag if it gets stripped
+        try {
+          const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+          if (supaUrl && supaKey) {
+            await fetch(`${supaUrl}/rest/v1/marketing_drafts?id=eq.${fullId}`, {
+              method: 'PATCH',
+              headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+              body: JSON.stringify({ status: 'approved', approved_at: new Date().toISOString() }),
+            });
+            // Insert the video job with draft linkage
+            await fetch(`${supaUrl}/rest/v1/video_generation_jobs`, {
+              method: 'POST',
+              headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+              body: JSON.stringify({
+                tenant_phone: cleanPhone,
+                prediction_id: start.predictionId,
+                model_ref: start.modelRef ?? '',
+                quality,
+                prompt,
+                caption: resolvedDraft.caption?.slice(0, 1024) ?? null,
+                style_id: usedStyle?.id ?? null,
+                style_name: usedStyle?.name ?? null,
+                estimated_cost_usd: start.costEstimateUsd ?? 0,
+                draft_id: fullId,
+                auto_publish: autoPublish,
+              }),
+            });
+          }
+        } catch (err) {
+          console.warn('[approve_marketing_draft] job insert failed:', err);
+        }
+
+        const styleNote = usedStyle ? ` (style: ${usedStyle.name})` : '';
         return {
-          content: `✓ Video generated and sent to your WhatsApp as a preview. Reply "publish ${fullId.slice(0, 8)}" to post, or "regenerate ${fullId.slice(0, 8)} with <new angle>" to try again.`,
+          content: autoPublish
+            ? `🎬 Generating + auto-publishing draft ${fullId.slice(0, 8)}${styleNote}. Typical wait: 30-90 seconds. I'll confirm when it goes live.`
+            : `🎬 Generating draft ${fullId.slice(0, 8)}${styleNote} — ${start.modelRef}, est. $${(start.costEstimateUsd ?? 0).toFixed(2)}. I'll text you the preview when it's ready (30-90s), then you say "publish ${fullId.slice(0, 8)}" to post.`,
           success: true,
         };
       }

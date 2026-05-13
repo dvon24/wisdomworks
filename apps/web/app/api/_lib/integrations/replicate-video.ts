@@ -161,3 +161,96 @@ export function estimateGenerationCost(quality: 'fast' | 'standard' | 'premium' 
   const m = MODELS[quality];
   return { modelRef: m.modelRef, costUsd: m.costPerGenUsd, durationSec: m.defaultDurationSec };
 }
+
+// ─── Async / job-queue path ───────────────────────────────────────────────
+// The WhatsApp webhook is hard-capped at 60s but most video generations
+// take 30-180s. We can't synchronously wait for the result without timing
+// out. Instead: start the prediction, persist the job, return immediately.
+// A poller cron (every 2 min) checks Replicate for completion and sends
+// the preview.
+
+export interface StartGenerationResult {
+  ok: boolean;
+  predictionId?: string;
+  modelRef?: string;
+  costEstimateUsd?: number;
+  error?: string;
+}
+
+/**
+ * Kick off a Replicate prediction WITHOUT waiting. Returns the
+ * prediction id which the poller uses to check status.
+ */
+export async function startVideoGeneration(input: {
+  prompt: string;
+  quality?: 'fast' | 'standard' | 'premium';
+  durationSec?: number;
+  aspectRatio?: '9:16' | '16:9' | '1:1';
+}): Promise<StartGenerationResult> {
+  const token = process.env.REPLICATE_API_TOKEN;
+  if (!token) return { ok: false, error: 'REPLICATE_API_TOKEN not configured' };
+  const quality = input.quality ?? 'fast';
+  const model = MODELS[quality];
+
+  const modelInput: Record<string, any> = {
+    ...model.inputDefaults,
+    prompt: input.prompt.slice(0, 1500),
+  };
+  if (input.durationSec) modelInput.duration = input.durationSec;
+  if (input.aspectRatio) modelInput.aspect_ratio = input.aspectRatio;
+
+  try {
+    // NO `Prefer: wait` header — fire and return immediately
+    const res = await fetch(`${REPLICATE_API_BASE}/models/${model.modelRef}/predictions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: modelInput }),
+    });
+    if (!res.ok) {
+      return { ok: false, error: `Replicate create failed: ${res.status} ${await res.text()}` };
+    }
+    const prediction = await res.json();
+    if (!prediction.id) return { ok: false, error: 'Replicate returned no prediction id' };
+    return {
+      ok: true,
+      predictionId: prediction.id,
+      modelRef: model.modelRef,
+      costEstimateUsd: model.costPerGenUsd,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
+export interface PredictionStatus {
+  ok: boolean;
+  status?: 'starting' | 'processing' | 'succeeded' | 'failed' | 'canceled';
+  videoUrl?: string;
+  error?: string;
+}
+
+/** One-shot status check. Poller calls this. */
+export async function getPredictionStatus(predictionId: string): Promise<PredictionStatus> {
+  const token = process.env.REPLICATE_API_TOKEN;
+  if (!token) return { ok: false, error: 'REPLICATE_API_TOKEN not configured' };
+  try {
+    const res = await fetch(`${REPLICATE_API_BASE}/predictions/${predictionId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return { ok: false, error: `${res.status}: ${await res.text()}` };
+    const prediction = await res.json();
+    const status = prediction.status as PredictionStatus['status'];
+    const output = prediction.output;
+    const videoUrl: string | undefined = Array.isArray(output)
+      ? output[0]
+      : typeof output === 'string' ? output : undefined;
+    return {
+      ok: true,
+      status,
+      videoUrl,
+      error: prediction.error ?? undefined,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
