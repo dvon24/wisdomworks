@@ -123,6 +123,82 @@ export async function recoverFromSnapshot(
 }
 
 /**
+ * Pre-action snapshot helper — call before a destructive tool fires.
+ * Snapshots every agent_instance for the tenant. Best-effort; never
+ * blocks the tool call on snapshot failure (we'd rather take a small
+ * recoverability hit than refuse a real user action).
+ *
+ * Tools that should call this first: send_email, create_calendar_event,
+ * schedule_event, qbo_create_invoice, create_payment_link,
+ * publish_instagram_* / publish_facebook_post, approve_marketing_draft
+ * with auto_publish=true, add_agent_to_team, remove_agent_from_team,
+ * move_agent_under_manager, retire_skill.
+ */
+export async function snapshotBeforeAction(
+  tenantPhone: string,
+  actionName: string,
+  triggeringRunId?: string,
+): Promise<number> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return 0;
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  try {
+    const instRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&status=eq.running&select=id,tenant_phone,state_data,metadata,nats_subjects,signal_connections`,
+      { headers: headers() },
+    );
+    if (!instRes.ok) return 0;
+    const instances = await instRes.json() as InstanceForSnapshot[];
+    let count = 0;
+    for (const inst of instances) {
+      // Stamp the action name in state_data so the snapshot row can be
+      // identified later ("snapshot from before send_email at 14:32").
+      const stampedInstance = {
+        ...inst,
+        state_data: { ...(inst.state_data ?? {}), __pre_action__: actionName },
+      };
+      const id = await saveSnapshot(stampedInstance, 'pre_action', triggeringRunId);
+      if (id) count++;
+    }
+    return count;
+  } catch (err) {
+    console.warn('[state-recovery] snapshotBeforeAction failed:', err);
+    return 0;
+  }
+}
+
+/** List recent snapshots for a tenant — surfaced via the rollback tool. */
+export async function listRecentSnapshots(
+  tenantPhone: string,
+  limit = 10,
+): Promise<Array<{
+  id: string;
+  agent_instance_id: string;
+  reason: SnapshotReason;
+  created_at: string;
+  action_name?: string;
+}>> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/agent_state_snapshots?tenant_phone=eq.${cleanPhone}&order=created_at.desc&limit=${limit}&select=id,agent_instance_id,reason,created_at,state_data`,
+      { headers: headers() },
+    );
+    if (!res.ok) return [];
+    const rows = await res.json();
+    return rows.map((r: any) => ({
+      id: r.id,
+      agent_instance_id: r.agent_instance_id,
+      reason: r.reason,
+      created_at: r.created_at,
+      action_name: r.state_data?.__pre_action__,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Story 2.10 — recovery test: snapshot → corrupt → recover → measure.
  * Asserts the 2-min SLA from NFR34.
  */

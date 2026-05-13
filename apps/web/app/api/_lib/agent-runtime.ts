@@ -124,19 +124,31 @@ export async function startTenantAgents(tenantPhone: string): Promise<{ started:
 }
 
 /** Stop every running agent for a tenant — flips running → paused */
-export async function stopTenantAgents(tenantPhone: string): Promise<{ stopped: number }> {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return { stopped: 0 };
+export async function stopTenantAgents(tenantPhone: string): Promise<{ stopped: number; snapshots: number }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { stopped: 0, snapshots: 0 };
   const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  // Pull the full state row so we can snapshot before flipping to paused —
+  // Story 2.10 'shutdown' reason. If we crash between snapshot and the
+  // status flip, worst case we have an extra snapshot the user can recover
+  // from. Cheap insurance against losing state on a forced pause.
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&status=eq.running&select=id`,
+    `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&status=eq.running&select=id,tenant_phone,state_data,metadata,nats_subjects,signal_connections`,
     { headers: headers() },
   );
-  if (!res.ok) return { stopped: 0 };
-  const rows = await res.json() as { id: string }[];
+  if (!res.ok) return { stopped: 0, snapshots: 0 };
+  const rows = await res.json() as any[];
+  let snapshots = 0;
   for (const row of rows) {
+    try {
+      const { saveSnapshot } = await import('./state-recovery');
+      const id = await saveSnapshot(row, 'shutdown');
+      if (id) snapshots++;
+    } catch (err) {
+      console.warn('[stopTenantAgents] shutdown snapshot failed:', err);
+    }
     await setInstanceStatus(row.id, 'paused');
   }
-  return { stopped: rows.length };
+  return { stopped: rows.length, snapshots };
 }
 
 // ─── Adaptive tick cadence ────────────────────────────────────────────────

@@ -17,6 +17,7 @@
     { "path": "/api/cron/project-sync", "schedule": "0 */2 * * *" },
     { "path": "/api/cron/insights-scan", "schedule": "0 6 * * *" },
     { "path": "/api/cron/booking-sync", "schedule": "0 5 * * *" },
-    { "path": "/api/cron/marketing-loop", "schedule": "0 8 * * *" }
+    { "path": "/api/cron/marketing-loop", "schedule": "0 8 * * *" },
+    { "path": "/api/cron/state-chaos-test", "schedule": "0 3 * * 0" }
   ]
 }

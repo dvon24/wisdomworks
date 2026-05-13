@@ -1632,6 +1632,34 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2.10 — state snapshots + rollback ─────────────────────────────
+
+const TOOL_LIST_SNAPSHOTS: AnthropicTool = {
+  name: 'list_state_snapshots',
+  description:
+    "Show the owner the recent agent state snapshots they could roll back to. Use when the owner says 'undo that', 'roll back', 'something went wrong with the agents'. Each snapshot shows when it was taken, why (periodic / pre_action / shutdown / manual), and which action it preceded if any.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Default 10.' },
+    },
+  },
+};
+
+const TOOL_ROLLBACK_STATE: AnthropicTool = {
+  name: 'rollback_agent_state',
+  description:
+    "Recover an agent_instance to a previous snapshot. Use ONLY after the owner has explicitly confirmed they want to roll back THAT specific snapshot — pending-action safety applies, since rollback overwrites the current state with the snapshot. Pass the snapshot_id from list_state_snapshots. Returns the recovery duration and confirms the old state was preserved as a pre_recover snapshot in case they want to undo the rollback.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agent_instance_id: { type: 'string', description: 'The instance to roll back. From list_state_snapshots.' },
+      point_in_time: { type: 'string', description: 'Optional ISO timestamp — restore the latest snapshot at-or-before this moment. Defaults to "now" (latest snapshot).' },
+    },
+    required: ['agent_instance_id'],
+  },
+};
+
 const TOOL_CONNECT_SERVICE: AnthropicTool = {
   name: 'connect_service',
   description:
@@ -1804,6 +1832,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_REMOVE_AGENT);
   tools.push(TOOL_CONSULT_MANAGER);
   tools.push(TOOL_CONNECT_SERVICE);
+  tools.push(TOOL_LIST_SNAPSHOTS);
+  tools.push(TOOL_ROLLBACK_STATE);
 
   return tools;
 }
@@ -1822,11 +1852,41 @@ export interface ToolResult {
   success: boolean;
 }
 
+// Story 2.10 — destructive tools that fire a pre_action snapshot before
+// executing. Adding a new destructive tool? Append its name here so the
+// rollback safety net covers it automatically — no per-tool patching.
+const DESTRUCTIVE_TOOLS = new Set<string>([
+  'send_email',
+  'create_calendar_event',
+  'schedule_event',
+  'cancel_event',
+  'qbo_create_invoice',
+  'create_payment_link',
+  'publish_instagram_post',
+  'publish_instagram_reel',
+  'publish_facebook_post',
+  'reply_to_instagram_comment',
+  'approve_marketing_draft',
+  'add_agent_to_team',
+  'remove_agent_from_team',
+  'move_agent_under_manager',
+  'update_agent',
+  'retire_skill',
+  'set_marketing_autonomy',
+]);
+
 export async function executeTool(
   call: ToolCall,
   connections: OAuthConnection[],
   user?: UserContext,
 ): Promise<ToolResult> {
+  // Fire-and-forget pre_action snapshot so the user can roll back if the
+  // tool did something unintended. Never blocks the tool call.
+  if (user && DESTRUCTIVE_TOOLS.has(call.name)) {
+    const { snapshotBeforeAction } = await import('../../_lib/state-recovery');
+    void snapshotBeforeAction(user.phoneNumber, call.name);
+  }
+
   try {
     switch (call.name) {
       case 'list_unread_emails': {
@@ -4592,6 +4652,46 @@ export async function executeTool(
         const url = `${APP_BASE_URL}${cfg.route}?phone=${encodeURIComponent(phone)}${service ? `&service=${encodeURIComponent(service)}` : ''}`;
         return {
           content: `Connect ${provider}${service ? ` (${service})` : ''} here: ${url}\nThe link opens the OAuth flow for the user's account.`,
+          success: true,
+        };
+      }
+
+      case 'list_state_snapshots': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const { listRecentSnapshots } = await import('../../_lib/state-recovery');
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 25) : 10;
+        const snaps = await listRecentSnapshots(cleanPhone, limit);
+        if (snaps.length === 0) {
+          return { content: 'No agent state snapshots yet. They accumulate as agents tick and before destructive actions.', success: true };
+        }
+        const lines = snaps.map((s, i) => {
+          const when = new Date(s.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          const reasonLabel = s.reason === 'pre_action' ? `pre-${s.action_name ?? 'action'}`
+            : s.reason === 'shutdown' ? 'shutdown'
+            : s.reason === 'manual' ? 'manual'
+            : s.reason === 'recovery_test' ? 'chaos-test'
+            : 'periodic';
+          return `  ${i + 1}. ${when}  [${reasonLabel}]\n     instance: ${s.agent_instance_id.slice(0, 8)} · snap: ${s.id.slice(0, 8)}`;
+        });
+        return {
+          content: `${snaps.length} recent snapshot${snaps.length === 1 ? '' : 's'}:\n${lines.join('\n')}\n\nTo roll back, say "roll back to snap <id>" or "undo that send_email".`,
+          success: true,
+        };
+      }
+
+      case 'rollback_agent_state': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const instanceId = String(call.input.agent_instance_id ?? '').trim();
+        if (!instanceId) return { content: 'agent_instance_id required.', success: false };
+        const pointInTime = call.input.point_in_time ? new Date(String(call.input.point_in_time)) : undefined;
+        const { recoverFromSnapshot } = await import('../../_lib/state-recovery');
+        const result = await recoverFromSnapshot(instanceId, pointInTime);
+        if (!result.ok) {
+          return { content: `Rollback failed: ${result.error}`, success: false };
+        }
+        return {
+          content: `✓ Rolled back to snapshot ${result.recoveredSnapshotId?.slice(0, 8) ?? '?'} (from ${result.recoveredAt ?? '?'}) in ${result.durationMs}ms. Your prior state was preserved as snapshot ${result.preRecoverSnapshotId?.slice(0, 8) ?? '?'} — say "roll back to ${result.preRecoverSnapshotId?.slice(0, 8) ?? 'X'}" to undo this rollback if it was wrong.`,
           success: true,
         };
       }
