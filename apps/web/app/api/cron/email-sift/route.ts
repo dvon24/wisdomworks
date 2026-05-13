@@ -14,7 +14,7 @@
 import { NextResponse } from 'next/server';
 import { listEmails, decryptToken, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
 import { listImapUnread } from '../../_lib/imap-runtime';
-import { logSample, buildFewShotExamples } from '../../_lib/classification-learning';
+import { logSample, buildFewShotExamples, buildProfessionalContext } from '../../_lib/classification-learning';
 import { getTopContacts, renderTrustedContactsForClassifier } from '../../_lib/email-intelligence';
 
 export const dynamic = 'force-dynamic';
@@ -299,6 +299,9 @@ async function classifyAndDraft(emails: EmailMessage[], tenantPhone?: string): P
   // Story 2.13 — pull recent corrections as few-shot examples so the
   // classifier learns from the user's corrections over time.
   const fewShot = tenantPhone ? await buildFewShotExamples(tenantPhone) : '';
+  // FR102 — professional context atoms so the classifier knows the user's
+  // role / focus / responsibilities when disambiguating
+  const profContext = tenantPhone ? await buildProfessionalContext(tenantPhone) : '';
   // Email intelligence — trusted senders bias classification toward business
   // and away from spam, even when subject lines look promotional.
   const trustedContacts = tenantPhone ? await getTopContacts(tenantPhone, 30) : [];
@@ -386,7 +389,7 @@ LANE ROUTING (which agent handles this on the tenant's team):
 - orchestrator: anything addressed personally to the owner that needs their attention (most personal-tinged business mail)
 - specialist: anything else / vertical-specific that doesn't fit cleanly above
 
-For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's eyes only).${trustBlock}`,
+For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's eyes only).${profContext}${trustBlock}`,
             cache_control: { type: 'ephemeral' },
           },
         ],

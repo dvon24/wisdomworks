@@ -44,7 +44,7 @@ export interface BusinessInsight {
   metadata: Record<string, any>;
 }
 
-interface InsightInput {
+export interface InsightInput {
   tenantPhone: string;
   detector: string;
   severity: InsightSeverity;
@@ -58,8 +58,10 @@ interface InsightInput {
   signature?: string;
 }
 
-/** Insert an insight and enqueue a notification for the digest. */
-async function emitInsight(input: InsightInput): Promise<string | null> {
+/** Insert an insight and enqueue a notification for the digest. Exported
+ *  so other detectors (e.g. classification-learning QA scan) can route
+ *  their findings through the same BMAD innovation surface. */
+export async function emitInsight(input: InsightInput): Promise<string | null> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
   try {
     const cleanPhone = input.tenantPhone.replace(/[\s\-+()]/g, '');

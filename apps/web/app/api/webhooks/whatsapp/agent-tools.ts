@@ -1632,6 +1632,32 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2.13 FR102 — professional profile ingest ──────────────────────
+
+const TOOL_SET_PROFESSIONAL_CONTEXT: AnthropicTool = {
+  name: 'set_professional_context',
+  description:
+    "Capture the user's role, responsibilities, current projects, skills, or work focus so every agent has context. Use when the owner describes their job or work patterns, OR when they paste a resume/bio. The classifier reads this to better categorize email (e.g. knowing the user is a 'plumber doing residential service calls in Seattle' helps it distinguish 'business' from 'personal'). Pass each fact as a short sentence. Examples: 'I'm a residential electrician based in Seattle', 'I run a 5-person crew, mostly commercial retrofits', 'My specialty is panel upgrades and EV charger installs'. Append doesn't overwrite — call multiple times to build up the profile.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      facts: {
+        type: 'array',
+        description: '1-10 short sentences. Each becomes a stored fact atom.',
+        items: { type: 'string' },
+      },
+    },
+    required: ['facts'],
+  },
+};
+
+const TOOL_GET_CLASSIFIER_ACCURACY: AnthropicTool = {
+  name: 'get_classifier_accuracy',
+  description:
+    "Show the owner how well the email classifier is performing. Returns accuracy at 30d and 90d windows against the NFR9 targets (90%/95%). Use when owner asks 'how accurate is the email sorting', 'is it learning', 'is the classifier getting better', 'is it working'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 // ─── Story 2.10 — state snapshots + rollback ─────────────────────────────
 
 const TOOL_LIST_SNAPSHOTS: AnthropicTool = {
@@ -1834,6 +1860,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_CONNECT_SERVICE);
   tools.push(TOOL_LIST_SNAPSHOTS);
   tools.push(TOOL_ROLLBACK_STATE);
+  tools.push(TOOL_SET_PROFESSIONAL_CONTEXT);
+  tools.push(TOOL_GET_CLASSIFIER_ACCURACY);
 
   return tools;
 }
@@ -4788,6 +4816,55 @@ export async function executeTool(
         });
         return {
           content: `${snaps.length} recent snapshot${snaps.length === 1 ? '' : 's'}:\n${lines.join('\n')}\n\nTo roll back, say "roll back to snap <id>" or "undo that send_email".`,
+          success: true,
+        };
+      }
+
+      case 'set_professional_context': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const facts = Array.isArray(call.input.facts) ? (call.input.facts as string[]) : [];
+        const cleaned = facts.map((f) => String(f).trim()).filter((f) => f.length >= 3 && f.length <= 600).slice(0, 10);
+        if (cleaned.length === 0) return { content: 'No usable facts provided. Pass 1-10 short sentences.', success: false };
+        let stored = 0;
+        for (const f of cleaned) {
+          try {
+            const id = await upsertAtom({
+              tenantPhone: cleanPhone,
+              kind: 'fact',
+              content: f,
+              tags: ['professional_context', 'classifier_hint'],
+              confidence: 0.95, // owner-typed = high confidence
+              source: 'whatsapp',
+              ownerConfirmed: true,
+            });
+            if (id) stored++;
+          } catch (err) {
+            console.warn('[set_professional_context] upsertAtom failed:', err);
+          }
+        }
+        return {
+          content: `✓ Captured ${stored} professional context fact${stored === 1 ? '' : 's'}. Every agent — including the email classifier — now sees this in their prompt. Update anytime by saying "I also do X" or "my focus shifted to Y".`,
+          success: stored > 0,
+        };
+      }
+
+      case 'get_classifier_accuracy': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const { computeAccuracy } = await import('../../_lib/classification-learning');
+        const report = await computeAccuracy(cleanPhone);
+        if (!report) return { content: 'Could not compute accuracy.', success: false };
+        const w30 = report.thirtyDay;
+        const w90 = report.ninetyDay;
+        const fmt = (w: typeof w30) => {
+          if (w.samples === 0) return `${w.windowDays}d: no data yet`;
+          if (w.accuracy === null) return `${w.windowDays}d: ${w.samples} samples, ${w.corrections} corrections`;
+          const flag = w.onTrack ? '✓' : '⚠';
+          return `${w.windowDays}d: ${flag} ${(w.accuracy * 100).toFixed(1)}% (${w.samples} samples, ${w.corrections} corrections) · target ${(w.target * 100).toFixed(0)}%`;
+        };
+        return {
+          content: `📊 Email classifier accuracy:\n  ${fmt(w30)}\n  ${fmt(w90)}\n\n${(w30.onTrack && w90.onTrack) ? "On target. The classifier is learning from your corrections." : "Below target — more corrections from you will pull this up. Tell me when I miscategorize an email."}`,
           success: true,
         };
       }
