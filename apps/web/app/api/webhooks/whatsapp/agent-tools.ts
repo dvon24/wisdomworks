@@ -1632,6 +1632,22 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2b.3 — Twilio SMS (urgent alerts only) ────────────────────────
+
+const TOOL_SEND_SMS: AnthropicTool = {
+  name: 'send_sms_alert',
+  description:
+    "Send an SMS text message — for TIME-SENSITIVE alerts where WhatsApp may not be checked fast enough (payment failures, security alerts, urgent client messages outside business hours, appointment reminders). NEVER use this for routine notifications — those go through the WhatsApp digest. Twilio SMS costs ~$0.0079 per 160-char segment (third-party cost transparency rule — quote it when the owner asks 'how much'). The recipient phone number must be in E.164 format (e.g. +14155551234) or starts with +.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      to: { type: 'string', description: 'Recipient phone number in E.164 (+14155551234) or international format.' },
+      body: { type: 'string', description: 'SMS body. Keep under 160 chars to fit one segment ($0.0079); 320 = two ($0.016); etc. Hard cap 1600.' },
+    },
+    required: ['to', 'body'],
+  },
+};
+
 // ─── Story 2.16 Phase 4 — Cloud doc search + analyze ────────────────────
 
 const TOOL_SEARCH_CLOUD_DOCS: AnthropicTool = {
@@ -2010,6 +2026,11 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_RECALL_DOCUMENTS);
   tools.push(TOOL_ANALYZE_EMAIL_ATTACHMENT);
   tools.push(TOOL_SHOW_EMAIL_ENGAGEMENT);
+  // SMS tool — only when Twilio is configured. Owner needs to set
+  // TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + TWILIO_FROM_NUMBER in Vercel.
+  if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER) {
+    tools.push(TOOL_SEND_SMS);
+  }
   // Cloud-doc tools — only surface when at least one cloud-capable
   // connection exists. Google handles Drive, Microsoft handles OneDrive.
   if (conns.some((c) => c.provider === 'google' || c.provider === 'microsoft')) {
@@ -5176,6 +5197,21 @@ export async function executeTool(
         } catch (err: any) {
           return { content: `Job status check failed: ${err?.message ?? String(err)}`, success: false };
         }
+      }
+
+      case 'send_sms_alert': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const to = String(call.input.to ?? '').trim();
+        const body = String(call.input.body ?? '').trim();
+        if (!to || !body) return { content: 'to and body required.', success: false };
+        const { sendSms, estimateSmsCost } = await import('../../_lib/twilio-sms');
+        const result = await sendSms({ to, body });
+        if (!result.ok) return { content: `SMS failed: ${result.error}`, success: false };
+        const cost = estimateSmsCost(body.length);
+        return {
+          content: `✓ SMS sent to ${to} (${cost.segments} segment${cost.segments === 1 ? '' : 's'}, ~$${cost.estimatedUsd}). Message id: ${result.messageSid}`,
+          success: true,
+        };
       }
 
       case 'search_cloud_docs': {

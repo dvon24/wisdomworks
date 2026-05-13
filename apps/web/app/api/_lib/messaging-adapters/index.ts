@@ -144,7 +144,11 @@ export async function sendOnChannel(channel: Channel, externalId: string, text: 
       return sendTelegram(externalId, text);
     case 'whatsapp':
       return sendWhatsApp(externalId, text);
-    case 'sms':
+    case 'sms': {
+      const { sendSms } = await import('../twilio-sms');
+      const r = await sendSms({ to: externalId, body: text });
+      return r.ok;
+    }
     case 'imessage':
     case 'discord':
       console.warn(`[messaging-adapters] ${channel} send not yet implemented`);
