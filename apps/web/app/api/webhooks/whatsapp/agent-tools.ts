@@ -61,6 +61,11 @@ import {
   getTenantSiteByTenant,
 } from '../../_lib/tenant-sites';
 import {
+  createWebhook as createEventWebhook,
+  listWebhooks as listEventWebhooks,
+  revokeWebhook as revokeEventWebhook,
+} from '../../_lib/event-webhooks';
+import {
   loadActiveConnections,
   loadLatestSnapshot,
   fetchGitHubCommits,
@@ -612,6 +617,47 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   description:
     "Generate a magic-link URL the owner can tap to sign into the Command Deck on their phone or laptop. Use when the owner says 'send me a login link', 'log me in to the deck', 'I need to sign in', or whenever they want to view the dashboard. Returns a fully-formed URL valid for 30 days that, when clicked, sets a secure session cookie. NEVER paste deck URLs that lack a token — the deck refuses unauthenticated access.",
   input_schema: { type: 'object', properties: {} },
+};
+
+// ─── Event webhooks (Zapier / Make / IFTTT / custom) ─────────────────────
+
+const TOOL_CONNECT_AUTOMATION: AnthropicTool = {
+  name: 'connect_automation_webhook',
+  description:
+    "Subscribe an automation platform (Zapier, Make.com, IFTTT, n8n, custom endpoint) to receive WisdomWorks events. Returns the webhook id + signing secret. Owner pastes their automation's webhook URL → we POST JSON when bookings happen, insights fire, leads land, etc. IMPORTANT: When suggesting Zapier, ALWAYS mention 'Zapier requires their $19.99/mo Starter plan for webhooks — Make.com or IFTTT have free webhooks'. Honor the third-party-cost-transparency rule.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'HTTPS URL to POST events to (Zap catch hook, Make scenario URL, etc.).' },
+      label: { type: 'string', description: 'Friendly name (e.g. "new bookings → google sheet").' },
+      event_types: {
+        type: 'array',
+        items: { type: 'string', enum: ['booking_created', 'client_created', 'client_visit_logged', 'insight_emitted', 'lead_captured', 'team_gap_proposed', 'review_received', 'photo_uploaded'] },
+        description: 'Which events to subscribe to. Empty array = subscribe to ALL (catch-all webhook).',
+      },
+    },
+    required: ['url', 'label'],
+  },
+};
+
+const TOOL_LIST_AUTOMATION_WEBHOOKS: AnthropicTool = {
+  name: 'list_automation_webhooks',
+  description:
+    "List the owner's configured automation webhooks (Zapier/Make/etc.) with their fire counts, last fired times, and any failures. Use when owner asks 'what's my Zapier hooked up to', 'show my automations'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_REVOKE_AUTOMATION_WEBHOOK: AnthropicTool = {
+  name: 'revoke_automation_webhook',
+  description:
+    "Revoke an automation webhook. Stops sending events to it immediately. Use when owner says 'disconnect that zap', 'remove my make webhook'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      webhook_id: { type: 'string', description: 'Full UUID of the webhook (from list_automation_webhooks).' },
+    },
+    required: ['webhook_id'],
+  },
 };
 
 // ─── Client websites (Story 2b.7) ────────────────────────────────────────
@@ -1281,6 +1327,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_REVOKE_WIDGET_KEY);
   tools.push(TOOL_GENERATE_WEBSITE);
   tools.push(TOOL_MY_WEBSITE_URL);
+  tools.push(TOOL_CONNECT_AUTOMATION);
+  tools.push(TOOL_LIST_AUTOMATION_WEBHOOKS);
+  tools.push(TOOL_REVOKE_AUTOMATION_WEBHOOK);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2268,6 +2317,67 @@ export async function executeTool(
         const ok = await cancelManagedEvent(eventId, cleanPhone);
         if (!ok) return { content: 'Could not cancel the event.', success: false };
         return { content: '✓ Cancelled.', success: true };
+      }
+
+      case 'connect_automation_webhook': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const url = String(call.input.url ?? '').trim();
+        const label = String(call.input.label ?? '').trim();
+        if (!url || !label) return { content: 'url and label required.', success: false };
+        const eventTypes = Array.isArray(call.input.event_types) ? call.input.event_types.map(String) : [];
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const result = await createEventWebhook({
+          tenantPhone: cleanPhone,
+          url,
+          label,
+          eventTypes: eventTypes as any,
+        });
+        if (!result) {
+          return { content: 'Could not create webhook. Make sure the URL is HTTPS and well-formed.', success: false };
+        }
+        const isZapier = url.includes('hooks.zapier.com');
+        const lines = [
+          `✓ Connected "${label}".`,
+          '',
+          `Webhook id: ${result.id}`,
+          `Signing secret (save this — shown ONCE):`,
+          result.signingSecret,
+          '',
+          `Events will POST to that URL${eventTypes.length > 0 ? ` for: ${eventTypes.join(', ')}` : ' for ALL event types'}.`,
+          `Each request includes:`,
+          `  • X-WisdomWorks-Signature header (HMAC-SHA256 of body using the secret)`,
+          `  • X-WisdomWorks-Event header (event type)`,
+          isZapier ? '\n⚠ Heads up: Zapier requires their $19.99/mo Starter plan for "Webhooks by Zapier" triggers. Make.com and IFTTT have free webhooks if you want to avoid that.' : '',
+        ].filter(Boolean);
+        return { content: lines.join('\n'), success: true };
+      }
+
+      case 'list_automation_webhooks': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const hooks = await listEventWebhooks(cleanPhone);
+        if (hooks.length === 0) {
+          return { content: "No automation webhooks configured. Say 'connect my Zapier' (or Make/IFTTT) to add one.", success: true };
+        }
+        const lines = hooks.map((h) => {
+          const status = h.status === 'revoked' ? '🚫 revoked' : h.status === 'paused' ? '⏸ paused' : '✓ active';
+          const lastFired = h.last_fired_at ? new Date(h.last_fired_at).toISOString().slice(0, 16) : 'never';
+          const events = h.event_types.length === 0 ? 'all events' : h.event_types.join(', ');
+          const failures = h.failure_count > 0 ? `  ⚠ ${h.failure_count} failures` : '';
+          return `  ${status}  "${h.label ?? h.url.slice(0, 40)}"\n     → ${events}\n     fired ${h.fire_count} times, last ${lastFired}${failures}`;
+        });
+        return { content: `${hooks.length} webhook${hooks.length === 1 ? '' : 's'}:\n${lines.join('\n\n')}`, success: true };
+      }
+
+      case 'revoke_automation_webhook': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const webhookId = String(call.input.webhook_id ?? '').trim();
+        if (!webhookId) return { content: 'webhook_id required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const ok = await revokeEventWebhook(webhookId, cleanPhone);
+        return ok
+          ? { content: `✓ Revoked. Events will stop firing to that endpoint immediately.`, success: true }
+          : { content: 'Could not revoke. Check the webhook_id is right.', success: false };
       }
 
       case 'generate_website': {

@@ -119,6 +119,26 @@ async function emitInsight(input: InsightInput): Promise<string | null> {
       });
     }
 
+    // Fire outbound to Zapier/Make/etc. webhooks
+    try {
+      const { fireEvent } = await import('./event-webhooks');
+      void fireEvent({
+        tenantPhone: cleanPhone,
+        eventType: 'insight_emitted',
+        payload: {
+          insight_id: insight.id,
+          detector: input.detector,
+          severity: input.severity,
+          title: input.title,
+          why: input.why,
+          recommended_action: input.recommendedAction,
+          expected_impact: input.expectedImpact,
+          confidence: input.confidence ?? 0.7,
+          payload: input.payload,
+        },
+      });
+    } catch {}
+
     return insight.id;
   } catch (err) {
     console.warn('[insights] emit exception:', err);

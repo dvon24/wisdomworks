@@ -112,6 +112,24 @@ export async function POST(request: Request) {
       } catch {}
     }
 
+    // Fire outbound event to subscribed webhooks (Zapier/Make/IFTTT/custom)
+    try {
+      const { fireEvent } = await import('../../_lib/event-webhooks');
+      void fireEvent({
+        tenantPhone: verified.tenant_phone,
+        eventType: 'booking_created',
+        payload: {
+          booking_id: created.externalId,
+          customer: { name, email, phone },
+          service_id: serviceId,
+          start_at: created.startAt,
+          end_at: created.endAt,
+          notes,
+          source: 'widget',
+        },
+      });
+    } catch {}
+
     return NextResponse.json(
       { booking_id: created.externalId, when_iso: created.startAt },
       { headers: CORS },
