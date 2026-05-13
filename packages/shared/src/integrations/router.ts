@@ -10,6 +10,8 @@ import * as gmail from './gmail';
 import * as gcal from './google-calendar';
 import * as ms from './microsoft';
 import * as apple from './apple-caldav';
+import * as cloudDocs from './cloud-docs';
+import type { CloudDocRef, FetchedCloudDoc } from './cloud-docs';
 import type {
   EmailMessage,
   EmailAttachmentRef,
@@ -127,6 +129,39 @@ export async function fetchEmailAttachment(
     return { success: false, error: 'IMAP attachments must be fetched via app-local runtime' };
   }
   return { success: false, error: `Attachments not supported for provider: ${conn.provider}` };
+}
+
+// ─── Cloud docs (Story 2.16 Phase 4) ─────────────────────────────────────
+
+/**
+ * Search the owner's cloud document storage. Dispatches by connection
+ * provider — `google` → Drive (drive.readonly scope), `microsoft` →
+ * OneDrive (Files.Read.All scope). Empty query returns recent files.
+ */
+export async function searchCloudDocs(
+  conn: OAuthConnection,
+  query: string,
+  limit: number = 15,
+): Promise<IntegrationResult<CloudDocRef[]>> {
+  const ctx = { accessToken: conn.access_token, metadata: conn.metadata };
+  if (conn.provider === 'google') return cloudDocs.searchDrive(ctx, query, limit);
+  if (conn.provider === 'microsoft') return cloudDocs.searchOneDrive(ctx, query, limit);
+  return { success: false, error: `Cloud-doc search not supported for ${conn.provider}` };
+}
+
+/**
+ * Fetch a cloud doc's bytes for analysis. Google Drive native files
+ * (Docs, Sheets, Slides) are exported to Office/PDF formats so the
+ * downstream analyzer can parse them.
+ */
+export async function fetchCloudDoc(
+  conn: OAuthConnection,
+  fileId: string,
+): Promise<IntegrationResult<FetchedCloudDoc>> {
+  const ctx = { accessToken: conn.access_token, metadata: conn.metadata };
+  if (conn.provider === 'google') return cloudDocs.fetchDriveFile(ctx, fileId);
+  if (conn.provider === 'microsoft') return cloudDocs.fetchOneDriveFile(ctx, fileId);
+  return { success: false, error: `Cloud-doc fetch not supported for ${conn.provider}` };
 }
 
 // ─── Calendar ───

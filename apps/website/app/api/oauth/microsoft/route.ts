@@ -19,6 +19,11 @@ const SCOPES = [
   'Mail.Read',
   'Mail.Send',
   'Calendars.ReadWrite',
+  // Files.Read.All — search + read OneDrive files (own + shared). Used
+  // by Story 2.16 Phase 4 cloud-doc tools. Re-consent required for
+  // tenants connected before this scope was added; doc-pull tools
+  // detect the missing scope at call time and tell owner to reconnect.
+  'Files.Read.All',
 ];
 
 export async function GET(request: Request) {

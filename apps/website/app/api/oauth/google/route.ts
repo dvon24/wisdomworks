@@ -13,13 +13,20 @@ export const dynamic = 'force-dynamic';
 
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 
-// Combined scopes — covers Gmail + Calendar + basic profile
+// Combined scopes — Gmail + Calendar + basic profile + Drive read.
+// drive.readonly allows search + read of files Devon owns + files
+// shared with him. Required for Iris's "pull the X from my Drive" path
+// (Story 2.16 Phase 4). Re-consent required for tenants connected
+// before this scope was added — Iris's existing Gmail/Calendar paths
+// continue working with the prior token; cloud-doc tools surface a
+// "reconnect Google" message when called against a pre-scope token.
 const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.send',
   'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/drive.readonly',
 ];
 
 export async function GET(request: Request) {

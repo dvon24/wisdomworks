@@ -1632,6 +1632,36 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2.16 Phase 4 — Cloud doc search + analyze ────────────────────
+
+const TOOL_SEARCH_CLOUD_DOCS: AnthropicTool = {
+  name: 'search_cloud_docs',
+  description:
+    "Search the owner's Google Drive or Microsoft OneDrive. Use when owner says 'find the X in my Drive', 'pull up the Q3 report', 'where's the lease', 'search my OneDrive for'. Empty query returns recently-modified files. Requires Google or Microsoft connection with the read scope (drive.readonly / Files.Read.All). Returns file id + filename + mime + modified date + webUrl — caller can then call analyze_cloud_doc with a specific id to pull + analyze the content.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: "Search term — matches filename OR full-text body. Empty returns recent files." },
+      provider: { type: 'string', enum: ['google', 'microsoft'], description: 'Which platform to search. If omitted, searches whichever is connected (Google first if both).' },
+      limit: { type: 'number', description: 'Default 15, max 50.' },
+    },
+  },
+};
+
+const TOOL_ANALYZE_CLOUD_DOC: AnthropicTool = {
+  name: 'analyze_cloud_doc',
+  description:
+    "Fetch a specific file from the owner's Drive or OneDrive and run Claude analysis on it. Pass the file_id from search_cloud_docs results. Use when owner explicitly says 'analyze that one' or 'pull the contract' referring to a search result. Never call proactively — only when the owner has identified the specific doc. Same structured output as PDF analysis (summary, key dates, parties, amounts, action items, risks).",
+  input_schema: {
+    type: 'object',
+    properties: {
+      file_id: { type: 'string', description: 'The provider file id from search_cloud_docs.' },
+      provider: { type: 'string', enum: ['google', 'microsoft'], description: 'Which platform the file lives in.' },
+    },
+    required: ['file_id', 'provider'],
+  },
+};
+
 // ─── Story 2.16 Phase 2c — Email engagement summary ──────────────────────
 
 const TOOL_SHOW_EMAIL_ENGAGEMENT: AnthropicTool = {
@@ -1980,6 +2010,12 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_RECALL_DOCUMENTS);
   tools.push(TOOL_ANALYZE_EMAIL_ATTACHMENT);
   tools.push(TOOL_SHOW_EMAIL_ENGAGEMENT);
+  // Cloud-doc tools — only surface when at least one cloud-capable
+  // connection exists. Google handles Drive, Microsoft handles OneDrive.
+  if (conns.some((c) => c.provider === 'google' || c.provider === 'microsoft')) {
+    tools.push(TOOL_SEARCH_CLOUD_DOCS);
+    tools.push(TOOL_ANALYZE_CLOUD_DOC);
+  }
   tools.push(TOOL_CHECK_VIDEO_JOBS);
 
   return tools;
@@ -5140,6 +5176,157 @@ export async function executeTool(
         } catch (err: any) {
           return { content: `Job status check failed: ${err?.message ?? String(err)}`, success: false };
         }
+      }
+
+      case 'search_cloud_docs': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const query = String(call.input.query ?? '').trim();
+        const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 50) : 15;
+        const requestedProvider = call.input.provider as 'google' | 'microsoft' | undefined;
+        const cloudConns = (connections as any[]).filter((c) => c.provider === 'google' || c.provider === 'microsoft');
+        if (cloudConns.length === 0) {
+          return { content: 'No cloud doc storage connected. Connect Google or Microsoft first.', success: false };
+        }
+        const targetConns = requestedProvider
+          ? cloudConns.filter((c) => c.provider === requestedProvider)
+          : cloudConns;
+        if (targetConns.length === 0) {
+          return { content: `${requestedProvider} isn't connected. Reconnect via the deck.`, success: false };
+        }
+
+        const { searchCloudDocs } = await import('@wisdomworks/shared');
+        const allResults: any[] = [];
+        const errors: string[] = [];
+        for (const conn of targetConns) {
+          const r = await searchCloudDocs(conn, query, limit);
+          if (r.success && r.data) {
+            for (const doc of r.data) allResults.push(doc);
+          } else {
+            errors.push(`${conn.provider}: ${r.error}`);
+          }
+        }
+        if (allResults.length === 0) {
+          const errMsg = errors.length > 0
+            ? errors.join('; ')
+            : query ? `No files matching "${query}"` : 'No recent files';
+          return { content: errMsg, success: errors.length === 0 };
+        }
+        // Cap rendered output
+        const rendered = allResults.slice(0, limit);
+        const lines = rendered.map((d, i) => {
+          const provLabel = d.provider === 'google_drive' ? '🔵 Drive' : '🟦 OneDrive';
+          const sizeLabel = d.sizeBytes ? ` · ${(d.sizeBytes / 1024).toFixed(0)}KB` : '';
+          const modLabel = d.modifiedAt ? ` · modified ${new Date(d.modifiedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })}` : '';
+          return `  ${i + 1}. ${provLabel} ${d.filename}${sizeLabel}${modLabel}\n     id: ${d.id.slice(0, 24)}${d.id.length > 24 ? '…' : ''}`;
+        });
+        return {
+          content: `${rendered.length} document${rendered.length === 1 ? '' : 's'}${query ? ` matching "${query}"` : ''}:\n${lines.join('\n\n')}\n\nReply "analyze the X" or "pull number 3" and I'll fetch + analyze it.`,
+          success: true,
+        };
+      }
+
+      case 'analyze_cloud_doc': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const fileId = String(call.input.file_id ?? '').trim();
+        const provider = call.input.provider as 'google' | 'microsoft' | undefined;
+        if (!fileId) return { content: 'file_id required.', success: false };
+        if (!provider) return { content: 'provider required (google or microsoft).', success: false };
+        const conn = (connections as any[]).find((c) => c.provider === provider);
+        if (!conn) {
+          return { content: `${provider} isn't connected. Reconnect via the deck to grant the read scope.`, success: false };
+        }
+
+        const { fetchCloudDoc } = await import('@wisdomworks/shared');
+        const fetched = await fetchCloudDoc(conn, fileId);
+        if (!fetched.success || !fetched.data) {
+          // The scope error from cloud-docs.ts already has the right prompt
+          return { content: `Couldn't fetch: ${fetched.error}`, success: false };
+        }
+
+        const { uploadReceivedDoc } = await import('../../_lib/received-doc-storage');
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const upload = await uploadReceivedDoc({
+          tenantPhone: cleanPhone,
+          bytes: fetched.data.bytes,
+          mimeType: fetched.data.mimeType,
+          filename: fetched.data.filename,
+        });
+        if (!upload) {
+          return { content: 'Fetched the file but couldn\'t store it. The received-docs Supabase bucket may not exist.', success: false };
+        }
+
+        // Insert received_documents row
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        let docRowId: string | null = null;
+        const sourceLabel = provider === 'google' ? 'drive_doc' : 'onedrive_doc';
+        if (supaUrl && supaKey) {
+          try {
+            const insRes = await fetch(`${supaUrl}/rest/v1/received_documents`, {
+              method: 'POST',
+              headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=representation' },
+              body: JSON.stringify({
+                tenant_phone: cleanPhone,
+                source: sourceLabel,
+                filename: fetched.data.filename,
+                mime_type: fetched.data.mimeType,
+                size_bytes: fetched.data.sizeBytes,
+                storage_path: upload.path,
+                public_url: upload.publicUrl,
+                status: 'processing',
+                metadata: { source_provider: provider, source_file_id: fileId },
+              }),
+            });
+            if (insRes.ok) docRowId = (await insRes.json())[0]?.id ?? null;
+          } catch {}
+        }
+
+        const { analyzeReceivedDocument, renderAnalysisForWhatsApp } = await import('../../_lib/document-analysis');
+        const result = await analyzeReceivedDocument({
+          bytes: fetched.data.bytes,
+          mimeType: fetched.data.mimeType,
+          filename: fetched.data.filename,
+        });
+
+        if (docRowId && supaUrl && supaKey) {
+          await fetch(`${supaUrl}/rest/v1/received_documents?id=eq.${docRowId}`, {
+            method: 'PATCH',
+            headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+            body: JSON.stringify(
+              result.ok
+                ? {
+                    status: 'analyzed',
+                    summary: result.analysis.summary,
+                    key_dates: result.analysis.keyDates,
+                    key_amounts: result.analysis.keyAmounts,
+                    key_parties: result.analysis.keyParties,
+                    action_items: result.analysis.actionItems,
+                    risks: result.analysis.risks,
+                    tags: result.analysis.tags,
+                    metadata: { format: result.format, source_provider: provider, source_file_id: fileId },
+                  }
+                : {
+                    status: 'analysis_failed',
+                    summary: result.format === 'unsupported' ? `Stored ${fetched.data.filename}. ${result.error}` : null,
+                    metadata: { error: result.error, format: result.format, source_provider: provider, source_file_id: fileId },
+                  },
+            ),
+          });
+        }
+
+        if (!result.ok) {
+          return {
+            content: result.format === 'unsupported'
+              ? `📎 Stored ${fetched.data.filename} but can't analyze that format yet. ${result.error}`
+              : `Analysis failed: ${result.error}`,
+            success: false,
+          };
+        }
+
+        return {
+          content: renderAnalysisForWhatsApp({ analysis: result.analysis, filename: fetched.data.filename }),
+          success: true,
+        };
       }
 
       case 'show_email_engagement': {

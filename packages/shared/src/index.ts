@@ -188,6 +188,8 @@ export {
   listEmailAttachments,
   fetchEmailAttachment,
   getEmailReadState,
+  searchCloudDocs,
+  fetchCloudDoc,
   listCalendarEvents,
   createCalendarEvent,
   updateCalendarEvent,
@@ -200,6 +202,7 @@ export {
   getConnectionForPhone,
 } from './integrations';
 export type { WebsiteSnapshot, WebsitePlatform } from './integrations';
+export type { CloudDocRef, FetchedCloudDoc } from './integrations';
 
 // Client Profiles & Business Intelligence (Epic 2b)
 export type {

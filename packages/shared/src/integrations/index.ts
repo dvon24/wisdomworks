@@ -13,6 +13,7 @@ export type {
 } from './types';
 
 export type { OAuthConnection } from './router';
+export type { CloudDocRef, FetchedCloudDoc } from './cloud-docs';
 
 // Provider router (recommended) — dispatches by connection.provider
 export {
@@ -22,6 +23,8 @@ export {
   listEmailAttachments,
   fetchEmailAttachment,
   getEmailReadState,
+  searchCloudDocs,
+  fetchCloudDoc,
   listCalendarEvents,
   createCalendarEvent,
   updateCalendarEvent,
