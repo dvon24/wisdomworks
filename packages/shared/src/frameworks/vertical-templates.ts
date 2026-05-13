@@ -33,7 +33,38 @@ export interface VerticalAgent {
   lane: 'orchestrator' | 'scheduler' | 'customer_service' | 'marketing' | 'finance' | 'operations' | 'analytics' | 'specialist';
   /** Output channels this agent uses */
   channels: string[];
+  /** Pre-installed skill templates the agent runs out of the box.
+   *  Marketing agents typically get 'video_marketing_loop' so they can
+   *  generate Reels from a prompt, preview to owner, publish on approval. */
+  templateSkills?: VerticalAgentSkill[];
 }
+
+export interface VerticalAgentSkill {
+  /** Stable id, e.g. 'video_marketing_loop' */
+  id: string;
+  /** Short label for owner UI */
+  label: string;
+  /** What the skill does — surfaced in the agent's prompt */
+  description: string;
+  /** Ordered tool sequence the agent runs when this skill fires */
+  toolFlow: string[];
+}
+
+/** Pre-installed skill for marketing-lane agents: end-to-end video reel
+ *  workflow (generate → preview → publish on approval). */
+export const VIDEO_MARKETING_LOOP_SKILL: VerticalAgentSkill = {
+  id: 'video_marketing_loop',
+  label: 'Video reel marketing loop',
+  description:
+    "Generate a short marketing video from a topic or prompt, send it to the owner's WhatsApp as a preview, wait for explicit approval, then publish as an Instagram Reel + optionally cross-post to Facebook. Always quote the AI generation cost up front so the owner sees what they're spending.",
+  toolFlow: [
+    'estimate_video_cost',
+    'generate_marketing_video',
+    'send_video_preview',
+    'publish_instagram_reel',
+    'publish_facebook_post',
+  ],
+};
 
 export interface VerticalTemplate {
   /** Canonical business-type IDs this template applies to */
@@ -165,7 +196,8 @@ export const RESTAURANT_TEMPLATE: VerticalTemplate = {
     { role: 'reviews', name: 'Reviews & Reputation', tier: 'Sonnet', required: true, lane: 'marketing',
       description: 'Monitors Google/Yelp reviews, drafts responses to negatives within 24h', channels: ['email', 'dashboard'] },
     { role: 'specials_social', name: 'Specials & Social', tier: 'Sonnet', required: true, lane: 'marketing',
-      description: 'Posts daily specials to IG/FB before 11am, runs slow-night promotions', channels: ['instagram', 'facebook'] },
+      description: 'Posts daily specials to IG/FB before 11am, runs slow-night promotions', channels: ['instagram', 'facebook'],
+      templateSkills: [VIDEO_MARKETING_LOOP_SKILL] },
     { role: 'allergies', name: 'Allergies & Dietary', tier: 'Sonnet', required: false, lane: 'customer_service',
       description: 'Captures dietary needs from reservations, escalates to kitchen', channels: ['email', 'whatsapp'] },
   ],
@@ -242,7 +274,8 @@ export const SALON_TEMPLATE: VerticalTemplate = {
     { role: 'rebookings', name: 'Rebooking & Retention', tier: 'Sonnet', required: true, lane: 'customer_service',
       description: 'Auto "we miss you" at 8 weeks, lapsed-client detection', channels: ['whatsapp', 'sms', 'email'] },
     { role: 'reviews_social', name: 'Reviews & Social', tier: 'Sonnet', required: true, lane: 'marketing',
-      description: 'IG-driven content (with client consent), Google review responses', channels: ['instagram', 'google_reviews'] },
+      description: 'IG-driven content (with client consent), Google review responses', channels: ['instagram', 'google_reviews'],
+      templateSkills: [VIDEO_MARKETING_LOOP_SKILL] },
     { role: 'no_show_recovery', name: 'No-Show Recovery', tier: 'Haiku', required: false, lane: 'operations',
       description: 'Same-day rebook offers when slots open from cancels', channels: ['whatsapp', 'sms'] },
   ],
@@ -418,7 +451,8 @@ export const FITNESS_TEMPLATE: VerticalTemplate = {
     { role: 'billing', name: 'Membership Billing', tier: 'Haiku', required: true, lane: 'finance',
       description: 'Recurring charges, failed-payment recovery', channels: ['email'] },
     { role: 'content_social', name: 'Content & Social', tier: 'Sonnet', required: false, lane: 'marketing',
-      description: 'Member transformations, schedule promotion', channels: ['instagram'] },
+      description: 'Member transformations, schedule promotion', channels: ['instagram'],
+      templateSkills: [VIDEO_MARKETING_LOOP_SKILL] },
   ],
   recommendedTools: [
     { id: 'google_calendar', label: 'Google Calendar', why: 'Owner schedule + class conflict detection' },
@@ -569,7 +603,8 @@ export const PHOTOGRAPHY_TEMPLATE: VerticalTemplate = {
     { role: 'delivery', name: 'Delivery & Gallery', tier: 'Sonnet', required: true, lane: 'customer_service',
       description: 'Preview within 48h, full gallery in 4 weeks, review request after delivery', channels: ['email'] },
     { role: 'portfolio', name: 'Portfolio & Inquiries', tier: 'Sonnet', required: false, lane: 'marketing',
-      description: 'Same-day inquiry replies, IG portfolio cadence', channels: ['instagram', 'email'] },
+      description: 'Same-day inquiry replies, IG portfolio cadence', channels: ['instagram', 'email'],
+      templateSkills: [VIDEO_MARKETING_LOOP_SKILL] },
   ],
   recommendedTools: [
     { id: 'google_calendar', label: 'Google Calendar', why: 'Shoot schedule + conflict detection' },
@@ -619,7 +654,8 @@ export const REAL_ESTATE_TEMPLATE: VerticalTemplate = {
     { role: 'transaction', name: 'Transaction Coordinator', tier: 'Sonnet', required: true, lane: 'operations',
       description: 'Tracks contract milestones, closing-date reminders', channels: ['email', 'calendar'] },
     { role: 'sphere_nurture', name: 'SOI Nurture', tier: 'Sonnet', required: false, lane: 'marketing',
-      description: 'Quarterly check-ins with sphere-of-influence, neighborhood content', channels: ['email', 'instagram'] },
+      description: 'Quarterly check-ins with sphere-of-influence, neighborhood content', channels: ['email', 'instagram'],
+      templateSkills: [VIDEO_MARKETING_LOOP_SKILL] },
   ],
   recommendedTools: [
     { id: 'google_calendar', label: 'Google Calendar', why: 'Showings + open houses' },

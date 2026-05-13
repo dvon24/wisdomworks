@@ -1,0 +1,163 @@
+/**
+ * Replicate video generation adapter.
+ *
+ * Owner says "make a reel about our balayage special" → marketing agent
+ * calls generateVideo() → Replicate runs the model → we poll until done →
+ * return a public HTTPS URL the publishInstagramReel flow consumes.
+ *
+ * Replicate is pay-per-use. We pick model based on `quality` tier:
+ *   - 'fast'     → bytedance/seedance-1-lite (~$0.10/clip, 5s, decent)
+ *   - 'standard' → minimax/video-01 (~$0.30-0.50/clip, 6s, polished)
+ *   - 'premium'  → google/veo-3 (~$0.75-1.50/clip, 8s, best quality)
+ *
+ * Cost is surfaced to the owner via the third-party cost transparency rule
+ * — the agent always mentions estimated cost before generating.
+ */
+
+const REPLICATE_API_BASE = 'https://api.replicate.com/v1';
+
+interface ModelConfig {
+  /** Replicate model ref, e.g. 'bytedance/seedance-1-lite' or 'org/model:version' */
+  modelRef: string;
+  /** Default duration in seconds (model-dependent) */
+  defaultDurationSec: number;
+  /** Rough cost per generation in USD — owner-facing estimate */
+  costPerGenUsd: number;
+  /** Default aspect ratio for Reels (most models accept aspect_ratio or width/height) */
+  inputDefaults: Record<string, any>;
+}
+
+const MODELS: Record<'fast' | 'standard' | 'premium', ModelConfig> = {
+  fast: {
+    modelRef: 'bytedance/seedance-1-lite',
+    defaultDurationSec: 5,
+    costPerGenUsd: 0.10,
+    inputDefaults: { aspect_ratio: '9:16', resolution: '480p' },
+  },
+  standard: {
+    modelRef: 'minimax/video-01',
+    defaultDurationSec: 6,
+    costPerGenUsd: 0.40,
+    inputDefaults: { prompt_optimizer: true },
+  },
+  premium: {
+    modelRef: 'google/veo-3',
+    defaultDurationSec: 8,
+    costPerGenUsd: 1.25,
+    inputDefaults: { aspect_ratio: '9:16' },
+  },
+};
+
+export interface VideoGenResult {
+  ok: boolean;
+  videoUrl?: string;
+  predictionId?: string;
+  costEstimateUsd?: number;
+  modelRef?: string;
+  error?: string;
+}
+
+/**
+ * Generate a video. Polls Replicate until the prediction is done.
+ * Default poll budget is 4 minutes (Replicate jobs typically 30-120s).
+ */
+export async function generateVideo(input: {
+  prompt: string;
+  quality?: 'fast' | 'standard' | 'premium';
+  durationSec?: number;
+  aspectRatio?: '9:16' | '16:9' | '1:1';
+  maxWaitMs?: number;
+}): Promise<VideoGenResult> {
+  const token = process.env.REPLICATE_API_TOKEN;
+  if (!token) {
+    return { ok: false, error: 'REPLICATE_API_TOKEN not configured' };
+  }
+  const quality = input.quality ?? 'fast';
+  const model = MODELS[quality];
+
+  // Build inputs — most Replicate video models accept a `prompt` field;
+  // duration + aspect ratio overrides per-model where supported.
+  const modelInput: Record<string, any> = {
+    ...model.inputDefaults,
+    prompt: input.prompt.slice(0, 1500),
+  };
+  if (input.durationSec) modelInput.duration = input.durationSec;
+  if (input.aspectRatio) modelInput.aspect_ratio = input.aspectRatio;
+
+  try {
+    // Replicate uses "model versions" for some refs and the alias-style
+    // {owner}/{model} for hosted-models. We try the model-shortcut endpoint
+    // first (works for official models), fall back to version-based.
+    const createRes = await fetch(`${REPLICATE_API_BASE}/models/${model.modelRef}/predictions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Prefer: 'wait=60', // server-side wait up to 60s before returning
+      },
+      body: JSON.stringify({ input: modelInput }),
+    });
+    if (!createRes.ok) {
+      const errBody = await createRes.text();
+      return { ok: false, error: `Replicate create failed: ${createRes.status} ${errBody}` };
+    }
+
+    let prediction = await createRes.json();
+
+    // If `Prefer: wait` returned the finished prediction, output is ready.
+    // Otherwise poll until status reaches a terminal state.
+    const maxWaitMs = input.maxWaitMs ?? 4 * 60_000;
+    const start = Date.now();
+    while (
+      prediction.status &&
+      prediction.status !== 'succeeded' &&
+      prediction.status !== 'failed' &&
+      prediction.status !== 'canceled' &&
+      Date.now() - start < maxWaitMs
+    ) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const pollRes = await fetch(`${REPLICATE_API_BASE}/predictions/${prediction.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!pollRes.ok) {
+        return { ok: false, error: `Replicate poll failed: ${pollRes.status}`, predictionId: prediction.id };
+      }
+      prediction = await pollRes.json();
+    }
+
+    if (prediction.status !== 'succeeded') {
+      return {
+        ok: false,
+        predictionId: prediction.id,
+        error: prediction.error ?? `Replicate prediction ${prediction.status} (no output)`,
+      };
+    }
+
+    // Output shape varies by model — usually a string URL or array of URLs
+    const output = prediction.output;
+    const videoUrl: string | undefined = Array.isArray(output) ? output[0] : typeof output === 'string' ? output : undefined;
+    if (!videoUrl) {
+      return { ok: false, error: 'No video URL in Replicate output', predictionId: prediction.id };
+    }
+
+    return {
+      ok: true,
+      videoUrl,
+      predictionId: prediction.id,
+      costEstimateUsd: model.costPerGenUsd,
+      modelRef: model.modelRef,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
+/** For surfacing to the owner before they trigger a generation. */
+export function estimateGenerationCost(quality: 'fast' | 'standard' | 'premium' = 'fast'): {
+  modelRef: string;
+  costUsd: number;
+  durationSec: number;
+} {
+  const m = MODELS[quality];
+  return { modelRef: m.modelRef, costUsd: m.costPerGenUsd, durationSec: m.defaultDurationSec };
+}

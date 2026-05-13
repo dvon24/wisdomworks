@@ -78,6 +78,8 @@ import {
   publishFacebookPagePost,
   replyToInstagramComment,
 } from '../../_lib/integrations/meta-business';
+import { generateVideo, estimateGenerationCost } from '../../_lib/integrations/replicate-video';
+import { sendWhatsAppVideo, sendWhatsAppImage } from '../../_lib/whatsapp-media-send';
 import {
   loadActiveConnections,
   loadLatestSnapshot,
@@ -630,6 +632,50 @@ const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
   description:
     "Generate a magic-link URL the owner can tap to sign into the Command Deck on their phone or laptop. Use when the owner says 'send me a login link', 'log me in to the deck', 'I need to sign in', or whenever they want to view the dashboard. Returns a fully-formed URL valid for 30 days that, when clicked, sets a secure session cookie. NEVER paste deck URLs that lack a token — the deck refuses unauthenticated access.",
   input_schema: { type: 'object', properties: {} },
+};
+
+// ─── Marketing video generation + preview ────────────────────────────────
+
+const TOOL_GENERATE_MARKETING_VIDEO: AnthropicTool = {
+  name: 'generate_marketing_video',
+  description:
+    "Generate a short marketing video via Replicate AI. Use when the owner asks for a reel / video / marketing clip on a topic. ALWAYS mention the estimated cost before generating (third-party cost transparency rule). After generation, the next step is typically send_video_preview to show the owner on WhatsApp + ask for approval before publish_instagram_reel. Quality tiers: 'fast' (~$0.10, 5s, good for testing), 'standard' (~$0.40, 6s, polished), 'premium' (~$1.25, 8s, best). Default fast unless owner specifies.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string', description: 'Detailed visual prompt for the model. Be specific about scene, mood, motion, lighting. e.g. "Close-up of a hand turning the ignition key in a vintage sports car at sunset, golden hour, smooth cinematic motion."' },
+      quality: { type: 'string', enum: ['fast', 'standard', 'premium'], description: 'Cost/quality tier. Default fast.' },
+      duration_sec: { type: 'number', description: 'Video duration in seconds (model-dependent, typically 5-10).' },
+      aspect_ratio: { type: 'string', enum: ['9:16', '16:9', '1:1'], description: '9:16 for Reels (default), 1:1 for square posts.' },
+    },
+    required: ['prompt'],
+  },
+};
+
+const TOOL_SEND_VIDEO_PREVIEW: AnthropicTool = {
+  name: 'send_video_preview',
+  description:
+    "Send a video file directly into the owner's WhatsApp chat as a preview before publishing. Use AFTER generate_marketing_video produces a URL, so the owner can see the actual video and approve or ask for regeneration. The video plays inline in WhatsApp.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      video_url: { type: 'string', description: 'Public HTTPS MP4 URL (from generate_marketing_video output).' },
+      caption: { type: 'string', description: 'Caption text shown under the video. Usually the proposed Instagram caption so the owner sees the full package.' },
+    },
+    required: ['video_url'],
+  },
+};
+
+const TOOL_VIDEO_GEN_COST: AnthropicTool = {
+  name: 'estimate_video_cost',
+  description:
+    "Surface the estimated cost of a video generation before firing it. Use proactively in the conversation when the owner asks about marketing videos so they know what they're spending. Returns the model + cost + default duration per quality tier.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      quality: { type: 'string', enum: ['fast', 'standard', 'premium'] },
+    },
+  },
 };
 
 // ─── Meta Business (Instagram + Facebook) ────────────────────────────────
@@ -1462,6 +1508,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_PUBLISH_INSTAGRAM_REEL);
   tools.push(TOOL_PUBLISH_FACEBOOK_POST);
   tools.push(TOOL_REPLY_INSTAGRAM_COMMENT);
+  tools.push(TOOL_GENERATE_MARKETING_VIDEO);
+  tools.push(TOOL_SEND_VIDEO_PREVIEW);
+  tools.push(TOOL_VIDEO_GEN_COST);
   tools.push(TOOL_REQUEST_RESEARCH);
   tools.push(TOOL_LIST_PENDING_RESEARCH);
   tools.push(TOOL_RECALL_ATOMS);
@@ -2449,6 +2498,55 @@ export async function executeTool(
         const ok = await cancelManagedEvent(eventId, cleanPhone);
         if (!ok) return { content: 'Could not cancel the event.', success: false };
         return { content: '✓ Cancelled.', success: true };
+      }
+
+      case 'estimate_video_cost': {
+        const q = (call.input.quality as 'fast' | 'standard' | 'premium' | undefined) ?? 'fast';
+        const est = estimateGenerationCost(q);
+        return {
+          content: `${q} tier: ${est.modelRef}, ~${est.durationSec}s clip, ~$${est.costUsd.toFixed(2)} per generation. Replicate bills per-use; you control the spend.`,
+          success: true,
+        };
+      }
+
+      case 'generate_marketing_video': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const prompt = String(call.input.prompt ?? '').trim();
+        if (!prompt) return { content: 'prompt required.', success: false };
+        const quality = (call.input.quality as 'fast' | 'standard' | 'premium' | undefined) ?? 'fast';
+        if (!process.env.REPLICATE_API_TOKEN) {
+          return { content: 'Video generation not yet configured (REPLICATE_API_TOKEN missing). Admin needs to set it up.', success: false };
+        }
+        const result = await generateVideo({
+          prompt,
+          quality,
+          durationSec: typeof call.input.duration_sec === 'number' ? call.input.duration_sec : undefined,
+          aspectRatio: (call.input.aspect_ratio as any) ?? undefined,
+        });
+        if (!result.ok) {
+          return { content: `Video generation failed: ${result.error}`, success: false };
+        }
+        return {
+          content: `✓ Video generated (${result.modelRef}, est. $${(result.costEstimateUsd ?? 0).toFixed(2)}):\n${result.videoUrl}\n\nNext: send the video to the owner as a WhatsApp preview via send_video_preview, OR if they already approved, publish_instagram_reel.`,
+          success: true,
+        };
+      }
+
+      case 'send_video_preview': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const videoUrl = String(call.input.video_url ?? '').trim();
+        if (!videoUrl || !videoUrl.startsWith('https://')) return { content: 'video_url required (must be HTTPS).', success: false };
+        const caption = call.input.caption ? String(call.input.caption).slice(0, 1024) : undefined;
+        const result = await sendWhatsAppVideo({
+          to: user.phoneNumber,
+          videoUrl,
+          caption,
+        });
+        if (!result.ok) return { content: `Video preview failed: ${result.error}`, success: false };
+        return {
+          content: `✓ Sent video preview to your WhatsApp. Watch it and tell me 'publish it' to post the reel, or 'regenerate with X' to try again.`,
+          success: true,
+        };
       }
 
       case 'instagram_recent_activity': {

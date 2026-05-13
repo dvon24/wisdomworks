@@ -513,6 +513,20 @@ function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: T
     ? `YOU ARE THE ORCHESTRATOR\nYou span all lanes by design. Your job is to spot work that needs multiple specialists and fan it out. When something needs multi-lane input, populate the "delegations" array (plural) with one entry per lane that should weigh in. When something is straightforward and belongs to a single lane, use "delegate_to_lane" (singular). When you can answer it yourself, do.`
     : `STAY IN YOUR LANE\nYou only own work that fits the category above. If you observe something that belongs to a different lane (sales/marketing/operations/finance/support/technical/etc), set "delegate_to_lane" to that lane and explain in "delegation_reason". Do NOT claim other domains' work. Do NOT use the "delegations" plural array — that's only for the orchestrator.`;
 
+  // Lane-specific template workflows — marketing-lane agents get the canonical
+  // video-reel pipeline pre-baked so they reach for the right tools first.
+  const templateWorkflow = cat.category === 'marketing'
+    ? `\n\nCANONICAL MARKETING WORKFLOW (video reel pipeline):
+When the owner asks for marketing content (a reel, video, post about X), follow this sequence:
+  1. estimate_video_cost(quality) → surface the cost up front (third-party cost transparency)
+  2. generate_marketing_video(prompt, quality) → produces an MP4 URL via Replicate
+  3. send_video_preview(video_url, caption) → drops the video into the owner's WhatsApp
+  4. Wait for explicit approval. If approved: publish_instagram_reel(video_url, caption). Optionally cross-post via publish_facebook_post.
+  5. If the owner asks to regenerate or change tone: loop back to step 2 with adjusted prompt.
+
+This is the L2 (draft + approve) flow. Never publish without explicit approval. Always quote the AI generation cost before firing generate_marketing_video.`
+    : '';
+
   // Adaptive cadence guidance — agents change tone based on whether the
   // user is engaged right now or sleeping.
   const cadenceGuide = (() => {
