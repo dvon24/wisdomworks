@@ -152,6 +152,12 @@ async function runStep(
  * Run a workflow definition end-to-end. Loads the user's connections +
  * context once at the top so every step shares them. Stops on the first
  * failure (workflows are typically dependent chains).
+ *
+ * Every run lands in agent_runs (trigger='manual', phase='build') with
+ * the step-by-step trace in metadata so the activity feed and dashboards
+ * show what ran. Without this audit row, workflow execution was
+ * invisible to the owner — Story 2.12 AC: "workflow execution is
+ * audit-logged with start, steps, and completion status".
  */
 export async function runWorkflow(
   tenantPhone: string,
@@ -171,5 +177,59 @@ export async function runWorkflow(
   }
 
   const ok = results.every((r) => r.success);
-  return { ok, totalDurationMs: Date.now() - totalStart, steps: results };
+  const totalMs = Date.now() - totalStart;
+
+  // Audit log — fire-and-forget. Never block the workflow result.
+  void logWorkflowRun({ tenantPhone: cleanPhone, workflow, results, ok, totalMs });
+
+  return { ok, totalDurationMs: totalMs, steps: results };
+}
+
+async function logWorkflowRun(args: {
+  tenantPhone: string;
+  workflow: WorkflowDefinition;
+  results: StepResult[];
+  ok: boolean;
+  totalMs: number;
+}): Promise<void> {
+  const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  try {
+    const failedStep = args.results.find((r) => !r.success);
+    const summary = args.ok
+      ? `${args.workflow.name}: ${args.results.length} steps in ${(args.totalMs / 1000).toFixed(1)}s`
+      : `${args.workflow.name}: failed at step "${failedStep?.id}" — ${failedStep?.error?.slice(0, 100) ?? 'unknown'}`;
+    await fetch(`${SUPABASE_URL}/rest/v1/agent_runs`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({
+        tenant_phone: args.tenantPhone,
+        trigger: 'manual',
+        phase: 'build',
+        outcome: args.ok ? 'acted' : 'failed',
+        input_summary: `[workflow] ${args.workflow.name}${args.workflow.description ? ` — ${args.workflow.description.slice(0, 100)}` : ''}`,
+        output_summary: summary,
+        metadata: {
+          workflow_name: args.workflow.name,
+          total_ms: args.totalMs,
+          step_count: args.results.length,
+          step_trace: args.results.map((s) => ({
+            id: s.id,
+            type: s.type,
+            success: s.success,
+            duration_ms: s.durationMs,
+            ...(s.error ? { error: s.error.slice(0, 200) } : {}),
+          })),
+        },
+      }),
+    });
+  } catch (err) {
+    console.warn('[workflow-runner] audit log failed:', err);
+  }
 }

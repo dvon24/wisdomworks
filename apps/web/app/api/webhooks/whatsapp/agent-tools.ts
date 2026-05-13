@@ -2122,6 +2122,7 @@ export async function executeTool(
           : format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
           : 'application/pdf';
         const safeName = `${filename}${ext}`;
+        const startedAt = Date.now();
 
         try {
           let buffer: Buffer;
@@ -2134,25 +2135,136 @@ export async function executeTool(
           } else {
             buffer = await generatePdf(title, (call.input.sections ?? []) as DocSection[]);
           }
+          const genMs = Date.now() - startedAt;
+          const sizeKb = buffer.length / 1024;
 
-          // Pick a destination: prefer Google Drive if connected, else OneDrive
+          // Audit log helper — every create_document writes to agent_runs so
+          // the activity feed shows what was generated, where it landed,
+          // and the NFR7 (2-min) timing.
+          const auditDelivery = async (destination: string, url: string | null, totalMs: number, success: boolean, err?: string) => {
+            try {
+              const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+              const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+              if (!supaUrl || !supaKey) return;
+              const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+              const slaOk = totalMs < 2 * 60 * 1000; // NFR7
+              await fetch(`${supaUrl}/rest/v1/agent_runs`, {
+                method: 'POST',
+                headers: {
+                  apikey: supaKey,
+                  Authorization: `Bearer ${supaKey}`,
+                  'Content-Type': 'application/json',
+                  Prefer: 'return=minimal',
+                },
+                body: JSON.stringify({
+                  tenant_phone: cleanPhone,
+                  trigger: 'manual',
+                  phase: 'execute',
+                  outcome: success ? 'acted' : 'failed',
+                  input_summary: `[doc-gen] create_document ${format}: ${title.slice(0, 100)}`,
+                  output_summary: success
+                    ? `${safeName} (${sizeKb.toFixed(1)}KB) → ${destination}${slaOk ? '' : ' [SLA breach]'}`
+                    : `${safeName} delivery failed: ${err}`,
+                  metadata: {
+                    format,
+                    filename: safeName,
+                    size_bytes: buffer.length,
+                    generate_ms: genMs,
+                    total_ms: totalMs,
+                    destination,
+                    delivery_url: url,
+                    sla_target_ms: 2 * 60 * 1000,
+                    sla_met: slaOk,
+                  },
+                }),
+              });
+            } catch (err) {
+              console.warn('[create_document] audit failed:', err);
+            }
+          };
+
+          // Destination preference: Google Drive → OneDrive → WhatsApp document fallback
           const googleConn = connections.find((c) => c.provider === 'google');
           const msConn = connections.find((c) => c.provider === 'microsoft');
-          let upload: any = null;
+
           if (googleConn) {
-            upload = await uploadToGoogleDrive(googleConn.access_token, safeName, mime, buffer);
-            if (upload.ok) return { content: `Created ${safeName} in your Google Drive: ${upload.webUrl}`, success: true };
+            const upload = await uploadToGoogleDrive(googleConn.access_token, safeName, mime, buffer);
+            if (upload.ok) {
+              const totalMs = Date.now() - startedAt;
+              await auditDelivery('google_drive', upload.webUrl ?? null, totalMs, true);
+              return { content: `Created ${safeName} in your Google Drive (${(sizeKb).toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s): ${upload.webUrl}`, success: true };
+            }
           }
           if (msConn) {
-            upload = await uploadToOneDrive(msConn.access_token, safeName, buffer);
-            if (upload.ok) return { content: `Created ${safeName} in your OneDrive: ${upload.webUrl}`, success: true };
+            const upload = await uploadToOneDrive(msConn.access_token, safeName, buffer);
+            if (upload.ok) {
+              const totalMs = Date.now() - startedAt;
+              await auditDelivery('onedrive', upload.webUrl ?? null, totalMs, true);
+              return { content: `Created ${safeName} in your OneDrive (${(sizeKb).toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s): ${upload.webUrl}`, success: true };
+            }
           }
-          // Fallback: return the size + base64 length so the user knows it was generated
+
+          // Fallback: upload to Supabase Storage public bucket + send via
+          // WhatsApp document message so the owner still gets the file.
+          // This is the "no Drive connected" path — previously stubbed.
+          const { uploadGeneratedDoc } = await import('../../_lib/generated-doc-storage');
+          const stored = await uploadGeneratedDoc({
+            tenantPhone: user.phoneNumber,
+            buffer,
+            filename: safeName,
+            mimeType: mime,
+          });
+          if (!stored) {
+            const totalMs = Date.now() - startedAt;
+            await auditDelivery('whatsapp_fallback', null, totalMs, false, 'storage upload failed');
+            return {
+              content: `Generated ${safeName} (${sizeKb.toFixed(1)}KB) but couldn't store it. The Supabase 'generated-docs' bucket may not exist yet (admin needs to create it with public-read access).`,
+              success: false,
+            };
+          }
+          const { sendWhatsAppDocument } = await import('../../_lib/whatsapp-media-send');
+          const sent = await sendWhatsAppDocument({
+            to: user.phoneNumber,
+            documentUrl: stored.publicUrl,
+            filename: safeName,
+            caption: title,
+          });
+          const totalMs = Date.now() - startedAt;
+          if (!sent.ok) {
+            await auditDelivery('whatsapp_fallback', stored.publicUrl, totalMs, false, sent.error);
+            return {
+              content: `Generated ${safeName} (${sizeKb.toFixed(1)}KB) and stored at ${stored.publicUrl}, but WhatsApp delivery failed: ${sent.error}`,
+              success: true,
+            };
+          }
+          await auditDelivery('whatsapp', stored.publicUrl, totalMs, true);
           return {
-            content: `Generated ${safeName} (${(buffer.length / 1024).toFixed(1)} KB) but no Drive/OneDrive connection found. Connect one in the deck to auto-upload, or I can attach via WhatsApp on next iteration.`,
+            content: `✓ Sent ${safeName} (${sizeKb.toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s) to your WhatsApp as a file attachment. No Drive/OneDrive connected — connect one in the deck and future docs go there directly.`,
             success: true,
           };
         } catch (err) {
+          const totalMs = Date.now() - startedAt;
+          // Best-effort audit on failure too — we want broken-doc-gen failures
+          // visible in the activity feed
+          try {
+            const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+            const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+            if (supaUrl && supaKey) {
+              await fetch(`${supaUrl}/rest/v1/agent_runs`, {
+                method: 'POST',
+                headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+                body: JSON.stringify({
+                  tenant_phone: user.phoneNumber.replace(/[\s\-+()]/g, ''),
+                  trigger: 'manual',
+                  phase: 'execute',
+                  outcome: 'failed',
+                  input_summary: `[doc-gen] create_document ${format}: ${title.slice(0, 100)}`,
+                  output_summary: `generation exception: ${String(err).slice(0, 200)}`,
+                  metadata: { format, filename: safeName, total_ms: totalMs },
+                }),
+              });
+            }
+          } catch {}
           return { content: `Document generation failed: ${err}`, success: false };
         }
       }

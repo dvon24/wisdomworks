@@ -30,6 +30,54 @@ export async function sendWhatsAppVideo(input: {
   });
 }
 
+/**
+ * Send a generated document (docx/pptx/xlsx/pdf) into the owner's WhatsApp
+ * as a file attachment. WhatsApp's document type takes a public HTTPS URL
+ * — caller is responsible for hosting the file (typically Supabase Storage
+ * in a public bucket).
+ *
+ * Used as the fallback delivery when no Drive/OneDrive is connected so
+ * the owner still gets their generated doc.
+ */
+export async function sendWhatsAppDocument(input: {
+  to: string;
+  documentUrl: string;
+  filename: string;
+  caption?: string;
+}): Promise<{ ok: boolean; messageId?: string; error?: string }> {
+  const phoneId = process.env.WHATSAPP_PHONE_ID;
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!phoneId || !accessToken) return { ok: false, error: 'WhatsApp not configured' };
+  if (!input.documentUrl.startsWith('https://')) return { ok: false, error: 'documentUrl must be HTTPS' };
+
+  const cleanTo = input.to.replace(/[\s\-+()]/g, '');
+  try {
+    const res = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: cleanTo,
+        type: 'document',
+        document: {
+          link: input.documentUrl,
+          filename: input.filename.slice(0, 240),
+          ...(input.caption ? { caption: input.caption.slice(0, 1024) } : {}),
+        },
+      }),
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.warn('[whatsapp-media] document send failed:', res.status, errBody);
+      return { ok: false, error: errBody };
+    }
+    const data = await res.json();
+    return { ok: true, messageId: data.messages?.[0]?.id };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
 export async function sendWhatsAppImage(input: {
   to: string;
   imageUrl: string;
