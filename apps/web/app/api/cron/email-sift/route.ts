@@ -165,6 +165,25 @@ async function processCustomer(
   // mentioned. Personal/uncertain mail never reaches this step.
   await mapExtractionsToOntology(conn.phone_number, businessOnly);
 
+  // Story 2.16 Phase 2a — email data capture framework. Folds the same
+  // extracted entities into knowledge_atoms (fast in-prompt context),
+  // enriches known_people for recurring senders (frequency + topics),
+  // and emits business_insights for high-signal items (overdue invoices,
+  // contract renewals, urgent emails). Same code path serves Gmail,
+  // Outlook, Yahoo, and generic IMAP since they all flow through here.
+  try {
+    const { captureEmailDataForLearning } = await import('../../_lib/email-data-capture');
+    const capture = await captureEmailDataForLearning(conn.phone_number, businessOnly);
+    if (capture.atoms > 0 || capture.people > 0 || capture.insights > 0) {
+      console.log(`[email-sift] data capture for ${conn.phone_number}: ${capture.atoms} atoms, ${capture.people} known_people, ${capture.insights} insights`);
+    }
+    if (capture.errors.length > 0) {
+      console.warn(`[email-sift] data capture errors for ${conn.phone_number}:`, capture.errors);
+    }
+  } catch (err) {
+    console.warn('[email-sift] data capture failed (non-blocking):', err);
+  }
+
   return { processed: emails.length, actionable: actionable.length };
 }
 
