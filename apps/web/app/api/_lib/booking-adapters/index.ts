@@ -78,6 +78,26 @@ export interface BookingAdapter {
   searchAvailability?(accessToken: string, fromIso: string, toIso: string, opts?: { merchantId?: string; serviceExternalId?: string; staffExternalId?: string }): Promise<BookingAvailabilitySlot[]>;
   /** Create a booking on behalf of the merchant (Phase 3). */
   createBooking?(accessToken: string, input: CreateBookingInput, opts?: { merchantId?: string }): Promise<CreatedBooking | null>;
+  /** List bookable services so the widget can show a dropdown without
+   *  the owner having to copy service ids manually. */
+  listServices?(accessToken: string, opts?: { merchantId?: string }): Promise<BookingService[]>;
+  /** Find or create a customer from visitor-supplied contact info (used
+   *  by the public booking widget when a visitor books for themselves). */
+  findOrCreateCustomer?(accessToken: string, input: VisitorContact, opts?: { merchantId?: string }): Promise<string | null>;
+}
+
+export interface BookingService {
+  externalId: string;
+  name: string;
+  durationMinutes?: number;
+  priceUsd?: number;
+  description?: string;
+}
+
+export interface VisitorContact {
+  name: string;
+  email?: string;
+  phone?: string;
 }
 
 // Adapter registry — add new providers here as they ship.

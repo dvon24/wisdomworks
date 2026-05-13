@@ -12,7 +12,7 @@
  *   - MERCHANT_PROFILE_READ (so we know the merchant_id)
  */
 
-import type { BookingAdapter, BookingCustomer, BookingAvailabilitySlot, CreateBookingInput, CreatedBooking } from './index';
+import type { BookingAdapter, BookingCustomer, BookingAvailabilitySlot, CreateBookingInput, CreatedBooking, BookingService, VisitorContact } from './index';
 
 const SQUARE_API_BASE = process.env.SQUARE_ENV === 'production'
   ? 'https://connect.squareup.com'
@@ -160,6 +160,104 @@ export const squareAdapter: BookingAdapter = {
       };
     } catch (err) {
       console.warn('[square] createBooking exception:', err);
+      return null;
+    }
+  },
+
+  async listServices(accessToken): Promise<BookingService[]> {
+    try {
+      const res = await fetch(`${SQUARE_API_BASE}/v2/catalog/list?types=ITEM`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Square-Version': '2024-12-18',
+        },
+      });
+      if (!res.ok) {
+        console.warn('[square] listServices failed:', res.status, await res.text());
+        return [];
+      }
+      const data = await res.json();
+      const items = data.objects ?? [];
+      const services: BookingService[] = [];
+      for (const item of items) {
+        const itemData = item.item_data;
+        if (!itemData) continue;
+        // Each item can have multiple variations (e.g. "Haircut — short" vs "Haircut — long").
+        // For widget UX, each variation becomes its own bookable service.
+        const variations = itemData.variations ?? [];
+        for (const v of variations) {
+          if (!v.id || !v.item_variation_data) continue;
+          const vd = v.item_variation_data;
+          if (!vd.available_for_booking) continue; // only bookable variations
+          const priceMinor = vd.price_money?.amount;
+          const priceUsd = typeof priceMinor === 'number' || typeof priceMinor === 'string'
+            ? Number(priceMinor) / 100
+            : undefined;
+          services.push({
+            externalId: v.id,
+            name: variations.length > 1 ? `${itemData.name} — ${vd.name}` : itemData.name,
+            durationMinutes: vd.service_duration ? Math.round(vd.service_duration / 60000) : undefined,
+            priceUsd,
+            description: itemData.description,
+          });
+        }
+      }
+      return services;
+    } catch (err) {
+      console.warn('[square] listServices exception:', err);
+      return [];
+    }
+  },
+
+  async findOrCreateCustomer(accessToken, input: VisitorContact): Promise<string | null> {
+    if (!input.name) return null;
+    try {
+      // Try to find by email first (most reliable dedup key)
+      if (input.email) {
+        const search = await fetch(`${SQUARE_API_BASE}/v2/customers/search`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'Square-Version': '2024-12-18',
+          },
+          body: JSON.stringify({
+            query: { filter: { email_address: { exact: input.email } } },
+            limit: 1,
+          }),
+        });
+        if (search.ok) {
+          const data = await search.json();
+          const existing = data.customers?.[0];
+          if (existing?.id) return existing.id;
+        }
+      }
+      // Create new
+      const [given, ...rest] = input.name.split(' ');
+      const family = rest.join(' ');
+      const createRes = await fetch(`${SQUARE_API_BASE}/v2/customers`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-12-18',
+        },
+        body: JSON.stringify({
+          given_name: given,
+          family_name: family || undefined,
+          email_address: input.email,
+          phone_number: input.phone,
+          note: 'Created via WisdomWorks widget',
+        }),
+      });
+      if (!createRes.ok) {
+        console.warn('[square] customer create failed:', createRes.status, await createRes.text());
+        return null;
+      }
+      const created = await createRes.json();
+      return created.customer?.id ?? null;
+    } catch (err) {
+      console.warn('[square] findOrCreateCustomer exception:', err);
       return null;
     }
   },

@@ -2247,19 +2247,28 @@ export async function executeTool(
         const allowedOrigins = Array.isArray(call.input.allowed_origins)
           ? call.input.allowed_origins.map(String).filter(Boolean)
           : [];
-        const result = await createWidgetApiKey({ tenantPhone: cleanPhone, label, allowedOrigins });
+        const result = await createWidgetApiKey({
+          tenantPhone: cleanPhone,
+          label,
+          scopes: ['chat', 'booking'],
+          allowedOrigins,
+        });
         if (!result) return { content: 'Could not generate the API key.', success: false };
 
         const base = process.env.NEXT_PUBLIC_APP_BASE_URL || 'https://wisdomworks.vercel.app';
-        const embedSnippet = `<script src="${base}/api/widget/embed.js?key=${result.plainKey}" defer></script>`;
+        const chatSnippet = `<script src="${base}/api/widget/embed.js?key=${result.plainKey}" defer></script>`;
+        const bookingSnippet = `<script src="${base}/api/widget/booking.js?key=${result.plainKey}" defer></script>`;
         const lines: string[] = [
           `✓ Generated widget key for "${label}".`,
           '',
           `API key (save this — shown ONCE):`,
           result.plainKey,
           '',
-          `Paste this into your website's HTML just before </body>:`,
-          embedSnippet,
+          `CHAT WIDGET — paste before </body>:`,
+          chatSnippet,
+          '',
+          `BOOKING WIDGET — paste before </body> (requires Square connected):`,
+          bookingSnippet,
           '',
           allowedOrigins.length > 0
             ? `Restricted to origins: ${allowedOrigins.join(', ')}`
