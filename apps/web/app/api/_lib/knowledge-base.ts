@@ -203,6 +203,7 @@ export interface KnowledgeMatch {
   source_entity_id: string;
   source_entity_type: string;
   source_entity_name: string;
+  source_kind?: 'ontology' | 'atom' | 'conversation' | 'document' | 'visit' | 'insight';
   chunk_index: number;
   similarity: number;
 }
@@ -221,20 +222,33 @@ export interface KnowledgeMatch {
 export async function queryKnowledge(
   tenantPhone: string,
   question: string,
-  options: { limit?: number; minSimilarity?: number; audit?: boolean; source?: string } = {},
+  options: {
+    limit?: number;
+    minSimilarity?: number;
+    audit?: boolean;
+    source?: string;
+    /** Filter by source kind. Defaults to all kinds. Pass ['atom',
+     *  'conversation', 'document', 'visit', 'insight'] for
+     *  behavioral-only recall; ['ontology'] for ontology-only. */
+    sourceKinds?: Array<'ontology' | 'atom' | 'conversation' | 'document' | 'visit' | 'insight'>;
+  } = {},
 ): Promise<{ matches: KnowledgeMatch[]; embedTokens: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { matches: [], embedTokens: 0 };
 
   const { embedding, tokens } = await embedText(question);
+  const body: Record<string, unknown> = {
+    p_tenant_phone: tenantPhone,
+    p_query_embedding: embedding,
+    p_match_count: options.limit ?? 5,
+    p_min_similarity: options.minSimilarity ?? 0.4,
+  };
+  if (options.sourceKinds && options.sourceKinds.length > 0) {
+    body.p_source_kinds = options.sourceKinds;
+  }
   const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/match_knowledge`, {
     method: 'POST',
     headers: headers(),
-    body: JSON.stringify({
-      p_tenant_phone: tenantPhone,
-      p_query_embedding: embedding,
-      p_match_count: options.limit ?? 5,
-      p_min_similarity: options.minSimilarity ?? 0.4,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     console.warn('[kb] match_knowledge failed:', res.status, await res.text());

@@ -1678,6 +1678,27 @@ const TOOL_ANALYZE_CLOUD_DOC: AnthropicTool = {
   },
 };
 
+// ─── Behavioral RAG — semantic recall across rolling memory ─────────────
+
+const TOOL_RECALL_FROM_MEMORY: AnthropicTool = {
+  name: 'recall_from_memory',
+  description:
+    "Semantic recall across the tenant's BEHAVIORAL memory — knowledge atoms (durable facts from past chats), analyzed documents (PDF/email-attachment summaries), client visit history, business insights, and the rolling conversation summary. Use when the owner asks 'what did X say about Y', 'remind me what was in the lease', 'when did Maria last visit', 'what was that insight about Tuesdays'. Returns matched chunks with source type + similarity score. For STATIC org-knowledge queries (policy / role definitions / capabilities), use query_knowledge_base instead — that one searches the ontology layer.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      question: { type: 'string', description: 'Natural-language question to semantically search the rolling memory.' },
+      limit: { type: 'number', description: 'Default 5, max 20.' },
+      kinds: {
+        type: 'array',
+        items: { type: 'string', enum: ['atom', 'conversation', 'document', 'visit', 'insight'] },
+        description: 'Optional — restrict to specific source kinds. Empty/omitted = all behavioral kinds.',
+      },
+    },
+    required: ['question'],
+  },
+};
+
 // ─── Owner-disposition profile (auto-mined operating manual) ────────────
 
 const TOOL_SHOW_DISPOSITION_PROFILE: AnthropicTool = {
@@ -2050,6 +2071,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_SHOW_EMAIL_ENGAGEMENT);
   tools.push(TOOL_SHOW_DISPOSITION_PROFILE);
   tools.push(TOOL_FORGET_DISPOSITION_RULE);
+  tools.push(TOOL_RECALL_FROM_MEMORY);
   // SMS tool — only when Twilio is configured. Owner needs to set
   // TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + TWILIO_FROM_NUMBER in Vercel.
   if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER) {
@@ -2585,7 +2607,7 @@ export async function executeTool(
         if (!question) return { content: 'Missing question.', success: false };
         try {
           const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
-          const { matches, embedTokens } = await queryKnowledge(cleanPhone, question, { limit: call.input.limit ?? 5, source: 'agent_query' });
+          const { matches, embedTokens } = await queryKnowledge(cleanPhone, question, { limit: call.input.limit ?? 5, sourceKinds: ['ontology'], source: 'agent_query' });
           if (matches.length === 0) {
             return { content: `No knowledge-base matches for "${question}". The KB may be empty or the question is outside the org's recorded scope.`, success: true };
           }
@@ -2598,6 +2620,42 @@ export async function executeTool(
           };
         } catch (err) {
           return { content: `Knowledge base error: ${err}`, success: false };
+        }
+      }
+
+      case 'recall_from_memory': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const question = String(call.input.question ?? '').trim();
+        if (!question) return { content: 'Missing question.', success: false };
+        const limit = typeof call.input.limit === 'number' ? Math.min(Math.max(call.input.limit, 1), 20) : 5;
+        const requestedKinds = Array.isArray(call.input.kinds) && call.input.kinds.length > 0
+          ? (call.input.kinds as string[])
+          : ['atom', 'document', 'insight', 'visit', 'conversation'];
+        try {
+          const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+          const { matches, embedTokens } = await queryKnowledge(cleanPhone, question, {
+            limit,
+            sourceKinds: requestedKinds as any,
+            source: 'recall_from_memory',
+          });
+          if (matches.length === 0) {
+            return {
+              content: `Nothing in behavioral memory (atoms, docs, visits, insights, conv summary) matches "${question}". This may be because the topic hasn't come up before, or it lives in the org-knowledge layer — try query_knowledge_base instead.`,
+              success: true,
+            };
+          }
+          const lines = matches.map((m, i) => {
+            const kindLabel = (m as any).source_kind ?? m.source_entity_type;
+            const name = m.source_entity_name || '(unnamed)';
+            const snippet = m.content.slice(0, 240) + (m.content.length > 240 ? '…' : '');
+            return `${i + 1}. [${kindLabel}: ${name}] (similarity ${(m.similarity * 100).toFixed(0)}%)\n   ${snippet}`;
+          });
+          return {
+            content: `${matches.length} memory match${matches.length === 1 ? '' : 'es'} (embed: ${embedTokens} tok):\n\n${lines.join('\n\n')}`,
+            success: true,
+          };
+        } catch (err) {
+          return { content: `Memory recall error: ${err}`, success: false };
         }
       }
 
