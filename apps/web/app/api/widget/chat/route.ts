@@ -25,7 +25,7 @@ export const maxDuration = 60;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const CHAT_MODEL = 'claude-sonnet-4-20250514';
+const CHAT_MODEL = 'claude-sonnet-4-6';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -249,7 +249,15 @@ Keep replies short (2-3 sentences) and conversational. Visitor: ${input.visitor.
       },
       body: JSON.stringify({
         model: CHAT_MODEL,
-        max_tokens: 500,
+        // Bump from 500 → 2048 so adaptive thinking has headroom for
+        // multi-step reasoning ("can you book me Tuesday at 3?" might
+        // need to think about availability + tool plan + reply).
+        max_tokens: 2048,
+        // Adaptive thinking lets Claude decide whether to think.
+        // effort: 'low' keeps visitor chat responsive — visitor-facing
+        // widgets compete with live-chat latency expectations.
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'low' },
         // Top-level cache_control = automatic caching for the growing
         // messages tail. System block already has its own breakpoint so
         // the per-visitor system prefix is cached after turn 1 and the

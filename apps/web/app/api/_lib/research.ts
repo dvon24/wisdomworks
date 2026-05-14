@@ -234,7 +234,7 @@ Hard rules:
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 4000,
         system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
@@ -378,7 +378,7 @@ Hard rules:
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 2000,
         system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: userPrompt }],

@@ -35,18 +35,18 @@ export interface DerivedAgentConfig {
 /** Default model assignments per tier, used when spec doesn't supply routing */
 const DEFAULT_ROUTING: Record<AgentTier, Record<string, ModelRoutingEntry>> = {
   Opus: {
-    primary: { provider: 'anthropic', model: 'claude-opus-4-20250514', fallback: { provider: 'openai', model: 'gpt-4o' } },
-    reasoning: { provider: 'anthropic', model: 'claude-opus-4-20250514' },
-    summarization: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+    primary: { provider: 'anthropic', model: 'claude-opus-4-7', fallback: { provider: 'openai', model: 'gpt-4o' } },
+    reasoning: { provider: 'anthropic', model: 'claude-opus-4-7' },
+    summarization: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
   },
   Sonnet: {
-    primary: { provider: 'anthropic', model: 'claude-sonnet-4-20250514', fallback: { provider: 'openai', model: 'gpt-4o' } },
-    reasoning: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+    primary: { provider: 'anthropic', model: 'claude-sonnet-4-6', fallback: { provider: 'openai', model: 'gpt-4o' } },
+    reasoning: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
     summarization: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
   },
   Haiku: {
-    primary: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', fallback: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' } },
-    reasoning: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+    primary: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', fallback: { provider: 'anthropic', model: 'claude-sonnet-4-6' } },
+    reasoning: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
     summarization: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
   },
 };

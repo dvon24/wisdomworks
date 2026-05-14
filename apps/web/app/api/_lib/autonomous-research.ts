@@ -24,7 +24,7 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
-const DETECTOR_MODEL = 'claude-sonnet-4-20250514';
+const DETECTOR_MODEL = 'claude-sonnet-4-6';
 
 const DAILY_L3_CAP = 2;
 
