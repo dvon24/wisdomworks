@@ -250,6 +250,11 @@ Keep replies short (2-3 sentences) and conversational. Visitor: ${input.visitor.
       body: JSON.stringify({
         model: CHAT_MODEL,
         max_tokens: 500,
+        // Top-level cache_control = automatic caching for the growing
+        // messages tail. System block already has its own breakpoint so
+        // the per-visitor system prefix is cached after turn 1 and the
+        // conversation tail caches each subsequent turn.
+        cache_control: { type: 'ephemeral' },
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: input.messages.map((m) => ({ role: m.role, content: m.content })),
       }),

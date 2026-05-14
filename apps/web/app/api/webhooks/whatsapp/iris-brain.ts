@@ -22,14 +22,20 @@ import { recordChatRun } from '../../_lib/chat-cost-tracker';
 
 const MAX_ITERATIONS = 8;
 const SONNET_MODEL = 'claude-sonnet-4-20250514';
-// Anthropic Sonnet 4 published rates per 1M tokens
+// Anthropic Sonnet 4 published rates per 1M tokens.
+// Per docs: cache writes are 1.25× base, cache reads are 0.1× base.
 const SONNET_IN_PER_M = 3;
 const SONNET_OUT_PER_M = 15;
-const SONNET_CACHED_IN_PER_M = 0.3;
+const SONNET_CACHE_WRITE_PER_M = 3.75;
+const SONNET_CACHE_READ_PER_M = 0.3;
 
-function estimateChatCost(totalIn: number, cachedIn: number, totalOut: number): number {
-  const uncached = Math.max(0, totalIn - cachedIn);
-  return (uncached * SONNET_IN_PER_M + cachedIn * SONNET_CACHED_IN_PER_M + totalOut * SONNET_OUT_PER_M) / 1_000_000;
+function estimateChatCost(uncachedIn: number, cacheWriteIn: number, cacheReadIn: number, totalOut: number): number {
+  return (
+    uncachedIn * SONNET_IN_PER_M +
+    cacheWriteIn * SONNET_CACHE_WRITE_PER_M +
+    cacheReadIn * SONNET_CACHE_READ_PER_M +
+    totalOut * SONNET_OUT_PER_M
+  ) / 1_000_000;
 }
 
 async function callAnthropic(
@@ -38,15 +44,32 @@ async function callAnthropic(
   messages: any[],
   tools: any[],
 ): Promise<any> {
+  // Prompt caching strategy (3 of the 4 available breakpoints):
+  //   1. tools[-1].cache_control — caches the tool definitions (stable per tenant)
+  //   2. system[0].cache_control — caches tools + system prompt prefix
+  //   3. top-level cache_control — automatic caching moves the breakpoint to the
+  //      last message each request, so the growing conversation tail (multi-iter
+  //      tool loops + multi-turn history) reads from cache on subsequent calls.
+  // Hierarchy is tools → system → messages, so each breakpoint covers the
+  // prior layers transitively. Cache reads are 10% of base; writes are 125%.
   const body: any = {
     model: 'claude-sonnet-4-20250514',
     max_tokens: 1024,
+    cache_control: { type: 'ephemeral' },
     system: [
       { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
     ],
     messages,
   };
-  if (tools.length > 0) body.tools = tools;
+  if (tools.length > 0) {
+    // Mark the last tool definition for caching so the tools array is
+    // cached as the first layer (cheaper than re-shipping ~12kb of tool
+    // schemas on every iteration of the tool loop).
+    const toolsWithCache = tools.map((t, i) =>
+      i === tools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
+    );
+    body.tools = toolsWithCache;
+  }
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -94,18 +117,30 @@ export async function generateIrisReply(
   const systemPrompt = baseSystemPrompt + dispositionBlock;
 
   // Accumulate token + tool usage across every Anthropic round-trip in the loop.
-  let totalTokensIn = 0;
+  // Per Anthropic's response schema:
+  //   usage.input_tokens               = tokens AFTER the last cache breakpoint (uncached)
+  //   usage.cache_creation_input_tokens = tokens being WRITTEN to cache (1.25× rate)
+  //   usage.cache_read_input_tokens     = tokens READ from cache (0.1× rate)
+  // Total prompt tokens = sum of all three; we track each separately for
+  // accurate cost attribution.
+  let uncachedTokensIn = 0;
+  let cacheWriteTokensIn = 0;
+  let cacheReadTokensIn = 0;
   let totalTokensOut = 0;
-  let totalCachedIn = 0;
   const toolsUsed: string[] = [];
   const startedAt = Date.now();
+
+  const accumulate = (usage: any) => {
+    uncachedTokensIn += usage?.input_tokens ?? 0;
+    cacheWriteTokensIn += usage?.cache_creation_input_tokens ?? 0;
+    cacheReadTokensIn += usage?.cache_read_input_tokens ?? 0;
+    totalTokensOut += usage?.output_tokens ?? 0;
+  };
 
   try {
     let iteration = 0;
     let response = await callAnthropic(apiKey, systemPrompt, messages, tools);
-    totalTokensIn += response.usage?.input_tokens ?? 0;
-    totalTokensOut += response.usage?.output_tokens ?? 0;
-    totalCachedIn += response.usage?.cache_read_input_tokens ?? 0;
+    accumulate(response.usage);
 
     while (response.stop_reason === 'tool_use' && iteration < MAX_ITERATIONS) {
       iteration++;
@@ -127,9 +162,7 @@ export async function generateIrisReply(
       }
       messages.push({ role: 'user', content: toolResults });
       response = await callAnthropic(apiKey, systemPrompt, messages, tools);
-      totalTokensIn += response.usage?.input_tokens ?? 0;
-      totalTokensOut += response.usage?.output_tokens ?? 0;
-      totalCachedIn += response.usage?.cache_read_input_tokens ?? 0;
+      accumulate(response.usage);
     }
 
     // If the loop exited while still in tool_use (hit cap, or model wanted to keep going),
@@ -142,9 +175,7 @@ export async function generateIrisReply(
         content: 'Summarize what you just did in one or two short sentences for the user. No more tool calls.',
       });
       response = await callAnthropic(apiKey, systemPrompt, messages, []);
-      totalTokensIn += response.usage?.input_tokens ?? 0;
-      totalTokensOut += response.usage?.output_tokens ?? 0;
-      totalCachedIn += response.usage?.cache_read_input_tokens ?? 0;
+      accumulate(response.usage);
     }
 
     const textBlock = response.content.find((b: any) => b.type === 'text');
@@ -158,10 +189,11 @@ export async function generateIrisReply(
     // memory without duplication.
     await saveUserContext(user);
 
-    const cachedPct = totalTokensIn > 0 ? Math.round((totalCachedIn / totalTokensIn) * 100) : 0;
-    const costUsd = estimateChatCost(totalTokensIn, totalCachedIn, totalTokensOut);
+    const totalTokensIn = uncachedTokensIn + cacheWriteTokensIn + cacheReadTokensIn;
+    const cachedPct = totalTokensIn > 0 ? Math.round((cacheReadTokensIn / totalTokensIn) * 100) : 0;
+    const costUsd = estimateChatCost(uncachedTokensIn, cacheWriteTokensIn, cacheReadTokensIn, totalTokensOut);
     console.log(
-      `[iris-${surface}] iters=${iteration} | tokens: ${totalTokensIn}in/${totalTokensOut}out | cached: ${totalCachedIn} (${cachedPct}%) | tools: ${toolsUsed.length} | cost: $${costUsd.toFixed(4)}`,
+      `[iris-${surface}] iters=${iteration} | tokens: ${totalTokensIn}in/${totalTokensOut}out (uncached ${uncachedTokensIn}, write ${cacheWriteTokensIn}, read ${cacheReadTokensIn} — ${cachedPct}% hit) | tools: ${toolsUsed.length} | cost: $${costUsd.toFixed(4)}`,
     );
 
     // Persist this turn so the dashboard's "usage this month" includes
@@ -173,7 +205,7 @@ export async function generateIrisReply(
       iterations: iteration,
       tokensIn: totalTokensIn,
       tokensOut: totalTokensOut,
-      cachedTokensIn: totalCachedIn,
+      cachedTokensIn: cacheReadTokensIn,
       costUsd,
       toolsUsed,
       durationMs: Date.now() - startedAt,
