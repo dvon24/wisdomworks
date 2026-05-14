@@ -95,6 +95,50 @@ async function getActiveUsers(): Promise<any[]> {
   return res.json();
 }
 
+/**
+ * Resolve the tenant's primary city from owner-confirmed knowledge_atoms.
+ * Looks at facts the model saved via remember_this / set_professional_context
+ * and matches location-shaped phrases ("in X", "based in X", "from X").
+ * Returns the city string or null if nothing recognizable found.
+ */
+async function resolveTenantLocation(cleanPhone: string): Promise<string | null> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/knowledge_atoms?tenant_phone=eq.${cleanPhone}&kind=eq.fact&owner_confirmed=eq.true&status=eq.active&select=content&order=created_at.desc&limit=80`,
+      { headers: { apikey: SUPABASE_KEY!, Authorization: `Bearer ${SUPABASE_KEY}` } },
+    );
+    if (!res.ok) return null;
+    const atoms: Array<{ content: string }> = await res.json();
+
+    // Location-shaped patterns. Ordered most-specific first.
+    const patterns: RegExp[] = [
+      /\b(?:based|lives?|located|residing|operating)\s+in\s+([A-Z][A-Za-zÀ-ſ\-' ]{1,40}?)(?:[.,;]|$|\s+(?:Germany|USA|UK|England|France|Spain|Italy|US))/,
+      /\b(?:I'?m|user\s+is)\s+in\s+([A-Z][A-Za-zÀ-ſ\-' ]{1,40}?)(?:[.,;]|$|\s+(?:Germany|USA|UK))/,
+      /\b(?:location|city|home)\s*[:=]\s*([A-Z][A-Za-zÀ-ſ\-' ]{1,40}?)(?:[.,;]|$)/i,
+      /\bfrom\s+([A-Z][A-Za-zÀ-ſ\-' ]{1,40}?)(?:[.,;]|$|\s+(?:Germany|USA|UK))/,
+    ];
+
+    for (const atom of atoms) {
+      const text = atom.content;
+      for (const re of patterns) {
+        const m = text.match(re);
+        if (m && m[1]) {
+          const city = m[1].trim();
+          // Reject obvious noise (single letters, too-short, agent names)
+          if (city.length >= 3 && !/^(the|and|or|for|with|using|via)$/i.test(city)) {
+            return city;
+          }
+        }
+      }
+    }
+    return null;
+  } catch (err) {
+    console.warn('[daily-briefing] resolveTenantLocation failed:', err);
+    return null;
+  }
+}
+
 async function generateBriefing(user: any): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   const now = new Date();
@@ -194,6 +238,23 @@ async function generateBriefing(user: any): Promise<string> {
     `  - [${r.outcome}${r.delegated_to_lane ? ` → ${r.delegated_to_lane}` : ''}] ${(r.output_summary || '').slice(0, 120)}`,
   ).join('\n') || '  (quiet overnight)';
 
+  // Weather — resolve the owner's location from saved facts, then fetch
+  // current + today's forecast. If we can't resolve a city, omit weather
+  // gracefully (briefing model just doesn't mention it).
+  let weatherSummary = '';
+  try {
+    const location = await resolveTenantLocation(cleanPhone);
+    if (location) {
+      const { getWeather, formatWeatherSummary } = await import('../../_lib/weather');
+      const w = await getWeather(location, 0);  // 0 = just today
+      if (w && w.daily.length > 0) {
+        weatherSummary = `\n\nLocal weather (${location}):\n${formatWeatherSummary(w).split('\n').slice(1).join('\n')}`;
+      }
+    }
+  } catch (err) {
+    console.warn('[daily-briefing] weather fetch failed:', err);
+  }
+
   const calendarSummary = unifiedScheduleLines;
   const conflictsLine = conflictsCount > 0
     ? `\n⚠ ${conflictsCount} schedule conflict${conflictsCount === 1 ? '' : 's'} detected — owner should review.`
@@ -211,9 +272,9 @@ Today's schedule (📝=native 📅=connected calendar 👥=customer booking):
 ${calendarSummary}${conflictsLine}${calendarNudge}
 
 Pending email drafts awaiting review: ${pendingDrafts.length}
-Uncertain email classifications to clarify: ${uncertainEmails.length}
+Uncertain email classifications to clarify: ${uncertainEmails.length}${weatherSummary}
 
-Generate the morning briefing. If there are schedule conflicts, lead with them — owners need to see overlaps before they get caught.`;
+Generate the morning briefing. If there are schedule conflicts, lead with them — owners need to see overlaps before they get caught.${weatherSummary ? ' Include the local weather inline (high/low + condition + practical note like "bring a jacket" or "good day for X").' : ''}`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
