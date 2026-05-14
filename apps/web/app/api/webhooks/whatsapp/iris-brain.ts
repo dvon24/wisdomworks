@@ -21,8 +21,15 @@ import { buildToolList, executeTool, type ToolCall } from './agent-tools';
 import { recordChatRun } from '../../_lib/chat-cost-tracker';
 
 const MAX_ITERATIONS = 8;
-const SONNET_MODEL = 'claude-sonnet-4-20250514';
-// Anthropic Sonnet 4 published rates per 1M tokens.
+// Sonnet 4.6 — same $3/$15 per MTok as Sonnet 4 but supports adaptive
+// thinking + interleaved thinking between tool calls. Pure capability
+// upgrade at zero cost change.
+const SONNET_MODEL = 'claude-sonnet-4-6';
+// Adaptive thinking budget. Claude decides how much of this to spend
+// on thinking vs final text. 4096 gives plenty of headroom for
+// multi-step reasoning without runaway latency on simple chats.
+const MAX_TOKENS = 4096;
+// Anthropic Sonnet 4.6 published rates per 1M tokens.
 // Per docs: cache writes are 1.25× base, cache reads are 0.1× base.
 const SONNET_IN_PER_M = 3;
 const SONNET_OUT_PER_M = 15;
@@ -52,9 +59,16 @@ async function callAnthropic(
   //      tool loops + multi-turn history) reads from cache on subsequent calls.
   // Hierarchy is tools → system → messages, so each breakpoint covers the
   // prior layers transitively. Cache reads are 10% of base; writes are 125%.
+  //
+  // Thinking: adaptive mode lets Claude decide whether/how much to think
+  // per request. On Sonnet 4.6 this also auto-enables interleaved thinking
+  // between tool calls — big win for multi-step reasoning in tool loops.
+  // Thinking blocks are preserved in conversation history by default on
+  // 4.6+ so prompt-cache prefixes stay valid across turns.
   const body: any = {
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
+    model: SONNET_MODEL,
+    max_tokens: MAX_TOKENS,
+    thinking: { type: 'adaptive' },
     cache_control: { type: 'ephemeral' },
     system: [
       { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
