@@ -768,8 +768,13 @@ export default function CommandDeck() {
                         if (a.key.startsWith('chat:')) {
                           label = `Chat (${a.key.slice(5)})`;
                         } else {
+                          // a.key is agent_instance_id; agentDetails entries
+                          // expose both configId AND instanceId so the
+                          // lookup succeeds either way.
                           const details = tenantData.agentDetails as Record<string, any> | undefined;
-                          const match = details ? Object.values(details).find((d: any) => d?.configId === a.key) as any : null;
+                          const match = details
+                            ? Object.values(details).find((d: any) => d?.instanceId === a.key || d?.configId === a.key) as any
+                            : null;
                           label = match?.agentName ?? `Agent ${a.key.slice(0, 8)}`;
                         }
                         return (

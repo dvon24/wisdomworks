@@ -93,8 +93,34 @@ export async function GET(request: Request) {
     }
 
     const profile = ctx.profile ?? {};
-    const todaysCalendar = profile.todaysCalendar ?? [];
+    let todaysCalendar = profile.todaysCalendar ?? [];
     const pendingEmailDrafts = profile.pendingEmailDrafts ?? [];
+
+    // Bug fix 2026-05-14 — refresh today's calendar inline if the cached
+    // copy is stale. Devon reported the deck schedule never updating: the
+    // 6:30 AM calendar-sync cron is the only updater, so a calendar
+    // change after that wouldn't surface until the next morning. Now any
+    // deck load past the 15-min freshness window triggers a live
+    // re-fetch in-band. Cap: only one refresh per deck-load + bounded
+    // by 4s; fall back to the cached value on any failure.
+    const fetchedAtMs = profile.todaysCalendarFetchedAt
+      ? new Date(profile.todaysCalendarFetchedAt).getTime()
+      : 0;
+    const isStale = Date.now() - fetchedAtMs > 15 * 60 * 1000;
+    if (isStale) {
+      try {
+        const { fetchAndStoreTodaysCalendarForTenant } = await import('../_lib/calendar-refresh');
+        const refreshed = await Promise.race([
+          fetchAndStoreTodaysCalendarForTenant(cleanPhone),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+        ]);
+        if (refreshed && Array.isArray(refreshed)) {
+          todaysCalendar = refreshed;
+        }
+      } catch (err) {
+        console.warn('[dashboard] inline calendar refresh failed (using cache):', err);
+      }
+    }
 
     // Build activity feed from real data
     const activity: Array<{ agent: string; action: string; time: string; ts: number }> = [];
@@ -270,6 +296,12 @@ export async function GET(request: Request) {
       const proto = inst?.metadata?.operating_protocol ?? {};
       agentDetails[key] = {
         configId: cfg.id,
+        // Story bug-fix 2026-05-14 — `byAgent` in the usage payload is
+        // keyed by agent_instance_id (not config_id). Expose the
+        // instance id here so the per-agent-cost lookup in the deck
+        // can resolve the name correctly. Otherwise the deck shows
+        // "Agent <uuid prefix>" instead of the agent's actual name.
+        instanceId: inst?.id ?? null,
         agentName: cfg.agent_name,
         agentRole: cfg.agent_role,
         configStatus: cfg.status,
