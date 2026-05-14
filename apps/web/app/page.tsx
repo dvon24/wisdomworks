@@ -1523,14 +1523,42 @@ export default function CommandDeck() {
             // Source from real agent_runs (escalations + proposed actions),
             // filtered to non-dismissed.
             //
-            // Bug fix 2026-05-14: agents (Riley especially when starved)
-            // generate near-identical recommendations on every tick — the
-            // approvals sidebar would balloon to 20+ duplicates. Dedupe
-            // by (agentId + normalized-first-60-chars-of-title), keeping
-            // only the newest run of each cluster. Drops the queue from
-            // "Surface oldest 3-5 approvals (x6)" to one card.
+            // Bug fix 2026-05-14 (v2): the prior 60-char-prefix dedup
+            // missed near-duplicates whose wording drifts between ticks
+            // ("focus time blocked for X" vs "focus time this week for X").
+            // V2 extracts a *signature* per recommendation:
+            //   - strip punctuation, lowercase
+            //   - remove stop words AND common agent-boilerplate openings
+            //     ("owner is", "approval queue", "recommend", "should",
+            //     "surface", "the", "with", etc.)
+            //   - take the first 5 remaining content words
+            // Cluster key = signature (NOT agentId-prefixed), so the same
+            // signature from multiple agents also clusters into one card
+            // (Devon: "everything should group together if it's similar").
+            // Additional cap: max 3 cards per agent in the visible queue.
+            const STOP_WORDS = new Set([
+              'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
+              'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'or', 'that',
+              'the', 'to', 'was', 'were', 'will', 'with', 'this', 'these',
+              'i', 'we', 'our', 'you', 'your', 'they', 'them', 'their',
+              // Agent-boilerplate words that show up across tick recommendations
+              'owner', 'recommend', 'should', 'consider', 'suggest', 'propose',
+              'surface', 'establish', 'flag', 'approval', 'pending',
+              'engaged', 'active', 'currently', 'continues', 'remains',
+              'dedicated', 'focus', 'time', 'blocked', 'across', 'while',
+              'week', 'today', 'tonight', 'now', 'next', 'recent',
+            ]);
+            const signature = (text: string): string => {
+              const words = text
+                .toLowerCase()
+                .replace(/[^a-z0-9\s]+/g, ' ')
+                .split(/\s+/)
+                .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+              return words.slice(0, 5).join(' ');
+            };
             const runs: any[] = tenantData?.agentRuns ?? [];
             const seenClusters = new Set<string>();
+            const perAgentCount = new Map<string, number>();
             const approvals = runs
               .filter((r) =>
                 !dismissedApprovals.has(r.agentId + '|' + r.startedAt) &&
@@ -1538,16 +1566,15 @@ export default function CommandDeck() {
                   r.escalationPriority === 'high' || r.escalationPriority === 'medium'),
               )
               .filter((r) => {
-                const title = (r.recommendation || r.proposedAction || r.summary || '')
-                  .toString()
-                  .toLowerCase()
-                  .replace(/[^a-z0-9 ]+/g, '')
-                  .replace(/\s+/g, ' ')
-                  .trim()
-                  .slice(0, 60);
-                const cluster = `${r.agentId}|${title}`;
-                if (seenClusters.has(cluster)) return false;
-                seenClusters.add(cluster);
+                const text = (r.recommendation || r.proposedAction || r.summary || '').toString();
+                const sig = signature(text);
+                if (!sig) return true;  // Can't extract → keep but uniquely-identified by startedAt
+                if (seenClusters.has(sig)) return false;
+                seenClusters.add(sig);
+                // Per-agent cap: at most 3 distinct signatures from any agent
+                const count = (perAgentCount.get(r.agentId) ?? 0) + 1;
+                if (count > 3) return false;
+                perAgentCount.set(r.agentId, count);
                 return true;
               })
               .slice(0, 20);
