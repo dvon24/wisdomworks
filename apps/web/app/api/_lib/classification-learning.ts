@@ -18,6 +18,8 @@
  *   synthetic 'QA Agent' so they show in the activity feed.
  */
 
+import { redactPII } from '@wisdomworks/shared';
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -408,7 +410,7 @@ export async function persistQaFindings(tenantPhone: string, findings: QaFinding
         phase: 'analyze',
         outcome: f.severity === 'high' ? 'escalated' : 'observed',
         input_summary: '[QA Agent] Daily classification scan',
-        output_summary: f.summary,
+        output_summary: redactPII(f.summary).redacted,
         metadata: { qa_finding: f },
       }),
     });

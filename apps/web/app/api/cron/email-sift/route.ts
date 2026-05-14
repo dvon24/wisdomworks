@@ -12,7 +12,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { listEmails, decryptToken, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
+import { listEmails, decryptToken, redactPII, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
 import { listImapUnread } from '../../_lib/imap-runtime';
 import { logSample, buildFewShotExamples, buildProfessionalContext } from '../../_lib/classification-learning';
 import { recordClassifiedForEngagement, buildEngagementContext } from '../../_lib/email-engagement';
@@ -340,8 +340,8 @@ async function logEmailSignal(tenantPhone: string, provider: string, emails: Ema
         trigger: 'signal',
         phase: 'observe',
         outcome: emails.length === 0 ? 'no_op' : actionable > 0 ? 'proposed' : 'observed',
-        input_summary: `Email-sift cron polled ${provider}.`,
-        output_summary: summary,
+        input_summary: redactPII(`Email-sift cron polled ${provider}.`).redacted,
+        output_summary: redactPII(summary).redacted,
         metadata: {
           source: 'email-sift',
           provider,

@@ -16,6 +16,8 @@
  * once the signal layer exists.
  */
 
+import { redactPII } from '@wisdomworks/shared';
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -77,10 +79,22 @@ async function logRun(row: {
   delegation_status?: 'pending' | 'claimed' | 'done' | 'declined' | null;
 }, returnId = false): Promise<string | null> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  // Story 6.5 — agent_runs is a long-lived audit log. input_summary +
+  // output_summary commonly contain owner phrases / client PII that
+  // got pulled into the tick. Redact at the central writer so every
+  // call site through logRun() is protected without per-site edits.
+  // metadata is JSONB and may legitimately contain field values (e.g.
+  // email IDs) — we don't redact it here.
+  const sanitized = {
+    ...row,
+    input_summary: row.input_summary != null ? redactPII(row.input_summary).redacted : row.input_summary,
+    output_summary: row.output_summary != null ? redactPII(row.output_summary).redacted : row.output_summary,
+    error: row.error != null ? redactPII(row.error).redacted : row.error,
+  };
   const res = await fetch(`${SUPABASE_URL}/rest/v1/agent_runs`, {
     method: 'POST',
     headers: { ...headers(), Prefer: returnId ? 'return=representation' : 'return=minimal' },
-    body: JSON.stringify(row),
+    body: JSON.stringify(sanitized),
   });
   if (returnId && res.ok) {
     try {

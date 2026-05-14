@@ -17,7 +17,7 @@
  */
 
 import { executeTool, type ToolCall, type ToolResult, type AnthropicTool } from '../webhooks/whatsapp/agent-tools';
-import { loadConnectionsForPhone, type OAuthConnection } from '@wisdomworks/shared';
+import { loadConnectionsForPhone, redactPII, type OAuthConnection } from '@wisdomworks/shared';
 import { loadUserContext, type UserContext } from '../webhooks/whatsapp/context-store';
 
 export type WorkflowStep =
@@ -213,8 +213,8 @@ async function logWorkflowRun(args: {
         trigger: 'manual',
         phase: 'build',
         outcome: args.ok ? 'acted' : 'failed',
-        input_summary: `[workflow] ${args.workflow.name}${args.workflow.description ? ` — ${args.workflow.description.slice(0, 100)}` : ''}`,
-        output_summary: summary,
+        input_summary: redactPII(`[workflow] ${args.workflow.name}${args.workflow.description ? ` — ${args.workflow.description.slice(0, 100)}` : ''}`).redacted,
+        output_summary: redactPII(summary).redacted,
         metadata: {
           workflow_name: args.workflow.name,
           total_ms: args.totalMs,

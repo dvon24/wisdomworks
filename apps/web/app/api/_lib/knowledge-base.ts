@@ -12,6 +12,7 @@
  */
 
 import { embedBatch, embedText, estimateTokens } from './embeddings';
+import { redactPII } from '@wisdomworks/shared';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -294,12 +295,12 @@ async function logKnowledgeQuery(args: {
         trigger: 'manual',
         phase: 'analyze',
         outcome: args.matches.length > 0 ? 'observed' : 'no_signal',
-        input_summary: `[KB] ${args.question.slice(0, 200)}`,
+        input_summary: redactPII(`[KB] ${args.question.slice(0, 200)}`).redacted,
         output_summary: args.matches.length > 0
           ? `${args.matches.length} match${args.matches.length === 1 ? '' : 'es'} (top ${(topSim * 100).toFixed(0)}%) from ${sourceTypes.join(', ')}`
           : 'no matches',
         metadata: {
-          kb_query: args.question.slice(0, 500),
+          kb_query: redactPII(args.question.slice(0, 500)).redacted,
           kb_source: args.source,
           embed_tokens: args.embedTokens,
           match_count: args.matches.length,

@@ -24,7 +24,7 @@ import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-captur
 import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
 import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, type TopContact } from '../../_lib/email-intelligence';
 import { listPendingFollowups, markFollowupSent, markFollowupDeclined } from '../../_lib/email-followup';
-import { decryptToken } from '@wisdomworks/shared';
+import { decryptToken, redactPII } from '@wisdomworks/shared';
 import { setMute, clearMute, isMuted, formatMuteUntil } from '../../_lib/mute-state';
 import { definePerson, listKnownPeople, forgetPerson } from '../../_lib/known-people';
 import { listAllAtoms, archiveAtom, confirmAtom, upsertAtom, type AtomKind } from '../../_lib/knowledge-atoms';
@@ -2472,10 +2472,12 @@ export async function executeTool(
                   trigger: 'manual',
                   phase: 'execute',
                   outcome: success ? 'acted' : 'failed',
-                  input_summary: `[doc-gen] create_document ${format}: ${title.slice(0, 100)}`,
-                  output_summary: success
-                    ? `${safeName} (${sizeKb.toFixed(1)}KB) → ${destination}${slaOk ? '' : ' [SLA breach]'}`
-                    : `${safeName} delivery failed: ${err}`,
+                  input_summary: redactPII(`[doc-gen] create_document ${format}: ${title.slice(0, 100)}`).redacted,
+                  output_summary: redactPII(
+                    success
+                      ? `${safeName} (${sizeKb.toFixed(1)}KB) → ${destination}${slaOk ? '' : ' [SLA breach]'}`
+                      : `${safeName} delivery failed: ${err}`,
+                  ).redacted,
                   metadata: {
                     format,
                     filename: safeName,
@@ -2569,8 +2571,8 @@ export async function executeTool(
                   trigger: 'manual',
                   phase: 'execute',
                   outcome: 'failed',
-                  input_summary: `[doc-gen] create_document ${format}: ${title.slice(0, 100)}`,
-                  output_summary: `generation exception: ${String(err).slice(0, 200)}`,
+                  input_summary: redactPII(`[doc-gen] create_document ${format}: ${title.slice(0, 100)}`).redacted,
+                  output_summary: redactPII(`generation exception: ${String(err).slice(0, 200)}`).redacted,
                   metadata: { format, filename: safeName, total_ms: totalMs },
                 }),
               });

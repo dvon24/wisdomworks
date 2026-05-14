@@ -14,6 +14,8 @@
  *   - renderLessonsForPrompt(): inject into agent system prompts
  */
 
+import { redactPII } from '@wisdomworks/shared';
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -67,12 +69,16 @@ export async function logLesson(input: LogLessonInput): Promise<string | null> {
       {
         method: 'POST',
         headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=representation' },
+        // Story 6.5 — free-text fields routinely include third-party PII
+        // ("CRM lookup for jane@acme.com returned 500", "Maria 555-1234
+        // double-booked"). Redact before write — lessons live forever and
+        // shouldn't carry verbatim PII.
         body: JSON.stringify({
           tenant_phone: cleanPhone,
           signature: input.signature.slice(0, 200),
-          title: input.title.slice(0, 250),
-          what_went_wrong: input.whatWentWrong.slice(0, 1000),
-          corrective_action: input.correctiveAction.slice(0, 1000),
+          title: redactPII(input.title.slice(0, 250)).redacted,
+          what_went_wrong: redactPII(input.whatWentWrong.slice(0, 1000)).redacted,
+          corrective_action: redactPII(input.correctiveAction.slice(0, 1000)).redacted,
           topic_keywords: input.topicKeywords.slice(0, 30),
           severity: input.severity ?? 'medium',
           source_process_id: input.sourceProcessId ?? null,
