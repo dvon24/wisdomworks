@@ -45,11 +45,29 @@ function estimateChatCost(uncachedIn: number, cacheWriteIn: number, cacheReadIn:
   ) / 1_000_000;
 }
 
+// Per-surface effort levels. Sonnet 4.6 defaults to `high` which Anthropic's
+// own docs warn "can cause unexpected latency" — and WhatsApp users feel
+// latency the most. Tune per surface:
+//   - whatsapp: realtime, owner-facing → low (fast, terse)
+//   - sms/imessage/telegram: same channel-shape → low
+//   - deck: async owner-facing webapp → medium (balanced)
+// `low` reduces tool-call count, thinking depth, and response length. If a
+// surface needs heavier reasoning, escalate to medium/high.
+type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+const EFFORT_BY_SURFACE: Record<'whatsapp' | 'deck' | 'telegram' | 'sms' | 'imessage', EffortLevel> = {
+  whatsapp: 'low',
+  sms: 'low',
+  imessage: 'low',
+  telegram: 'low',
+  deck: 'medium',
+};
+
 async function callAnthropic(
   apiKey: string,
   systemPrompt: string,
   messages: any[],
   tools: any[],
+  effort: EffortLevel,
 ): Promise<any> {
   // Prompt caching strategy (3 of the 4 available breakpoints):
   //   1. tools[-1].cache_control — caches the tool definitions (stable per tenant)
@@ -69,6 +87,7 @@ async function callAnthropic(
     model: SONNET_MODEL,
     max_tokens: MAX_TOKENS,
     thinking: { type: 'adaptive' },
+    output_config: { effort },
     cache_control: { type: 'ephemeral' },
     system: [
       { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
@@ -151,9 +170,11 @@ export async function generateIrisReply(
     totalTokensOut += usage?.output_tokens ?? 0;
   };
 
+  const effort = EFFORT_BY_SURFACE[surface] ?? 'medium';
+
   try {
     let iteration = 0;
-    let response = await callAnthropic(apiKey, systemPrompt, messages, tools);
+    let response = await callAnthropic(apiKey, systemPrompt, messages, tools, effort);
     accumulate(response.usage);
 
     while (response.stop_reason === 'tool_use' && iteration < MAX_ITERATIONS) {
@@ -175,7 +196,7 @@ export async function generateIrisReply(
         });
       }
       messages.push({ role: 'user', content: toolResults });
-      response = await callAnthropic(apiKey, systemPrompt, messages, tools);
+      response = await callAnthropic(apiKey, systemPrompt, messages, tools, effort);
       accumulate(response.usage);
     }
 
@@ -188,7 +209,7 @@ export async function generateIrisReply(
         role: 'user',
         content: 'Summarize what you just did in one or two short sentences for the user. No more tool calls.',
       });
-      response = await callAnthropic(apiKey, systemPrompt, messages, []);
+      response = await callAnthropic(apiKey, systemPrompt, messages, [], effort);
       accumulate(response.usage);
     }
 
@@ -207,7 +228,7 @@ export async function generateIrisReply(
     const cachedPct = totalTokensIn > 0 ? Math.round((cacheReadTokensIn / totalTokensIn) * 100) : 0;
     const costUsd = estimateChatCost(uncachedTokensIn, cacheWriteTokensIn, cacheReadTokensIn, totalTokensOut);
     console.log(
-      `[iris-${surface}] iters=${iteration} | tokens: ${totalTokensIn}in/${totalTokensOut}out (uncached ${uncachedTokensIn}, write ${cacheWriteTokensIn}, read ${cacheReadTokensIn} — ${cachedPct}% hit) | tools: ${toolsUsed.length} | cost: $${costUsd.toFixed(4)}`,
+      `[iris-${surface}] effort=${effort} | iters=${iteration} | tokens: ${totalTokensIn}in/${totalTokensOut}out (uncached ${uncachedTokensIn}, write ${cacheWriteTokensIn}, read ${cacheReadTokensIn} — ${cachedPct}% hit) | tools: ${toolsUsed.length} | cost: $${costUsd.toFixed(4)}`,
     );
 
     // Persist this turn so the dashboard's "usage this month" includes
