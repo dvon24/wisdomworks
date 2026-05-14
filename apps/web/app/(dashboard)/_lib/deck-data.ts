@@ -275,6 +275,66 @@ export async function fetchAutonomyPrefs(tenantPhone: string): Promise<AutonomyR
   }
 }
 
+// ─── Connections + integrations health ──────────────────────────────────
+
+export interface ConnectionRow {
+  provider: string;
+  service: string;
+  account_email?: string;
+  status: string;
+  expires_at?: string;
+  created_at: string;
+}
+
+export async function fetchConnectionsForOwner(tenantPhone: string): Promise<ConnectionRow[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  const url = `${SUPABASE_URL}/rest/v1/oauth_connections?phone_number=eq.${tenantPhone}&select=provider,service,account_email,status,expires_at,created_at&order=created_at.desc`;
+  const res = await fetch(url, { headers: supaHeaders(), cache: 'no-store' });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+// ─── Tenant fleet (Story 3.8 — platform-admin view) ─────────────────────
+
+export interface TenantRow {
+  phone_number: string;
+  name?: string;
+  business_name?: string;
+  business_type?: string;
+  is_owner?: boolean;
+  message_count?: number;
+  first_seen?: string;
+  last_seen?: string;
+  agent_count?: number;
+}
+
+export async function fetchAllTenants(): Promise<TenantRow[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  const url = `${SUPABASE_URL}/rest/v1/whatsapp_contexts?is_owner=eq.true&select=phone_number,name,business_name,business_type,is_owner,message_count,first_seen,last_seen&order=last_seen.desc`;
+  const res = await fetch(url, { headers: supaHeaders(), cache: 'no-store' });
+  if (!res.ok) return [];
+  const tenants: TenantRow[] = await res.json();
+
+  // Lazily fetch agent counts per tenant — small list expected so the
+  // N+1 is acceptable. Switch to a SQL count rollup if/when this grows.
+  await Promise.all(
+    tenants.map(async (t) => {
+      try {
+        const r = await fetch(
+          `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${t.phone_number}&select=count`,
+          { headers: supaHeaders({ Prefer: 'count=exact' }), cache: 'no-store' },
+        );
+        const range = r.headers.get('content-range');
+        if (range) {
+          const total = range.split('/')[1];
+          if (total) t.agent_count = parseInt(total, 10) || 0;
+        }
+      } catch {}
+    }),
+  );
+  return tenants;
+}
+
 // ─── Tenant identity (for header / breadcrumbs) ───────────────────────────
 
 export interface TenantIdentity {
