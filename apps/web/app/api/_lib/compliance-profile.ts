@@ -10,6 +10,8 @@
  * so we can flip a flag the day a HIPAA/SOX/etc tenant signs.
  */
 
+import { computeComplianceProfileHmac, verifyRowHmac } from '@wisdomworks/shared';
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -79,6 +81,52 @@ export async function loadComplianceProfile(tenantPhone: string): Promise<Compli
     const rows = await res.json();
     const row = rows?.[0];
     if (!row) return null;
+
+    // Story 6.8 — verify HMAC if signed. Phase A: legacy unsigned rows OK
+    // (logged as warning). Phase B (post-backfill): treat unsigned as
+    // tamper. A real mismatch on a signed row is ALWAYS an error.
+    if (row.hmac) {
+      try {
+        const check = verifyRowHmac(
+          {
+            type: 'compliance_profile',
+            tenant_phone: row.tenant_phone,
+            frameworks: [...(row.frameworks ?? [])].sort(),
+            signed_agreements: row.signed_agreements ?? [],
+            activation_gates: [...(row.activation_gates ?? [])].sort(),
+            egress_allowlist: row.egress_allowlist ? [...row.egress_allowlist].sort() : null,
+          },
+          row.hmac,
+          { treatUnsignedAsLegacy: true },
+        );
+        if (!check.verified && check.reason === 'hmac_mismatch') {
+          // Hard error — the row was tampered. Log governance.bypass via
+          // the audit log. Fire-and-forget so the read still succeeds
+          // (we surface the tampered data, but the audit trail is locked).
+          console.error(`[compliance-profile] HMAC TAMPER DETECTED for ${row.tenant_phone}`);
+          void (async () => {
+            try {
+              const { logAuditEvent } = await import('./audit-log');
+              await logAuditEvent({
+                tenantPhone: row.tenant_phone,
+                actor: 'system',
+                actorType: 'system',
+                action: 'governance.bypass',
+                resource: 'tenant_compliance_profiles',
+                outcome: 'failure',
+                payload: { detector: 'row_hmac', table: 'tenant_compliance_profiles' },
+                redact: false,
+              });
+            } catch {}
+          })();
+        }
+      } catch (err) {
+        // HMAC_ROW_SECRET not configured or other compute failure.
+        // Log but don't block the read.
+        console.warn('[compliance-profile] HMAC verify exception:', err);
+      }
+    }
+
     return {
       tenantPhone: row.tenant_phone,
       frameworks: row.frameworks ?? [],
@@ -102,9 +150,42 @@ export async function upsertComplianceProfile(
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
   try {
     const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+
+    // Story 6.8 — compute HMAC over the FINAL row contents (merging the
+    // patch against any existing row). Load-then-merge-then-sign so the
+    // HMAC reflects what's actually being written.
+    const existing = await loadComplianceProfile(cleanPhone);
+    const merged: ComplianceProfile = {
+      tenantPhone: cleanPhone,
+      frameworks: patch.frameworks ?? existing?.frameworks ?? [],
+      activationGates: patch.activationGates ?? existing?.activationGates ?? [],
+      egressAllowlist: patch.egressAllowlist ?? existing?.egressAllowlist ?? null,
+      signedAgreements: patch.signedAgreements ?? existing?.signedAgreements ?? [],
+      metadata: patch.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    let hmac: string | null = null;
+    try {
+      hmac = computeComplianceProfileHmac({
+        tenant_phone: merged.tenantPhone,
+        frameworks: merged.frameworks,
+        signed_agreements: merged.signedAgreements,
+        activation_gates: merged.activationGates,
+        egress_allowlist: merged.egressAllowlist,
+      });
+    } catch (err) {
+      // HMAC_ROW_SECRET not configured — log and continue. The row is
+      // stored unsigned and counts as "legacy" until the secret is set
+      // and a backfill runs.
+      console.warn('[compliance-profile] HMAC compute failed (continuing unsigned):', err);
+    }
+
     const body: Record<string, unknown> = {
       tenant_phone: cleanPhone,
-      updated_at: new Date().toISOString(),
+      updated_at: merged.updatedAt,
+      hmac,
     };
     if (patch.frameworks !== undefined) body.frameworks = patch.frameworks;
     if (patch.activationGates !== undefined) body.activation_gates = patch.activationGates;

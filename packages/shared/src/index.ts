@@ -4,6 +4,20 @@
 export { redactPII, redactPIIText } from './privacy/redact';
 export type { PiiCategory, RedactionResult } from './privacy/redact';
 
+// Row HMAC (Story 6.8 — sensitive row tamper detection)
+export {
+  computeRowHmac,
+  verifyRowHmac,
+  computeOAuthConnectionHmac,
+  computeProjectConnectionHmac,
+  computeComplianceProfileHmac,
+} from './security/row-hmac';
+export type {
+  OAuthConnectionHmacFields,
+  ProjectConnectionHmacFields,
+  ComplianceProfileHmacFields,
+} from './security/row-hmac';
+
 // Event types
 export type { DomainEvent } from './types/signals';
 
