@@ -176,6 +176,105 @@ export async function fetchRecentDocuments(tenantPhone: string, limit = 10): Pro
   return res.json();
 }
 
+// ─── Agent fleet (Story 3.5) ─────────────────────────────────────────────
+
+export interface AgentInstanceRow {
+  id: string;
+  agent_name: string;
+  status: 'ready' | 'running' | 'paused' | 'stopped' | string;
+  config?: any;
+  last_tick_at?: string;
+  health_score?: number;
+  run_count?: number;
+  failure_count?: number;
+  category?: string;
+  lane?: string;
+}
+
+export async function fetchAgentFleet(tenantPhone: string): Promise<AgentInstanceRow[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  // Join via the embedded select — instance + the config it was provisioned from
+  const url = `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${tenantPhone}&order=status.asc,agent_name.asc&select=id,agent_name,status,last_tick_at,health_score,run_count,failure_count,agent_configs(config)`;
+  const res = await fetch(url, { headers: supaHeaders(), cache: 'no-store' });
+  if (!res.ok) return [];
+  const rows = await res.json();
+  return rows.map((r: any) => ({
+    id: r.id,
+    agent_name: r.agent_name,
+    status: r.status,
+    last_tick_at: r.last_tick_at,
+    health_score: r.health_score,
+    run_count: r.run_count,
+    failure_count: r.failure_count,
+    category: r.agent_configs?.config?.category,
+    lane: r.agent_configs?.config?.lane,
+  }));
+}
+
+export interface SnapshotRow {
+  id: string;
+  agent_instance_id: string;
+  reason: string;
+  created_at: string;
+  state_data?: any;
+}
+
+export async function fetchRecentSnapshots(tenantPhone: string, limit = 25): Promise<SnapshotRow[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  const url = `${SUPABASE_URL}/rest/v1/agent_state_snapshots?tenant_phone=eq.${tenantPhone}&order=created_at.desc&limit=${limit}&select=id,agent_instance_id,reason,created_at,state_data`;
+  const res = await fetch(url, { headers: supaHeaders(), cache: 'no-store' });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+// ─── Governance + audit (Story 3.6) ──────────────────────────────────────
+
+export interface LessonRow {
+  id: string;
+  title: string;
+  what_went_wrong: string;
+  corrective_action: string;
+  topic_keywords: string[];
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  status: 'open' | 'applied' | 'resolved';
+  consult_count: number;
+  apply_count: number;
+  created_at: string;
+}
+
+export async function fetchOpenLessons(tenantPhone: string, limit = 50): Promise<LessonRow[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  const url = `${SUPABASE_URL}/rest/v1/lessons_learned?tenant_phone=eq.${tenantPhone}&status=in.(open,applied)&order=severity.desc,created_at.desc&limit=${limit}&select=*`;
+  const res = await fetch(url, { headers: supaHeaders(), cache: 'no-store' });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export interface AutonomyRow {
+  tenant_phone: string;
+  autonomy_level: 'L1' | 'L2' | 'L3' | 'L4';
+  max_auto_publish_per_day: number;
+  min_confidence_for_auto: number;
+  auto_publish_channels: string[];
+  blocked_words: string[];
+  draft_cadence_days: number;
+}
+
+export async function fetchAutonomyPrefs(tenantPhone: string): Promise<AutonomyRow | null> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/marketing_autonomy_prefs?tenant_phone=eq.${tenantPhone}&select=*&limit=1`,
+      { headers: supaHeaders(), cache: 'no-store' },
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Tenant identity (for header / breadcrumbs) ───────────────────────────
 
 export interface TenantIdentity {
