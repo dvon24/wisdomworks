@@ -335,6 +335,29 @@ export async function fetchAllTenants(): Promise<TenantRow[]> {
   return tenants;
 }
 
+// ─── Owner-disposition rules (auto-mined operating manual) ──────────────
+
+export interface DispositionRuleRow {
+  id: string;
+  kind: 'correction' | 'approval' | 'preference' | 'frustration_trigger' | 'communication_style';
+  rule_text: string;
+  why?: string;
+  evidence?: string;
+  scope: string;
+  confidence: number;
+  applied_count: number;
+  last_applied_at?: string | null;
+  created_at: string;
+}
+
+export async function fetchActiveDispositionRules(tenantPhone: string, limit = 50): Promise<DispositionRuleRow[]> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  const url = `${SUPABASE_URL}/rest/v1/tenant_disposition_rules?tenant_phone=eq.${tenantPhone}&status=eq.active&order=applied_count.desc,created_at.desc&limit=${limit}&select=*`;
+  const res = await fetch(url, { headers: supaHeaders(), cache: 'no-store' });
+  if (!res.ok) return [];
+  return res.json();
+}
+
 // ─── Tenant identity (for header / breadcrumbs) ───────────────────────────
 
 export interface TenantIdentity {

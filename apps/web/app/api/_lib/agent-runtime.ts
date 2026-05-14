@@ -909,7 +909,17 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
       return;
     }
 
-    const systemPrompt = buildAgentSystemPrompt(config, autonomy, ctx);
+    // Owner-disposition rules render as the operating manual for this
+    // tenant. Lane-scoped + 'everywhere' scoped rules. Lane agents
+    // re-read these every tick so corrections compound across the team
+    // (not just Iris).
+    const baseSystemPrompt = buildAgentSystemPrompt(config, autonomy, ctx);
+    const { buildDispositionContext } = await import('./disposition-mining');
+    const dispositionBlock = await buildDispositionContext(instance.tenant_phone, {
+      lane: config.config?.category,
+      limit: 10,
+    });
+    const systemPrompt = baseSystemPrompt + dispositionBlock;
     const { result, tokensIn, tokensOut, raw } = await callAnthropicForTick(primaryModel, systemPrompt);
 
     // Autonomy gate — at L1 we never claim 'acted', only 'proposed' or 'observed'

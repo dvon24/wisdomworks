@@ -84,7 +84,14 @@ export async function generateIrisReply(
   console.log(`[iris-${surface}] Loaded ${connections.length} connection(s) for ${user.phoneNumber}: ${connections.map((c) => `${c.provider}/${c.service}`).join(', ') || 'none'}`);
   const tools = buildToolList(connections);
   const messages: any[] = buildContextMessages(user);
-  const systemPrompt = buildSystemPrompt(user, connections);
+  // Build the system prompt then append the owner-disposition block —
+  // the operating manual auto-mined from past interactions. Renders
+  // into every Iris turn so corrections / preferences / triggers carry
+  // forward without re-relearning.
+  const baseSystemPrompt = buildSystemPrompt(user, connections);
+  const { buildDispositionContext } = await import('../../_lib/disposition-mining');
+  const dispositionBlock = await buildDispositionContext(user.phoneNumber, { limit: 12 });
+  const systemPrompt = baseSystemPrompt + dispositionBlock;
 
   // Accumulate token + tool usage across every Anthropic round-trip in the loop.
   let totalTokensIn = 0;
@@ -173,6 +180,46 @@ export async function generateIrisReply(
       userMessagePreview: text.slice(0, 200),
       assistantReplyPreview: assistantMessage.slice(0, 200),
     });
+
+    // Owner-disposition mining — Devon's framing: "this should be one
+    // of the first things the agent populates to encourage learning the
+    // client." Fire-and-forget extractor runs after every owner→Iris
+    // turn, looks for disposition signals (corrections, approvals,
+    // preferences, frustration triggers, communication-style cues) and
+    // upserts them to tenant_disposition_rules. Active rules render in
+    // every agent's system prompt next tick — never re-learn the same
+    // correction twice. Cold-start mode boosts extraction in the first
+    // 30 messages so newly-deployed tenants build up their operating
+    // manual fast.
+    void (async () => {
+      try {
+        const { mineDispositionFromTurn, isTenantInColdStart } = await import('../../_lib/disposition-mining');
+        const isCold = await isTenantInColdStart(user.phoneNumber);
+        // Use the message just BEFORE the user's input as "what they're
+        // reacting to". The last assistant message in conversationHistory
+        // is the right anchor (we just removed our own assistant push
+        // earlier in the universal sendOwnerMessage refactor, so the
+        // history reflects what we actually sent).
+        const history = (user as any)?.conversationHistory as
+          | Array<{ role: string; content: string }>
+          | undefined;
+        const reversed = (history ?? []).slice().reverse();
+        const lastAssistant = reversed.find((m) => m.role === 'assistant')?.content;
+        const recentHistory = (history ?? [])
+          .slice(-6)
+          .map((m) => `${m.role}: ${m.content.slice(0, 200)}`)
+          .join('\n');
+        await mineDispositionFromTurn({
+          tenantPhone: user.phoneNumber,
+          ownerMessage: text,
+          lastAssistantMessage: lastAssistant,
+          recentHistory,
+          isColdStart: isCold,
+        });
+      } catch (err) {
+        console.warn(`[iris-${surface}] disposition mining failed (non-blocking):`, err);
+      }
+    })();
 
     return assistantMessage;
   } catch (error) {

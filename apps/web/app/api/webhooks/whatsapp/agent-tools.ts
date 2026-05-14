@@ -1678,6 +1678,28 @@ const TOOL_ANALYZE_CLOUD_DOC: AnthropicTool = {
   },
 };
 
+// ─── Owner-disposition profile (auto-mined operating manual) ────────────
+
+const TOOL_SHOW_DISPOSITION_PROFILE: AnthropicTool = {
+  name: 'show_disposition_profile',
+  description:
+    "Show the owner the operating manual Iris has auto-built for them — the disposition rules mined from past conversations (corrections, approvals, standing preferences, frustration triggers, communication style). Each rule is what every agent reads BEFORE acting so the same correction never has to be made twice. Use when owner asks 'what have you learned about me', 'what rules are you following', 'show my profile', 'show what you know about how I work'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_FORGET_DISPOSITION_RULE: AnthropicTool = {
+  name: 'forget_disposition_rule',
+  description:
+    "Owner says a disposition rule is wrong / no longer applies — dismiss it so it stops being injected into agent prompts. Use when owner says 'forget that rule', 'that's not actually what I want', 'remove the X preference', 'I don't care about Y anymore'. Pass the rule_id from show_disposition_profile.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      rule_id: { type: 'string', description: 'Full UUID or 8-char prefix from show_disposition_profile.' },
+    },
+    required: ['rule_id'],
+  },
+};
+
 // ─── Story 2.16 Phase 2c — Email engagement summary ──────────────────────
 
 const TOOL_SHOW_EMAIL_ENGAGEMENT: AnthropicTool = {
@@ -2026,6 +2048,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_RECALL_DOCUMENTS);
   tools.push(TOOL_ANALYZE_EMAIL_ATTACHMENT);
   tools.push(TOOL_SHOW_EMAIL_ENGAGEMENT);
+  tools.push(TOOL_SHOW_DISPOSITION_PROFILE);
+  tools.push(TOOL_FORGET_DISPOSITION_RULE);
   // SMS tool — only when Twilio is configured. Owner needs to set
   // TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + TWILIO_FROM_NUMBER in Vercel.
   if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER) {
@@ -5363,6 +5387,64 @@ export async function executeTool(
           content: renderAnalysisForWhatsApp({ analysis: result.analysis, filename: fetched.data.filename }),
           success: true,
         };
+      }
+
+      case 'show_disposition_profile': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const { listActiveDispositionRules } = await import('../../_lib/disposition-mining');
+        const rules = await listActiveDispositionRules(cleanPhone, 50);
+        if (rules.length === 0) {
+          return {
+            content: "I haven't built up your operating manual yet — keep talking and I'll mine corrections, preferences, and triggers from our conversations. Every agent reads the manual before acting.",
+            success: true,
+          };
+        }
+        const byKind: Record<string, typeof rules> = {
+          frustration_trigger: [],
+          correction: [],
+          preference: [],
+          approval: [],
+          communication_style: [],
+        };
+        for (const r of rules) (byKind[r.kind] ?? (byKind[r.kind] = [])).push(r);
+        const labelMap: Record<string, string> = {
+          frustration_trigger: '🚫 Never',
+          correction: '⚠ Avoid repeating',
+          preference: '✓ Standing preferences',
+          approval: '👍 Proven patterns',
+          communication_style: '💬 Tone / format',
+        };
+        const lines: string[] = [`📋 Operating manual (${rules.length} active rules — read by every agent before acting):`];
+        for (const k of ['frustration_trigger', 'correction', 'preference', 'approval', 'communication_style']) {
+          const items = byKind[k] ?? [];
+          if (items.length === 0) continue;
+          lines.push('', `${labelMap[k]}:`);
+          for (const r of items.slice(0, 8)) {
+            lines.push(`  [${r.id.slice(0, 8)}] ${r.rule_text}${r.applied_count > 0 ? `  (used ${r.applied_count}×)` : ''}`);
+          }
+        }
+        lines.push('', "Reply 'forget rule <id>' to dismiss any of them.");
+        return { content: lines.join('\n'), success: true };
+      }
+
+      case 'forget_disposition_rule': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const rawId = String(call.input.rule_id ?? '').trim();
+        if (!rawId) return { content: 'rule_id required.', success: false };
+        const { listActiveDispositionRules, dismissDispositionRule } = await import('../../_lib/disposition-mining');
+        let fullId = rawId;
+        if (rawId.length < 36) {
+          const all = await listActiveDispositionRules(cleanPhone, 100);
+          const match = all.find((r) => r.id.startsWith(rawId));
+          if (!match) return { content: `No active rule matching "${rawId}".`, success: false };
+          fullId = match.id;
+        }
+        const ok = await dismissDispositionRule(cleanPhone, fullId);
+        return ok
+          ? { content: `✓ Dismissed. Agents will stop applying that rule.`, success: true }
+          : { content: 'Could not dismiss the rule.', success: false };
       }
 
       case 'show_email_engagement': {

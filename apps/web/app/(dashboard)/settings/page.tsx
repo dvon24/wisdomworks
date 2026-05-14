@@ -16,6 +16,7 @@
 import {
   getOwnerPhoneFromCookie,
   fetchConnectionsForOwner,
+  fetchActiveDispositionRules,
 } from '../_lib/deck-data';
 
 export const dynamic = 'force-dynamic';
@@ -43,9 +44,10 @@ export default async function SettingsPage() {
   const phone = await getOwnerPhoneFromCookie();
   if (!phone) return null;
 
-  const [connections, platformHealth] = await Promise.all([
+  const [connections, platformHealth, disposition] = await Promise.all([
     fetchConnectionsForOwner(phone),
     fetchPlatformHealth(),
+    fetchActiveDispositionRules(phone, 100),
   ]);
 
   return (
@@ -58,6 +60,24 @@ export default async function SettingsPage() {
           </div>
         </div>
       </header>
+
+      <section className="glass deck-section">
+        <div className="deck-section-header">
+          <div className="deck-section-title">
+            Operating Manual ({disposition.length} active rules)
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 16 }}>
+          Auto-mined from your conversations with Iris. Every agent reads these before acting — corrections, preferences, triggers, communication style. Tell Iris "forget rule &lt;id&gt;" to remove anything that's wrong.
+        </div>
+        {disposition.length === 0 ? (
+          <div className="deck-empty">
+            No rules captured yet. Iris builds the manual as you correct, approve, or tell her how you prefer things.
+          </div>
+        ) : (
+          <DispositionGroups rules={disposition} />
+        )}
+      </section>
 
       <section className="glass deck-section">
         <div className="deck-section-header">
@@ -144,6 +164,53 @@ async function fetchPlatformHealth(): Promise<Record<string, 'ok' | 'missing'>> 
     map[it.label] = allSet ? 'ok' : 'missing';
   }
   return map;
+}
+
+function DispositionGroups({ rules }: { rules: Array<{ id: string; kind: string; rule_text: string; why?: string; evidence?: string; scope: string; applied_count: number; last_applied_at?: string | null; created_at: string }> }) {
+  const order = ['frustration_trigger', 'correction', 'preference', 'approval', 'communication_style'] as const;
+  const labels: Record<string, { title: string; icon: string }> = {
+    frustration_trigger: { title: 'Never', icon: '🚫' },
+    correction: { title: 'Avoid repeating', icon: '⚠' },
+    preference: { title: 'Standing preferences', icon: '✓' },
+    approval: { title: 'Proven patterns', icon: '👍' },
+    communication_style: { title: 'Tone / format', icon: '💬' },
+  };
+  const grouped = order.map((k) => ({
+    kind: k,
+    items: rules.filter((r) => r.kind === k),
+  })).filter((g) => g.items.length > 0);
+
+  if (grouped.length === 0) return <div className="deck-empty">No rules in any category.</div>;
+
+  return (
+    <div>
+      {grouped.map((g) => (
+        <div key={g.kind} style={{ marginBottom: 20 }}>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>
+            {(labels[g.kind]?.icon ?? '·')} {(labels[g.kind]?.title ?? g.kind)} ({g.items.length})
+          </div>
+          {g.items.map((r) => (
+            <div key={r.id} className="glass" style={{ padding: '12px 16px', marginBottom: 8 }}>
+              <div style={{ fontWeight: 500, color: 'var(--text)', fontSize: 13 }}>{r.rule_text}</div>
+              {r.why ? (
+                <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>
+                  {r.why}
+                </div>
+              ) : null}
+              {r.evidence ? (
+                <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 6, fontStyle: 'italic' }}>
+                  evidence: "{r.evidence.slice(0, 200)}"
+                </div>
+              ) : null}
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 6, fontFamily: 'Geist Mono, monospace' }}>
+                [{r.id.slice(0, 8)}] · scope: {r.scope} · applied {r.applied_count}× · captured {fmtDate(r.created_at)}
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function StatusPill({ status }: { status: string }) {
