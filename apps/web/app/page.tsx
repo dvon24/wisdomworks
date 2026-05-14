@@ -1294,18 +1294,28 @@ export default function CommandDeck() {
                       </button>
                     );
                   };
-                  const oauthBase = typeof window !== 'undefined' ? window.location.origin : '';
+                  // BUG FIX 2026-05-14 — OAuth routes live in apps/website
+                  // (the marketing/onboarding deploy), NOT in the deck app
+                  // (apps/web). Previously every provider's URL was built
+                  // from window.location.origin (= deck URL) so clicking
+                  // "Connect Google" hit https://<deck>/api/oauth/google —
+                  // 404 because no such route on the deck. Only Meta had
+                  // this right. Now all providers use NEXT_PUBLIC_WEBSITE_URL
+                  // with fallback to the current origin (works in dev where
+                  // they're often the same).
+                  const deckOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+                  const oauthBase = (process.env.NEXT_PUBLIC_WEBSITE_URL || deckOrigin).replace(/\/$/, '');
                   return (
                     <>
                       {renderProviderCard('yahoo', 'Yahoo Mail', '🟣', 'IMAP read access via app password.', 'email', () => { setConnForm('yahoo'); setConnEmail(''); setConnPassword(''); setConnError(''); })}
                       {renderProviderCard('apple', 'Apple iCloud', '⚫', 'CalDAV calendar via app password.', 'calendar', () => { setConnForm('apple'); setConnEmail(''); setConnPassword(''); setConnError(''); })}
-                      {renderProviderCard('google', 'Google', '🟦', 'Gmail + Calendar via OAuth (one click).', 'email', () => {}, phoneNumber ? `${oauthBase}/api/oauth/google?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                      {renderProviderCard('google', 'Google', '🟦', 'Gmail + Calendar + Drive + Search Console + Analytics.', 'email', () => {}, phoneNumber ? `${oauthBase}/api/oauth/google?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                       {renderProviderCard('microsoft', 'Microsoft', '🟧', 'Outlook + Calendar via OAuth.', 'email', () => {}, phoneNumber ? `${oauthBase}/api/oauth/microsoft?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                       {renderProviderCard('square', 'Square Appointments', '🟫', 'Bookings + customer roster sync. One-click OAuth.', 'booking', () => {}, phoneNumber ? `${oauthBase}/api/oauth/square?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                       {renderProviderCard('calendly', 'Calendly', '🔵', 'Pulls invitee roster + scheduled events.', 'booking', () => {}, phoneNumber ? `${oauthBase}/api/oauth/calendly?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                       {renderProviderCard('mindbody', 'Mindbody', '🟢', 'Fitness/spa: client roster + class history.', 'booking', () => {}, phoneNumber ? `${oauthBase}/api/oauth/mindbody?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                       {renderProviderCard('stripe', 'Stripe', '💳', 'Payments + invoicing — 2.9% + $0.30 per transaction.', 'payments', () => {}, phoneNumber ? `${oauthBase}/api/oauth/stripe?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
-                      {renderProviderCard('meta', 'Instagram + Facebook', '📸', 'Posts, comments, leads. One-click OAuth via Meta Business.', 'instagram', () => {}, phoneNumber ? `${(process.env.NEXT_PUBLIC_WEBSITE_URL || oauthBase)}/api/oauth/meta?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
+                      {renderProviderCard('meta', 'Instagram + Facebook', '📸', 'Posts, comments, leads. One-click OAuth via Meta Business.', 'instagram', () => {}, phoneNumber ? `${oauthBase}/api/oauth/meta?phone=${encodeURIComponent(phoneNumber)}` : undefined)}
                     </>
                   );
                 })()}
@@ -1511,14 +1521,35 @@ export default function CommandDeck() {
 
           {sidebar === 'approvals' && (() => {
             // Source from real agent_runs (escalations + proposed actions),
-            // filtered to non-dismissed. Hardcoded PROPOSALS gone.
+            // filtered to non-dismissed.
+            //
+            // Bug fix 2026-05-14: agents (Riley especially when starved)
+            // generate near-identical recommendations on every tick — the
+            // approvals sidebar would balloon to 20+ duplicates. Dedupe
+            // by (agentId + normalized-first-60-chars-of-title), keeping
+            // only the newest run of each cluster. Drops the queue from
+            // "Surface oldest 3-5 approvals (x6)" to one card.
             const runs: any[] = tenantData?.agentRuns ?? [];
+            const seenClusters = new Set<string>();
             const approvals = runs
               .filter((r) =>
                 !dismissedApprovals.has(r.agentId + '|' + r.startedAt) &&
                 (r.outcome === 'proposed' || r.outcome === 'escalated' ||
                   r.escalationPriority === 'high' || r.escalationPriority === 'medium'),
               )
+              .filter((r) => {
+                const title = (r.recommendation || r.proposedAction || r.summary || '')
+                  .toString()
+                  .toLowerCase()
+                  .replace(/[^a-z0-9 ]+/g, '')
+                  .replace(/\s+/g, ' ')
+                  .trim()
+                  .slice(0, 60);
+                const cluster = `${r.agentId}|${title}`;
+                if (seenClusters.has(cluster)) return false;
+                seenClusters.add(cluster);
+                return true;
+              })
               .slice(0, 20);
 
             return (
