@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# Story 6.9 — pre-commit secrets scanner.
+# Runs the Node-based scanner against staged files. Blocks the commit
+# if a high-confidence secret pattern is found.
+#
+# Activated by: git config core.hooksPath .githooks  (run by `pnpm install`
+# via the root `prepare` script — see package.json).
+#
+# Bypass for one commit (use sparingly, only when you're CERTAIN it's a
+# false positive AND adding the hash to scripts/secrets-allowlist.txt
+# isn't appropriate):
+#   git commit --no-verify
+
+node scripts/check-secrets.mjs
