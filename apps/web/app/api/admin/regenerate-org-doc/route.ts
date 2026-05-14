@@ -14,6 +14,7 @@
  */
 
 import { runAxisDiscovery, type DerivedAgentConfig } from '@wisdomworks/shared';
+import { logAuditEvent } from '../../_lib/audit-log';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -133,6 +134,25 @@ export async function POST(request: Request) {
       }
     }
 
+    // Story 6.4 — append to the hash-chained audit log. Admin actions are
+    // the highest-leverage audit target: they change tenant data via an
+    // elevated bearer token, so a tamper-evident trail of every admin call
+    // is the foundation of any future SOC 2 / HIPAA attestation.
+    void logAuditEvent({
+      tenantPhone: cleanPhone,
+      actor: 'admin (OWNER_API_TOKEN)',
+      actorType: 'admin',
+      action: 'admin.api_call',
+      resource: '/api/admin/regenerate-org-doc',
+      outcome: 'success',
+      payload: {
+        endpoint: '/api/admin/regenerate-org-doc',
+        integrations_count: discovery.integrations.length,
+        agents_count: agents.length,
+        ontology_action: existing.length > 0 ? 'update' : 'insert',
+      },
+    });
+
     return Response.json({
       success: true,
       preview: (docEntity.metadata as any).text,
@@ -141,6 +161,22 @@ export async function POST(request: Request) {
     });
   } catch (err: any) {
     console.error('[regenerate-org-doc] error:', err);
+    // Audit the failure too — pattern is "log every admin call, success or fail."
+    try {
+      const { phone: phoneFromBody } = (await request.clone().json().catch(() => ({}))) as { phone?: string };
+      if (phoneFromBody) {
+        const cleanPhoneAudit = String(phoneFromBody).replace(/[\s\-+()]/g, '');
+        void logAuditEvent({
+          tenantPhone: cleanPhoneAudit,
+          actor: 'admin (OWNER_API_TOKEN)',
+          actorType: 'admin',
+          action: 'admin.api_call',
+          resource: '/api/admin/regenerate-org-doc',
+          outcome: 'failure',
+          payload: { endpoint: '/api/admin/regenerate-org-doc', error: err?.message ?? String(err) },
+        });
+      }
+    } catch {}
     return Response.json({ error: err?.message ?? String(err) }, { status: 500 });
   }
 }
