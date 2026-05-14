@@ -1692,6 +1692,26 @@ const TOOL_ANALYZE_CLOUD_DOC: AnthropicTool = {
 
 // ─── Behavioral RAG — semantic recall across rolling memory ─────────────
 
+const TOOL_GET_WEATHER: AnthropicTool = {
+  name: 'get_weather',
+  description:
+    "Get current weather + forecast for any location. Use when the owner asks about weather (their own location, a destination, a venue/race/event location). Free, no API key needed — backed by Open-Meteo. Returns current conditions + daily forecast (high/low, precipitation %, wind). Pair with tenant memory: if the owner mentioned a race / trip / event with a date, fetch weather for that location around that date so you can reason about prep (clothing, pacing, logistics). If location isn't given, ASK before guessing — don't assume.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      location: {
+        type: 'string',
+        description: 'City, town, region, or landmark (free text). E.g. "Garmisch-Partenkirchen", "Munich", "Lake Tahoe". Geocoded server-side.',
+      },
+      days_ahead: {
+        type: 'number',
+        description: 'How many days of forecast to include after today. 0 = today only. Default 3. Max 7.',
+      },
+    },
+    required: ['location'],
+  },
+};
+
 const TOOL_RECALL_FROM_MEMORY: AnthropicTool = {
   name: 'recall_from_memory',
   description:
@@ -2084,6 +2104,9 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_SHOW_DISPOSITION_PROFILE);
   tools.push(TOOL_FORGET_DISPOSITION_RULE);
   tools.push(TOOL_RECALL_FROM_MEMORY);
+  // Weather is always available — no connection or env var needed
+  // (Open-Meteo is free + no key).
+  tools.push(TOOL_GET_WEATHER);
   // SMS tool — only when Twilio is configured. Owner needs to set
   // TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + TWILIO_FROM_NUMBER in Vercel.
   if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER) {
@@ -2707,6 +2730,25 @@ export async function executeTool(
           };
         } catch (err) {
           return { content: `Knowledge base error: ${err}`, success: false };
+        }
+      }
+
+      case 'get_weather': {
+        const location = String(call.input.location ?? '').trim();
+        if (!location) return { content: 'location required (city/town/region).', success: false };
+        const daysAhead = typeof call.input.days_ahead === 'number' ? call.input.days_ahead : 3;
+        try {
+          const { getWeather, formatWeatherSummary } = await import('../../_lib/weather');
+          const summary = await getWeather(location, daysAhead);
+          if (!summary) {
+            return {
+              content: `Couldn't find that location. Try a more specific name (city + country: "Garmisch, Germany").`,
+              success: false,
+            };
+          }
+          return { content: formatWeatherSummary(summary), success: true };
+        } catch (err) {
+          return { content: `Weather lookup error: ${err}`, success: false };
         }
       }
 
