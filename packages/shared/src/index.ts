@@ -179,6 +179,7 @@ export type {
   EmailAttachmentRef,
   FetchedAttachment,
   SendEmailRequest,
+  OutboundAttachment,
   CalendarEvent,
   CreateCalendarEvent,
   IntegrationContext,

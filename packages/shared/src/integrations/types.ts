@@ -42,6 +42,15 @@ export interface FetchedAttachment {
   sizeBytes: number;
 }
 
+export interface OutboundAttachment {
+  /** Display filename including extension (e.g. "Race-Prep-Guide.docx"). */
+  filename: string;
+  /** Base64-encoded file contents. Callers responsible for fetching + encoding. */
+  contentBase64: string;
+  /** MIME type — drives the multipart Content-Type / Graph contentType. */
+  mimeType: string;
+}
+
 export interface SendEmailRequest {
   to: string[];
   cc?: string[];
@@ -50,6 +59,10 @@ export interface SendEmailRequest {
   body: string;
   /** Reply to a specific message — sets In-Reply-To header */
   inReplyToMessageId?: string;
+  /** Story 6.4 / bug fix 2026-05-14 — outbound attachments. Providers
+   *  build multipart MIME (Gmail / SMTP) or include in Graph send
+   *  (Microsoft). Pass empty array or undefined for no attachments. */
+  attachments?: OutboundAttachment[];
 }
 
 export interface CalendarEvent {

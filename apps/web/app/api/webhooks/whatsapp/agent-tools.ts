@@ -200,7 +200,7 @@ const TOOL_SEARCH_EMAILS: AnthropicTool = {
 const TOOL_SEND_EMAIL: AnthropicTool = {
   name: 'send_email',
   description:
-    "Send an email on behalf of the user. NEVER call this unless the user's MOST RECENT message is explicit approval to send THIS SPECIFIC email (e.g. 'send it', 'send the email to John', 'yes send', 'approve and send'). If the user pivoted topics (asked something unrelated, requested a different action, said an ambiguous 'yes' more than one turn after the draft was shown), the draft stays unsent — do NOT fire this tool. When in doubt, ask 'Should I send the email to <recipient>?' and wait for a yes-specific-to-that.",
+    "Send an email on behalf of the user. NEVER call this unless the user's MOST RECENT message is explicit approval to send THIS SPECIFIC email (e.g. 'send it', 'send the email to John', 'yes send', 'approve and send'). If the user pivoted topics (asked something unrelated, requested a different action, said an ambiguous 'yes' more than one turn after the draft was shown), the draft stays unsent — do NOT fire this tool. When in doubt, ask 'Should I send the email to <recipient>?' and wait for a yes-specific-to-that. ATTACHMENTS: if the user wants you to send a document, scan recent conversation_history for the most recent create_document tool result — it contains a storage_url. Pass THAT url (NOT the Drive/OneDrive URL — those need auth) as attachments: [{url, filename}]. DO NOT call create_document to 'regenerate' a doc the user already saw — reuse the existing storage_url.",
   input_schema: {
     type: 'object',
     properties: {
@@ -210,6 +210,18 @@ const TOOL_SEND_EMAIL: AnthropicTool = {
       inReplyToMessageId: {
         type: 'string',
         description: "Optional. If replying to a specific email, pass that email's ID.",
+      },
+      attachments: {
+        type: 'array',
+        description: "Optional. Files to attach. Use the storage_url returned by create_document — NOT the Drive/OneDrive URL. Each attachment: { url, filename }. The server fetches the URL, base64-encodes the bytes, and attaches with the given filename.",
+        items: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'Public/signed URL the server can fetch (typically the storage_url from create_document).' },
+            filename: { type: 'string', description: 'Filename WITH extension. Shown to the recipient.' },
+          },
+          required: ['url', 'filename'],
+        },
       },
     },
     required: ['to', 'subject', 'body'],
@@ -255,7 +267,7 @@ const TOOL_CREATE_CALENDAR_EVENT: AnthropicTool = {
 const TOOL_CREATE_DOCUMENT: AnthropicTool = {
   name: 'create_document',
   description:
-    "Generate a Word/PowerPoint/Excel/PDF document and upload it to the user's Google Drive or OneDrive (whichever they have connected). Use when the user asks for a doc/deck/spreadsheet/PDF — meeting notes, report, proposal, status update, etc. Returns the file URL.",
+    "Generate a Word/PowerPoint/Excel/PDF document and upload it. Returns TWO URLs: drive_url / onedrive_url for sharing, and storage_url for attaching to a follow-up send_email call. DO NOT call this if the user is referring to a document YOU ALREADY GENERATED in a previous turn — instead, find that document's storage_url in conversation history and pass it to send_email. Phrases like 'email that', 'send the doc', 'attach it' refer to the most recent prior document. Only call create_document when generating a NEW document the user is asking for fresh. If the user asks you to email a doc you just generated, IMMEDIATELY call send_email next in the same turn with attachments: [{ url: <storage_url>, filename: <safeName> }] — don't summarize and stop.",
   input_schema: {
     type: 'object',
     properties: {
@@ -2261,6 +2273,55 @@ export async function executeTool(
       case 'send_email': {
         const conn = connections.find((c) => c.service === 'email');
         if (!conn) return { content: 'No email account connected.', success: false };
+
+        // Bug fix 2026-05-14: fetch attachment URLs server-side, base64-encode,
+        // pass to the provider send function. Each attachment is fetched with
+        // a small timeout + size cap to bound the failure mode. Note: Drive
+        // and OneDrive URLs are NOT directly fetchable without auth — the tool
+        // description directs the model to pass the storage_url from
+        // create_document, which IS public/signed.
+        const fetchedAttachments: Array<{ filename: string; contentBase64: string; mimeType: string }> = [];
+        const attachmentRequests = Array.isArray(call.input.attachments) ? call.input.attachments : [];
+        const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024; // 20MB — Gmail's cap is 25MB; leave headroom for MIME overhead
+        const attachmentErrors: string[] = [];
+
+        for (const att of attachmentRequests) {
+          if (!att?.url || !att?.filename) {
+            attachmentErrors.push(`bad attachment shape (need {url, filename})`);
+            continue;
+          }
+          try {
+            const fetchRes = await fetch(att.url);
+            if (!fetchRes.ok) {
+              attachmentErrors.push(`${att.filename}: download failed (${fetchRes.status})`);
+              continue;
+            }
+            const arrayBuf = await fetchRes.arrayBuffer();
+            if (arrayBuf.byteLength > ATTACHMENT_MAX_BYTES) {
+              attachmentErrors.push(`${att.filename}: ${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB exceeds 20MB cap`);
+              continue;
+            }
+            const mimeType = fetchRes.headers.get('content-type') ?? 'application/octet-stream';
+            fetchedAttachments.push({
+              filename: att.filename,
+              contentBase64: Buffer.from(arrayBuf).toString('base64'),
+              mimeType: mimeType.split(';')[0]!.trim(),
+            });
+          } catch (err: any) {
+            attachmentErrors.push(`${att.filename}: ${err?.message ?? String(err)}`);
+          }
+        }
+
+        // If attachments were REQUESTED but ALL failed, refuse to send a
+        // headless email — the model meant to attach something and didn't.
+        // Surface the failures so the model (or owner) can correct.
+        if (attachmentRequests.length > 0 && fetchedAttachments.length === 0) {
+          return {
+            content: `Could not fetch any attachments — refusing to send a headless email. Errors: ${attachmentErrors.join('; ')}`,
+            success: false,
+          };
+        }
+
         const req = {
           to: call.input.to,
           cc: call.input.cc,
@@ -2268,6 +2329,7 @@ export async function executeTool(
           subject: call.input.subject,
           body: call.input.body,
           inReplyToMessageId: call.input.inReplyToMessageId,
+          attachments: fetchedAttachments.length > 0 ? fetchedAttachments : undefined,
         };
         // Yahoo + generic IMAP go through SMTP via the local runtime; everything
         // else uses the shared router (Gmail API / Microsoft Graph).
@@ -2277,7 +2339,13 @@ export async function executeTool(
         if (!result.success) {
           return { content: `Send failed: ${result.error}`, success: false };
         }
-        return { content: `Email sent to ${call.input.to.join(', ')}.`, success: true };
+        const attachmentSummary = fetchedAttachments.length > 0
+          ? ` with ${fetchedAttachments.length} attachment${fetchedAttachments.length === 1 ? '' : 's'}`
+          : '';
+        const errorSummary = attachmentErrors.length > 0
+          ? ` (some attachments failed: ${attachmentErrors.join('; ')})`
+          : '';
+        return { content: `Email sent to ${call.input.to.join(', ')}${attachmentSummary}.${errorSummary}`, success: true };
       }
 
       case 'list_calendar_events': {
@@ -2496,6 +2564,23 @@ export async function executeTool(
             }
           };
 
+          // Bug fix 2026-05-14: ALWAYS upload to Supabase Storage too. The
+          // resulting public URL is what send_email needs to fetch + attach.
+          // Drive/OneDrive URLs are sharing links — they can't be fetched
+          // server-side without OAuth, so passing them to send_email's
+          // attachments parameter would fail. The storage_url is always
+          // directly fetchable so any subsequent send_email call works.
+          const { uploadGeneratedDoc } = await import('../../_lib/generated-doc-storage');
+          const attachable = await uploadGeneratedDoc({
+            tenantPhone: user.phoneNumber,
+            buffer,
+            filename: safeName,
+            mimeType: mime,
+          });
+          const attachableNote = attachable
+            ? `\n  storage_url (use for email attachments): ${attachable.publicUrl}`
+            : '';
+
           // Destination preference: Google Drive → OneDrive → WhatsApp document fallback
           const googleConn = connections.find((c) => c.provider === 'google');
           const msConn = connections.find((c) => c.provider === 'microsoft');
@@ -2505,7 +2590,10 @@ export async function executeTool(
             if (upload.ok) {
               const totalMs = Date.now() - startedAt;
               await auditDelivery('google_drive', upload.webUrl ?? null, totalMs, true);
-              return { content: `Created ${safeName} in your Google Drive (${(sizeKb).toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s): ${upload.webUrl}`, success: true };
+              return {
+                content: `Created ${safeName} in your Google Drive (${(sizeKb).toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s).\n  drive_url: ${upload.webUrl}${attachableNote}`,
+                success: true,
+              };
             }
           }
           if (msConn) {
@@ -2513,20 +2601,17 @@ export async function executeTool(
             if (upload.ok) {
               const totalMs = Date.now() - startedAt;
               await auditDelivery('onedrive', upload.webUrl ?? null, totalMs, true);
-              return { content: `Created ${safeName} in your OneDrive (${(sizeKb).toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s): ${upload.webUrl}`, success: true };
+              return {
+                content: `Created ${safeName} in your OneDrive (${(sizeKb).toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s).\n  onedrive_url: ${upload.webUrl}${attachableNote}`,
+                success: true,
+              };
             }
           }
 
-          // Fallback: upload to Supabase Storage public bucket + send via
-          // WhatsApp document message so the owner still gets the file.
-          // This is the "no Drive connected" path — previously stubbed.
-          const { uploadGeneratedDoc } = await import('../../_lib/generated-doc-storage');
-          const stored = await uploadGeneratedDoc({
-            tenantPhone: user.phoneNumber,
-            buffer,
-            filename: safeName,
-            mimeType: mime,
-          });
+          // Fallback: WhatsApp document delivery, reusing the storage upload
+          // we already did above (attachable). This is the "no Drive
+          // connected" path.
+          const stored = attachable;
           if (!stored) {
             const totalMs = Date.now() - startedAt;
             await auditDelivery('whatsapp_fallback', null, totalMs, false, 'storage upload failed');

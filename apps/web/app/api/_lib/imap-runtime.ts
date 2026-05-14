@@ -625,6 +625,7 @@ interface SendRequest {
   subject: string;
   body: string;
   inReplyToMessageId?: string;
+  attachments?: Array<{ filename: string; contentBase64: string; mimeType: string }>;
 }
 
 /**
@@ -651,6 +652,17 @@ export async function sendImap(conn: ImapConnection, req: SendRequest): Promise<
     auth: { user: conn.account_email, pass: conn.access_token },
   });
 
+  // Bug fix 2026-05-14: pass attachments through to nodemailer so the
+  // create_document → send_email chain actually delivers the doc.
+  // nodemailer accepts {filename, content, contentType, encoding} per
+  // attachment; we feed it the base64 string + flag.
+  const nodemailerAttachments = (req.attachments ?? []).map((a) => ({
+    filename: a.filename,
+    content: a.contentBase64,
+    encoding: 'base64',
+    contentType: a.mimeType,
+  }));
+
   try {
     const info = await transporter.sendMail({
       from: conn.account_email,
@@ -661,6 +673,7 @@ export async function sendImap(conn: ImapConnection, req: SendRequest): Promise<
       text: req.body,
       inReplyTo: req.inReplyToMessageId,
       references: req.inReplyToMessageId,
+      attachments: nodemailerAttachments.length > 0 ? nodemailerAttachments : undefined,
     });
     return { success: true, data: { messageId: info.messageId } };
   } catch (err: any) {

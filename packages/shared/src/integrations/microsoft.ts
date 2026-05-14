@@ -84,6 +84,17 @@ export async function sendEmail(
     };
     if (req.cc?.length) message.ccRecipients = req.cc.map((email) => ({ emailAddress: { address: email } }));
     if (req.bcc?.length) message.bccRecipients = req.bcc.map((email) => ({ emailAddress: { address: email } }));
+    // Bug fix 2026-05-14: Graph supports inline attachments on the message
+    // object for files under 3MB (larger files need a separate upload
+    // session; we don't support that yet).
+    if ((req.attachments?.length ?? 0) > 0) {
+      message.attachments = (req.attachments ?? []).map((a) => ({
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name: a.filename,
+        contentType: a.mimeType,
+        contentBytes: a.contentBase64,
+      }));
+    }
 
     // If replying to a message, use the reply endpoint instead
     if (req.inReplyToMessageId) {

@@ -201,7 +201,19 @@ calendars in their atoms, recent emails, client profiles). Examples:
 - Product photo + caption mentions a client → ask if you should attach
   it to that client's profile.
 NEVER reply with just "📸 I see ..." and stop. The analysis is the START
-of your reasoning, not the end.`;
+of your reasoning, not the end.
+
+DOCUMENT REUSE (critical to avoid wasted work):
+If you generated a document with create_document in a recent turn and the
+user now wants you to email it / attach it / send it — DO NOT call
+create_document again to "regenerate." Scan conversation_history for the
+prior create_document tool result; it contains a storage_url and a
+safeName. Pass those directly to send_email's attachments parameter:
+  attachments: [{ url: <storage_url>, filename: <safeName> }]
+The model has historically (and incorrectly) regenerated a new doc when
+the user said "email that" — costing time + creating two different docs.
+Find the existing one. Only create a NEW doc if the user explicitly
+asks for new content ("make me a fresh report on X").`;
 
   if (isDevon) {
     return `${basePrompt}

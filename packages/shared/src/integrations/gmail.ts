@@ -159,25 +159,63 @@ export async function listUnreadMessages(
 
 /**
  * Send an email. Constructs a raw RFC 2822 message and submits to Gmail.
+ * Bug fix 2026-05-14: builds multipart/mixed when attachments are present
+ * so create_document → send_email chains actually deliver the doc.
  */
 export async function sendEmail(
   ctx: IntegrationContext,
   req: SendEmailRequest,
 ): Promise<IntegrationResult<{ messageId: string }>> {
   try {
-    // Build the RFC 2822 message
-    const headers: string[] = [];
-    headers.push(`To: ${req.to.join(', ')}`);
-    if (req.cc?.length) headers.push(`Cc: ${req.cc.join(', ')}`);
-    if (req.bcc?.length) headers.push(`Bcc: ${req.bcc.join(', ')}`);
-    headers.push(`Subject: ${req.subject}`);
-    headers.push('Content-Type: text/plain; charset=utf-8');
+    const hasAttachments = (req.attachments?.length ?? 0) > 0;
+
+    const headerLines: string[] = [];
+    headerLines.push(`To: ${req.to.join(', ')}`);
+    if (req.cc?.length) headerLines.push(`Cc: ${req.cc.join(', ')}`);
+    if (req.bcc?.length) headerLines.push(`Bcc: ${req.bcc.join(', ')}`);
+    headerLines.push(`Subject: ${req.subject}`);
+    headerLines.push('MIME-Version: 1.0');
     if (req.inReplyToMessageId) {
-      headers.push(`In-Reply-To: ${req.inReplyToMessageId}`);
-      headers.push(`References: ${req.inReplyToMessageId}`);
+      headerLines.push(`In-Reply-To: ${req.inReplyToMessageId}`);
+      headerLines.push(`References: ${req.inReplyToMessageId}`);
     }
 
-    const message = headers.join('\r\n') + '\r\n\r\n' + req.body;
+    let message: string;
+    if (!hasAttachments) {
+      // Simple text/plain — original path.
+      headerLines.push('Content-Type: text/plain; charset=utf-8');
+      message = headerLines.join('\r\n') + '\r\n\r\n' + req.body;
+    } else {
+      // multipart/mixed with text body + each attachment as a base64 part.
+      const boundary = `=ww_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      headerLines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+
+      const parts: string[] = [];
+      // Body part
+      parts.push(
+        `--${boundary}`,
+        'Content-Type: text/plain; charset=utf-8',
+        'Content-Transfer-Encoding: 7bit',
+        '',
+        req.body,
+      );
+      // Each attachment as a base64 part. Wrap content at 76 chars per
+      // RFC 2045 — Gmail accepts unwrapped but mail clients are stricter.
+      for (const att of req.attachments ?? []) {
+        const wrapped = att.contentBase64.replace(/.{76}/g, '$&\r\n');
+        parts.push(
+          `--${boundary}`,
+          `Content-Type: ${att.mimeType}; name="${att.filename}"`,
+          `Content-Disposition: attachment; filename="${att.filename}"`,
+          'Content-Transfer-Encoding: base64',
+          '',
+          wrapped,
+        );
+      }
+      parts.push(`--${boundary}--`);
+      message = headerLines.join('\r\n') + '\r\n\r\n' + parts.join('\r\n');
+    }
+
     const encoded = Buffer.from(message)
       .toString('base64')
       .replace(/\+/g, '-')
