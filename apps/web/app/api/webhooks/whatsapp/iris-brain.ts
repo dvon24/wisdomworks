@@ -46,19 +46,22 @@ function estimateChatCost(uncachedIn: number, cacheWriteIn: number, cacheReadIn:
 }
 
 // Per-surface effort levels. Sonnet 4.6 defaults to `high` which Anthropic's
-// own docs warn "can cause unexpected latency" — and WhatsApp users feel
-// latency the most. Tune per surface:
-//   - whatsapp: realtime, owner-facing → low (fast, terse)
-//   - sms/imessage/telegram: same channel-shape → low
-//   - deck: async owner-facing webapp → medium (balanced)
-// `low` reduces tool-call count, thinking depth, and response length. If a
-// surface needs heavier reasoning, escalate to medium/high.
+// own docs warn "can cause unexpected latency" — but `low` had the opposite
+// problem: Iris skipped tool calls and shallow-replied to multi-step asks
+// (e.g. attached weather image for race weekend → reply ignored the image,
+// said something about being "tenacious" with iterations=0 and no tools
+// used). `medium` is the Sonnet 4.6 recommended default: balances cost
+// and reasoning quality.
+//   - whatsapp / sms / imessage / telegram: realtime, owner-facing → medium
+//   - deck: async owner-facing webapp → medium (was already)
+// Drop to `low` per-call only when the message is clearly trivial (short
+// "thanks", "ok", "cool") — that's a future surgical optimization.
 type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 const EFFORT_BY_SURFACE: Record<'whatsapp' | 'deck' | 'telegram' | 'sms' | 'imessage', EffortLevel> = {
-  whatsapp: 'low',
-  sms: 'low',
-  imessage: 'low',
-  telegram: 'low',
+  whatsapp: 'medium',
+  sms: 'medium',
+  imessage: 'medium',
+  telegram: 'medium',
   deck: 'medium',
 };
 

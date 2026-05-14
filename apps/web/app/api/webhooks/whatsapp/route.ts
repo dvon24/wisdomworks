@@ -191,21 +191,43 @@ export async function POST(request: Request) {
           caption: photoCaption || undefined,
         });
 
-        // Compose a short reply summarizing what I saw + extracted entities
-        const replyLines: string[] = ['📸 ' + brief.description];
+        // Story 2b.1 Phase 2 (FIX 2026-05-14): don't reply with a canned
+        // 📸-prefixed analysis-only message. Synthesize a user message
+        // that combines the photo brief + entities + caption, then run
+        // iris-brain on it so the reply uses tenant memory (knowledge
+        // atoms, dispositions, recent context) to actually REASON about
+        // the image — not just describe it.
+        //
+        // Symptom this fixes: Devon sent a weather forecast for race
+        // weekend; old path replied with "📸 Weather forecast showing
+        // rain on Saturday..." and stopped. New path: Iris connects
+        // weather to known 100k race, gives race-prep advice.
         const entities = brief.entities ?? {};
-        if (entities.problem) replyLines.push(`Problem: ${entities.problem}`);
-        if (entities.diagnosis) replyLines.push(`Diagnosis: ${entities.diagnosis}`);
-        if (entities.solution) replyLines.push(`Solution: ${entities.solution}`);
-        if (entities.service) replyLines.push(`Service: ${entities.service}`);
+        const briefLines: string[] = [
+          `[Photo received — auto-analysis follows]`,
+          `Description: ${brief.description}`,
+        ];
+        if (entities.problem) briefLines.push(`Problem: ${entities.problem}`);
+        if (entities.diagnosis) briefLines.push(`Diagnosis: ${entities.diagnosis}`);
+        if (entities.solution) briefLines.push(`Solution: ${entities.solution}`);
+        if (entities.service) briefLines.push(`Service: ${entities.service}`);
         if (Array.isArray(entities.tools) && entities.tools.length > 0) {
-          replyLines.push(`Tools/parts: ${entities.tools.join(', ')}`);
+          briefLines.push(`Tools/parts: ${entities.tools.join(', ')}`);
         }
-        if (brief.tags.length > 0) replyLines.push(`Tags: ${brief.tags.slice(0, 6).join(', ')}`);
-        replyLines.push('');
-        replyLines.push("Want me to attach this to a client profile? Just tell me who it's for.");
+        if (brief.tags.length > 0) briefLines.push(`Tags: ${brief.tags.slice(0, 6).join(', ')}`);
+        briefLines.push(`[end auto-analysis]`);
+        const synthesizedMessage = photoCaption
+          ? `${photoCaption}\n\n${briefLines.join('\n')}`
+          : briefLines.join('\n');
 
-        await sendWhatsAppReply(from, replyLines.join('\n'), 'webhook-image');
+        try {
+          const reply = await generateIrisReply(synthesizedMessage, user, 'whatsapp');
+          await sendWhatsAppReply(from, reply, 'webhook-image');
+        } catch (err) {
+          console.error('[whatsapp] image → iris-brain failed:', err);
+          // Fall back to the analysis-only summary so the owner gets SOMETHING.
+          await sendWhatsAppReply(from, `📸 ${brief.description}`, 'webhook-image');
+        }
         return NextResponse.json({ status: 'ok' });
       } catch (err) {
         console.error('[whatsapp] image-handling error:', err);
