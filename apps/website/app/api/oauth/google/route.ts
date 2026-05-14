@@ -13,13 +13,18 @@ export const dynamic = 'force-dynamic';
 
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 
-// Combined scopes — Gmail + Calendar + basic profile + Drive read.
-// drive.readonly allows search + read of files Devon owns + files
-// shared with him. Required for Iris's "pull the X from my Drive" path
-// (Story 2.16 Phase 4). Re-consent required for tenants connected
-// before this scope was added — Iris's existing Gmail/Calendar paths
-// continue working with the prior token; cloud-doc tools surface a
-// "reconnect Google" message when called against a pre-scope token.
+// Combined scopes — Gmail + Calendar + Drive + Search Console + Analytics.
+// drive.readonly allows search + read of files (Story 2.16 Phase 4).
+// webmasters.readonly + analytics.readonly added 2026-05-14 for Alex
+// (Au7o Project Director) so he can pull GSC impressions/clicks +
+// GA4 sessions/users to report on site performance.
+//
+// Re-consent required for tenants connected before any scope was added.
+// Existing tokens continue to work for the scopes they had; tools that
+// need newer scopes surface a "reconnect Google" message when the
+// token's scopes don't cover the call. Iris/Alex's agent tools check
+// connection.service and skip themselves when the corresponding row
+// doesn't exist.
 const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
@@ -27,6 +32,8 @@ const SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/drive.readonly',
+  'https://www.googleapis.com/auth/webmasters.readonly',
+  'https://www.googleapis.com/auth/analytics.readonly',
 ];
 
 export async function GET(request: Request) {

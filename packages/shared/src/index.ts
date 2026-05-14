@@ -199,7 +199,16 @@ export type {
   IntegrationContext,
   IntegrationResult,
   OAuthConnection,
+  GscSite,
+  GscQueryRow,
+  GscPerformanceReport,
+  Ga4Property,
+  Ga4ReportRow,
+  Ga4Report,
 } from './integrations';
+
+// Provider namespaces for the agent-tools executors (each is `import * as`-style).
+export { googleSearchConsole, googleAnalytics } from './integrations';
 export {
   listEmails,
   sendEmail,

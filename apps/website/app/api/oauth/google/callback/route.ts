@@ -5,7 +5,7 @@
  * We exchange the code for tokens, fetch the user's email/name, and save the connection.
  */
 
-import { decodeState, getCallbackBaseUrl, saveConnection } from '../../_lib/store';
+import { decodeState, getCallbackBaseUrl, saveConnection, type Service } from '../../_lib/store';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,36 +72,48 @@ export async function GET(request: Request) {
     const expiresAt = new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000).toISOString();
     const scopes = (tokens.scope ?? '').split(' ');
 
-    // Save both Email and Calendar connections — Google bundles them in one consent
-    await saveConnection({
+    // Save one connection row per Google service the user granted. Iris's
+    // agent-tool gating checks `connections.some(c => c.service === X)`
+    // so each row makes the corresponding tools visible. Token + refresh
+    // are shared across rows (same Google account, same OAuth grant).
+    //
+    // We write each service unconditionally — even if the user's scopes
+    // don't actually cover it. The tool itself returns a "reconnect Google
+    // with broader scopes" error if a call hits a 403, which is the same
+    // path used pre-this-commit. Service rows just expose tools; the
+    // actual API permission is enforced at call time.
+    const sharedConnFields = {
       phone_number: decoded.phone,
-      provider: 'google',
-      service: 'email',
+      provider: 'google' as const,
       account_email: user.email,
       account_name: user.name,
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       expires_at: expiresAt,
       scopes,
-    });
+    };
 
-    await saveConnection({
-      phone_number: decoded.phone,
-      provider: 'google',
-      service: 'calendar',
-      account_email: user.email,
-      account_name: user.name,
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      expires_at: expiresAt,
-      scopes,
-    });
+    const grantedServices: Service[] = [];
+    const serviceScopeMap: Array<{ service: Service; scopeNeedle: string }> = [
+      { service: 'email', scopeNeedle: 'gmail' },
+      { service: 'calendar', scopeNeedle: '/calendar' },
+      { service: 'drive', scopeNeedle: 'drive.readonly' },
+      { service: 'search_console', scopeNeedle: 'webmasters' },
+      { service: 'analytics', scopeNeedle: 'analytics.readonly' },
+    ];
 
-    console.log(`[google-oauth] Connected ${user.email} for ${decoded.phone}`);
+    for (const { service, scopeNeedle } of serviceScopeMap) {
+      const granted = scopes.some((s: string) => s.includes(scopeNeedle));
+      if (!granted) continue;
+      await saveConnection({ ...sharedConnFields, service });
+      grantedServices.push(service);
+    }
+
+    console.log(`[google-oauth] Connected ${user.email} for ${decoded.phone} — services: ${grantedServices.join(', ')}`);
 
     // Redirect back to the app with success
     return Response.redirect(
-      `${getCallbackBaseUrl(request)}/?oauth=success&provider=google&services=email,calendar&email=${encodeURIComponent(user.email)}`,
+      `${getCallbackBaseUrl(request)}/?oauth=success&provider=google&services=${encodeURIComponent(grantedServices.join(','))}&email=${encodeURIComponent(user.email)}`,
       302,
     );
   } catch (err) {

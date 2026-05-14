@@ -13,7 +13,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 export type Provider = 'google' | 'microsoft' | 'meta' | 'apple' | 'yahoo' | 'imap';
-export type Service = 'email' | 'calendar' | 'instagram';
+export type Service = 'email' | 'calendar' | 'instagram' | 'drive' | 'search_console' | 'analytics';
 
 export interface OAuthConnection {
   id?: string;

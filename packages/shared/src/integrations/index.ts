@@ -35,6 +35,10 @@ export {
 // Direct provider access (for advanced use)
 export * as gmail from './gmail';
 export * as googleCalendar from './google-calendar';
+export * as googleSearchConsole from './google-search-console';
+export * as googleAnalytics from './google-analytics';
+export type { GscSite, GscQueryRow, GscPerformanceReport } from './google-search-console';
+export type { Ga4Property, Ga4ReportRow, Ga4Report } from './google-analytics';
 export * as microsoft from './microsoft';
 export * as apple from './apple-caldav';
 // IMAP module is server-only (Node net/dns/tls). Don't re-export the

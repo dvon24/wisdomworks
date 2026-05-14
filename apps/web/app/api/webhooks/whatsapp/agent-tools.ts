@@ -1690,6 +1690,37 @@ const TOOL_ANALYZE_CLOUD_DOC: AnthropicTool = {
   },
 };
 
+const TOOL_GET_SEARCH_CONSOLE_DATA: AnthropicTool = {
+  name: 'get_search_console_data',
+  description:
+    "Pull Google Search Console performance data — impressions, clicks, CTR, average position — for one of the owner's verified sites. Use when the owner asks about SEO performance, search traffic, top queries, or how a site is doing in Google. If site_url is omitted, lists the available sites first so the owner can choose. Default range is last 28 days, grouped by top queries. Pass dimension='page' for top pages, 'date' for daily trend, 'country' for geo split, 'device' for mobile vs desktop. Returns aggregate totals + the top rows.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      site_url: { type: 'string', description: "GSC site URL (e.g. 'https://au7o.com/' or 'sc-domain:au7o.com'). Omit to list available sites first." },
+      dimension: { type: 'string', enum: ['query', 'page', 'country', 'device', 'date'], description: "How to group results. Default 'query' (top search terms)." },
+      days_back: { type: 'number', description: "Date range in days. Default 28. Max 90." },
+      row_limit: { type: 'number', description: "Max rows to return. Default 25, max 100." },
+    },
+  },
+};
+
+const TOOL_GET_ANALYTICS_DATA: AnthropicTool = {
+  name: 'get_analytics_data',
+  description:
+    "Pull Google Analytics 4 data — sessions, users, top pages, conversions, traffic sources — for one of the owner's GA4 properties. Use when the owner asks about site traffic, visitor counts, what pages are popular, where visitors are coming from, or conversion volumes. If property_id is omitted, lists available GA4 properties first. Default report: sessions + active users by date for the last 28 days. Common alternative shapes — pass dimensions/metrics: top pages={dimensions:['pagePath'], metrics:['screenPageViews']}; sources={dimensions:['sessionSource'], metrics:['sessions']}; conversions={dimensions:['date'], metrics:['conversions']}.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      property_id: { type: 'string', description: "GA4 numeric property id (e.g. '123456789'). Omit to list available properties first." },
+      dimensions: { type: 'array', items: { type: 'string' }, description: "GA4 dimension names. Default ['date']." },
+      metrics: { type: 'array', items: { type: 'string' }, description: "GA4 metric names. Default ['sessions','activeUsers']." },
+      days_back: { type: 'number', description: "Date range in days. Default 28." },
+      row_limit: { type: 'number', description: "Max rows to return. Default 25, max 100." },
+    },
+  },
+};
+
 // ─── Behavioral RAG — semantic recall across rolling memory ─────────────
 
 const TOOL_GET_WEATHER: AnthropicTool = {
@@ -2119,6 +2150,16 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
     tools.push(TOOL_ANALYZE_CLOUD_DOC);
   }
   tools.push(TOOL_CHECK_VIDEO_JOBS);
+
+  // Search Console + Analytics — Alex (Au7o Project Director) needs these
+  // to surface site performance. Surface only when the user has granted
+  // the corresponding scopes (callback writes per-service connection rows).
+  if (conns.some((c) => c.provider === 'google' && c.service === 'search_console')) {
+    tools.push(TOOL_GET_SEARCH_CONSOLE_DATA);
+  }
+  if (conns.some((c) => c.provider === 'google' && c.service === 'analytics')) {
+    tools.push(TOOL_GET_ANALYTICS_DATA);
+  }
 
   return tools;
 }
@@ -5356,6 +5397,96 @@ export async function executeTool(
           content: `${snaps.length} recent snapshot${snaps.length === 1 ? '' : 's'}:\n${lines.join('\n')}\n\nTo roll back, say "roll back to snap <id>" or "undo that send_email".`,
           success: true,
         };
+      }
+
+      case 'get_search_console_data': {
+        const conn = (connections as any[]).find((c) => c.provider === 'google' && c.service === 'search_console');
+        if (!conn) {
+          return { content: 'Search Console not connected. Owner needs to reconnect Google in the deck to grant the webmasters.readonly scope.', success: false };
+        }
+        try {
+          const { googleSearchConsole } = await import('@wisdomworks/shared');
+          const siteUrl = call.input.site_url ? String(call.input.site_url).trim() : '';
+
+          // If no site_url provided, list the available ones so the model
+          // (or user) can pick.
+          if (!siteUrl) {
+            const list = await googleSearchConsole.listSites(conn);
+            if (!list.success || !list.data) return { content: `GSC list-sites failed: ${list.error}`, success: false };
+            if (list.data.length === 0) return { content: 'No verified sites found in Search Console for this Google account.', success: true };
+            const lines = list.data.map((s) => `  - ${s.siteUrl} (${s.permissionLevel})`);
+            return {
+              content: `Verified sites in Search Console:\n${lines.join('\n')}\n\nPass site_url to get_search_console_data to pull performance for one of them.`,
+              success: true,
+            };
+          }
+
+          const dimension = (call.input.dimension as any) ?? 'query';
+          const daysBack = typeof call.input.days_back === 'number' ? Math.min(call.input.days_back, 90) : 28;
+          const rowLimit = typeof call.input.row_limit === 'number' ? Math.min(call.input.row_limit, 100) : 25;
+
+          const perf = await googleSearchConsole.getPerformance(conn, { siteUrl, dimension, daysBack, rowLimit });
+          if (!perf.success || !perf.data) return { content: `GSC performance failed: ${perf.error}`, success: false };
+
+          const r = perf.data;
+          const ctrPct = (r.averageCtr * 100).toFixed(2);
+          const header =
+            `GSC for ${r.siteUrl} (${r.startDate} → ${r.endDate}, by ${r.dimension}):\n` +
+            `  Totals: ${r.totalClicks.toLocaleString()} clicks, ${r.totalImpressions.toLocaleString()} impressions, ${ctrPct}% CTR, avg position ${r.averagePosition.toFixed(1)}`;
+          const lines = r.rows.slice(0, rowLimit).map((row, i) =>
+            `  ${i + 1}. ${row.dimension} — ${row.clicks} clicks, ${row.impressions} impr, ${(row.ctr * 100).toFixed(1)}% CTR, pos ${row.position.toFixed(1)}`,
+          );
+          return { content: `${header}\n\nTop ${dimension}:\n${lines.join('\n')}`, success: true };
+        } catch (err) {
+          return { content: `GSC tool error: ${err}`, success: false };
+        }
+      }
+
+      case 'get_analytics_data': {
+        const conn = (connections as any[]).find((c) => c.provider === 'google' && c.service === 'analytics');
+        if (!conn) {
+          return { content: 'Analytics not connected. Owner needs to reconnect Google in the deck to grant the analytics.readonly scope.', success: false };
+        }
+        try {
+          const { googleAnalytics } = await import('@wisdomworks/shared');
+          const propertyId = call.input.property_id ? String(call.input.property_id).trim() : '';
+
+          if (!propertyId) {
+            const list = await googleAnalytics.listProperties(conn);
+            if (!list.success || !list.data) return { content: `GA list-properties failed: ${list.error}`, success: false };
+            if (list.data.length === 0) return { content: 'No GA4 properties found for this Google account.', success: true };
+            const lines = list.data.map((p: { propertyId: string; displayName: string }) =>
+              `  - ${p.propertyId} — ${p.displayName}`,
+            );
+            return {
+              content: `GA4 properties available:\n${lines.join('\n')}\n\nPass property_id to get_analytics_data to pull a report.`,
+              success: true,
+            };
+          }
+
+          const dimensions = Array.isArray(call.input.dimensions) && call.input.dimensions.length > 0
+            ? call.input.dimensions.map(String)
+            : ['date'];
+          const metrics = Array.isArray(call.input.metrics) && call.input.metrics.length > 0
+            ? call.input.metrics.map(String)
+            : ['sessions', 'activeUsers'];
+          const daysBack = typeof call.input.days_back === 'number' ? call.input.days_back : 28;
+          const rowLimit = typeof call.input.row_limit === 'number' ? Math.min(call.input.row_limit, 100) : 25;
+
+          const report = await googleAnalytics.runReport(conn, { propertyId, dimensions, metrics, daysBack, rowLimit });
+          if (!report.success || !report.data) return { content: `GA report failed: ${report.error}`, success: false };
+
+          const r = report.data;
+          const header = `GA4 ${r.propertyId} (last ${daysBack} days, ${r.totalRows} rows total):\n` +
+            `  Dimensions: ${r.dimensionHeaders.join(', ')}\n` +
+            `  Metrics: ${r.metricHeaders.join(', ')}`;
+          const lines = r.rows.slice(0, rowLimit).map((row: { dimensions: string[]; metrics: number[] }, i: number) =>
+            `  ${i + 1}. ${row.dimensions.join(' / ')} → ${row.metrics.map((m: number, j: number) => `${r.metricHeaders[j]}:${m.toLocaleString()}`).join(', ')}`,
+          );
+          return { content: `${header}\n\n${lines.join('\n')}`, success: true };
+        } catch (err) {
+          return { content: `GA tool error: ${err}`, success: false };
+        }
       }
 
       case 'check_video_jobs': {
