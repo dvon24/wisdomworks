@@ -96,15 +96,34 @@ $$;
 -- 7. Tracking columns on each behavioral source so the refresh cron
 --    knows what's already indexed (idempotent — pulls rows with
 --    last_indexed_at IS NULL OR updated_at > last_indexed_at).
+--
+--    Guarded so this migration is order-resilient — if a source table
+--    hasn't been created yet (you skipped a prior migration), we just
+--    skip its column. The ingester no-ops gracefully when a source
+--    table is missing, so re-running this migration after the prereq
+--    is safe.
 
-ALTER TABLE knowledge_atoms
-  ADD COLUMN IF NOT EXISTS last_indexed_at TIMESTAMPTZ;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'knowledge_atoms') THEN
+    ALTER TABLE knowledge_atoms ADD COLUMN IF NOT EXISTS last_indexed_at TIMESTAMPTZ;
+  ELSE
+    RAISE NOTICE 'knowledge_atoms not found — skipping last_indexed_at column. Run 2026-05-12-tenant-knowledge-atoms.sql first, then re-run this migration.';
+  END IF;
 
-ALTER TABLE received_documents
-  ADD COLUMN IF NOT EXISTS last_indexed_at TIMESTAMPTZ;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'received_documents') THEN
+    ALTER TABLE received_documents ADD COLUMN IF NOT EXISTS last_indexed_at TIMESTAMPTZ;
+  ELSE
+    RAISE NOTICE 'received_documents not found — skipping last_indexed_at column. Run 2026-05-13d-received-documents.sql first, then re-run this migration.';
+  END IF;
 
-ALTER TABLE business_insights
-  ADD COLUMN IF NOT EXISTS last_indexed_at TIMESTAMPTZ;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'business_insights') THEN
+    ALTER TABLE business_insights ADD COLUMN IF NOT EXISTS last_indexed_at TIMESTAMPTZ;
+  ELSE
+    RAISE NOTICE 'business_insights not found — skipping last_indexed_at column. Run 2026-05-13-business-insights.sql first, then re-run this migration.';
+  END IF;
+END
+$$;
 
 -- client_profiles.visits + conversation chunks don't have their own
 -- "updated_at" — we use the chunk's stable signature for dedup
