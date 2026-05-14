@@ -1,5 +1,9 @@
 // @wisdomworks/shared — Shared TypeScript types, constants, and utilities
 
+// Privacy (Story 6.5 — generalized privacy boundary)
+export { redactPII, redactPIIText } from './privacy/redact';
+export type { PiiCategory, RedactionResult } from './privacy/redact';
+
 // Event types
 export type { DomainEvent } from './types/signals';
 

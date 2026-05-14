@@ -19,6 +19,8 @@
  * relaxes to explicit-signal-only to avoid over-fitting.
  */
 
+import { redactPII } from '@wisdomworks/shared';
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -226,15 +228,25 @@ async function persistRule(args: {
   }
 
   try {
+    // Story 6.5 — `evidence` captures the owner's verbatim words, which
+    // often include third-party PII ("always cc jane.smith@acme.com on
+    // contracts", "Maria's number is 206-555-..."). Redact before write
+    // so PII doesn't sit in tenant_disposition_rules forever. The
+    // rule_text is already a model-generalized version and rarely
+    // contains PII, but we redact it too for consistency.
+    const evidenceRedacted = args.rule.evidence ? redactPII(args.rule.evidence.slice(0, 400)) : null;
+    const ruleTextRedacted = redactPII(args.rule.rule_text.slice(0, 600));
+    const whyRedacted = args.rule.why ? redactPII(args.rule.why.slice(0, 400)) : null;
+
     const res = await fetch(`${SUPABASE_URL}/rest/v1/tenant_disposition_rules`, {
       method: 'POST',
       headers: { ...headers(), Prefer: 'return=representation' },
       body: JSON.stringify({
         tenant_phone: cleanPhone,
         kind: args.rule.kind,
-        rule_text: args.rule.rule_text.slice(0, 600),
-        why: args.rule.why?.slice(0, 400) ?? null,
-        evidence: args.rule.evidence?.slice(0, 400) ?? null,
+        rule_text: ruleTextRedacted.redacted,
+        why: whyRedacted?.redacted ?? null,
+        evidence: evidenceRedacted?.redacted ?? null,
         scope: args.rule.scope?.slice(0, 100) ?? 'everywhere',
         confidence: typeof args.rule.confidence === 'number'
           ? Math.max(0, Math.min(1, args.rule.confidence))
