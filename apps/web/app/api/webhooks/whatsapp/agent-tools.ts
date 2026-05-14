@@ -5404,6 +5404,16 @@ export async function executeTool(
         if (!conn) {
           return { content: 'Search Console not connected. Owner needs to reconnect Google in the deck to grant the webmasters.readonly scope.', success: false };
         }
+        // Map OAuthConnection (snake_case from DB) → IntegrationContext
+        // (camelCase the adapters expect). The shared router does this
+        // for Gmail/Calendar; we do it inline here since GSC/GA bypass
+        // the router. Passes refresh_token too so the adapter can refresh
+        // expired access tokens (no manual reconnect every hour).
+        const ctx = {
+          accessToken: conn.access_token,
+          refreshToken: conn.refresh_token,
+          metadata: conn.metadata,
+        };
         try {
           const { googleSearchConsole } = await import('@wisdomworks/shared');
           const siteUrl = call.input.site_url ? String(call.input.site_url).trim() : '';
@@ -5411,7 +5421,7 @@ export async function executeTool(
           // If no site_url provided, list the available ones so the model
           // (or user) can pick.
           if (!siteUrl) {
-            const list = await googleSearchConsole.listSites(conn);
+            const list = await googleSearchConsole.listSites(ctx);
             if (!list.success || !list.data) return { content: `GSC list-sites failed: ${list.error}`, success: false };
             if (list.data.length === 0) return { content: 'No verified sites found in Search Console for this Google account.', success: true };
             const lines = list.data.map((s) => `  - ${s.siteUrl} (${s.permissionLevel})`);
@@ -5425,7 +5435,7 @@ export async function executeTool(
           const daysBack = typeof call.input.days_back === 'number' ? Math.min(call.input.days_back, 90) : 28;
           const rowLimit = typeof call.input.row_limit === 'number' ? Math.min(call.input.row_limit, 100) : 25;
 
-          const perf = await googleSearchConsole.getPerformance(conn, { siteUrl, dimension, daysBack, rowLimit });
+          const perf = await googleSearchConsole.getPerformance(ctx, { siteUrl, dimension, daysBack, rowLimit });
           if (!perf.success || !perf.data) return { content: `GSC performance failed: ${perf.error}`, success: false };
 
           const r = perf.data;
@@ -5447,12 +5457,18 @@ export async function executeTool(
         if (!conn) {
           return { content: 'Analytics not connected. Owner needs to reconnect Google in the deck to grant the analytics.readonly scope.', success: false };
         }
+        // Same snake-case → camelCase mapping as the GSC tool above.
+        const ctx = {
+          accessToken: conn.access_token,
+          refreshToken: conn.refresh_token,
+          metadata: conn.metadata,
+        };
         try {
           const { googleAnalytics } = await import('@wisdomworks/shared');
           const propertyId = call.input.property_id ? String(call.input.property_id).trim() : '';
 
           if (!propertyId) {
-            const list = await googleAnalytics.listProperties(conn);
+            const list = await googleAnalytics.listProperties(ctx);
             if (!list.success || !list.data) return { content: `GA list-properties failed: ${list.error}`, success: false };
             if (list.data.length === 0) return { content: 'No GA4 properties found for this Google account.', success: true };
             const lines = list.data.map((p: { propertyId: string; displayName: string }) =>
@@ -5473,7 +5489,7 @@ export async function executeTool(
           const daysBack = typeof call.input.days_back === 'number' ? call.input.days_back : 28;
           const rowLimit = typeof call.input.row_limit === 'number' ? Math.min(call.input.row_limit, 100) : 25;
 
-          const report = await googleAnalytics.runReport(conn, { propertyId, dimensions, metrics, daysBack, rowLimit });
+          const report = await googleAnalytics.runReport(ctx, { propertyId, dimensions, metrics, daysBack, rowLimit });
           if (!report.success || !report.data) return { content: `GA report failed: ${report.error}`, success: false };
 
           const r = report.data;

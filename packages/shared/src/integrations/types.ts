@@ -94,6 +94,9 @@ export interface CreateCalendarEvent {
 
 export interface IntegrationContext {
   accessToken: string;
+  /** Refresh token (where the provider supports it, e.g. Google offline_access).
+   *  Used by adapters to auto-refresh on 401 instead of failing the call. */
+  refreshToken?: string;
   /** Provider-specific extra config (e.g., CalDAV URL for Apple, IG account ID for Meta) */
   metadata?: Record<string, unknown>;
 }

@@ -15,6 +15,7 @@
  */
 
 import type { IntegrationContext, IntegrationResult } from './types';
+import { callGoogleWithRefresh } from './google-refresh';
 
 const GA_ADMIN_BASE = 'https://analyticsadmin.googleapis.com/v1beta';
 const GA_DATA_BASE = 'https://analyticsdata.googleapis.com/v1beta';
@@ -48,11 +49,18 @@ export async function listProperties(ctx: IntegrationContext): Promise<Integrati
   try {
     // GA4 admin API requires listing account summaries first; each
     // summary embeds the properties under that account.
-    const res = await fetch(`${GA_ADMIN_BASE}/accountSummaries`, {
-      headers: { Authorization: `Bearer ${ctx.accessToken}` },
+    const res = await callGoogleWithRefresh({
+      accessToken: ctx.accessToken,
+      refreshToken: ctx.refreshToken ?? null,
+      call: (token) => fetch(`${GA_ADMIN_BASE}/accountSummaries`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
     });
     if (!res.ok) {
       const text = await res.text();
+      if (res.status === 401) {
+        return { success: false, error: 'Google Analytics auth expired and refresh failed — owner should reconnect Google in the deck.' };
+      }
       if (res.status === 403) {
         return { success: false, error: 'GA scope missing — owner needs to reconnect Google with analytics.readonly scope.' };
       }
@@ -114,20 +122,27 @@ export async function runReport(
       limit: String(rowLimit),
     };
 
-    const res = await fetch(
-      `${GA_DATA_BASE}/properties/${input.propertyId}:runReport`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${ctx.accessToken}`,
-          'Content-Type': 'application/json',
+    const res = await callGoogleWithRefresh({
+      accessToken: ctx.accessToken,
+      refreshToken: ctx.refreshToken ?? null,
+      call: (token) => fetch(
+        `${GA_DATA_BASE}/properties/${input.propertyId}:runReport`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
         },
-        body: JSON.stringify(body),
-      },
-    );
+      ),
+    });
 
     if (!res.ok) {
       const text = await res.text();
+      if (res.status === 401) {
+        return { success: false, error: 'Google Analytics auth expired and refresh failed — owner should reconnect Google in the deck.' };
+      }
       if (res.status === 403) {
         return { success: false, error: 'GA scope missing or property not accessible to this Google account.' };
       }

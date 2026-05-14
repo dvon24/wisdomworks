@@ -12,6 +12,7 @@
  */
 
 import type { IntegrationContext, IntegrationResult } from './types';
+import { callGoogleWithRefresh } from './google-refresh';
 
 const GSC_BASE = 'https://www.googleapis.com/webmasters/v3';
 
@@ -47,11 +48,18 @@ export interface GscPerformanceReport {
  */
 export async function listSites(ctx: IntegrationContext): Promise<IntegrationResult<GscSite[]>> {
   try {
-    const res = await fetch(`${GSC_BASE}/sites`, {
-      headers: { Authorization: `Bearer ${ctx.accessToken}` },
+    const res = await callGoogleWithRefresh({
+      accessToken: ctx.accessToken,
+      refreshToken: ctx.refreshToken ?? null,
+      call: (token) => fetch(`${GSC_BASE}/sites`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
     });
     if (!res.ok) {
       const text = await res.text();
+      if (res.status === 401) {
+        return { success: false, error: 'Google Search Console auth expired and refresh failed — owner should reconnect Google in the deck.' };
+      }
       if (res.status === 403 && text.includes('insufficient')) {
         return { success: false, error: 'GSC scope missing — owner needs to reconnect Google with webmasters.readonly scope.' };
       }
@@ -99,20 +107,27 @@ export async function getPerformance(
       rowLimit,
     };
 
-    const res = await fetch(
-      `${GSC_BASE}/sites/${encodeURIComponent(input.siteUrl)}/searchAnalytics/query`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${ctx.accessToken}`,
-          'Content-Type': 'application/json',
+    const res = await callGoogleWithRefresh({
+      accessToken: ctx.accessToken,
+      refreshToken: ctx.refreshToken ?? null,
+      call: (token) => fetch(
+        `${GSC_BASE}/sites/${encodeURIComponent(input.siteUrl)}/searchAnalytics/query`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
         },
-        body: JSON.stringify(body),
-      },
-    );
+      ),
+    });
 
     if (!res.ok) {
       const text = await res.text();
+      if (res.status === 401) {
+        return { success: false, error: 'Google Search Console auth expired and refresh failed — owner should reconnect Google in the deck.' };
+      }
       if (res.status === 403) {
         return { success: false, error: 'GSC scope missing or site not verified for this Google account — reconnect Google or verify the site in Search Console.' };
       }
