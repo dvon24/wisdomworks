@@ -1226,6 +1226,35 @@ So that the entire agent team gets smarter from every experience.
 
 ---
 
+### Story 2.17: Public Agent Catalog (catalog-aware generation)
+
+*Added 2026-05-15. Devon's idea: instead of axis discovery inventing agent names/roles from scratch, draw from a curated catalog of named, well-defined agents. Catalog also becomes a public browsing surface so prospective customers can see what's available before signing up, and Iris can target against it during team-gap proposals.*
+
+As a **WisdomWorks platform owner**,
+I want a curated catalog of pre-built agents (role + toolset + BMAD scaffolding + sample workflows),
+So that agent provisioning is grounded in maintained, quality-curated definitions instead of LLM-generated wholesale invention — and so that prospective customers can browse what agents are available for their use case before signing up.
+
+**Acceptance Criteria:**
+
+**Given** the existing vertical-templates work (electrician/restaurant/salon, `recommendedTools` + `sampleWorkflows`, commit `b349c14`) is the seed pattern
+**When** an admin defines a new catalog entry (e.g. "Sam — Customer Intake Agent")
+**Then** the entry includes: agent name, role, description, tier (Haiku/Sonnet/Opus), default toolset, BMAD scaffolding (decision framework, mini-PRD templates), sample workflows, suggested verticals (which businesses this fits)
+**And** entries live in a versioned schema (DB table `agent_catalog` or yaml directory under `packages/shared/`)
+**And** the public website surfaces a browseable catalog page: filter by vertical, by tool, by tier; each entry has a clear "I do X" summary
+**And** during onboarding, axis discovery is **catalog-aware**: it still composes the team from the user's specific onboarding context, but draws agent names/roles/tools from the catalog rather than inventing each one — preserving the "AI builds your team" magic while grounding it in curated quality
+**And** when Iris emits a `team_gap_proposed` insight, the proposal references a specific catalog entry (e.g., "I think you need Sam — Customer Intake from the catalog") instead of inventing fresh definitions
+**And** the deck adds an "Add agent from catalog" path alongside the existing chat-driven "tell Iris to hire someone" flow
+**And** catalog versioning is per-tenant: each tenant's agent_configs row stores `catalog_entry_id` + `catalog_version` so changes to a catalog entry don't silently mutate live tenants — they get notified of an upgrade option instead
+**And** the catalog forms the foundation for a future marketplace where third parties could contribute agents (post-MVP)
+
+**Notes:**
+- Tradeoff understood: too-templated catalog kills the magic. Mitigation = catalog-AWARE generation, not catalog-FROM generation.
+- Sequence: ship AFTER Epic 2a deferrals (2.9–2.15) + first paying customer using the platform.
+- ~3–4 day build for v1 (data layer + deck page + browse/add + axis-discovery integration).
+- Pairs with the BMAD-build epic — each catalog entry's BMAD scaffolding feeds the agent's autonomous build loop.
+
+---
+
 ## Epic 2b: Client Intelligence & Communication Channels
 
 **Sprint:** 2-3

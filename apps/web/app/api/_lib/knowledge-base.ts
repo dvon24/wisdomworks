@@ -125,6 +125,8 @@ export async function ingestEntity(entity: OntologyEntity): Promise<number> {
   // Build the rows
   const rows = chunks.map((content, i) => ({
     tenant_phone: entity.tenant_phone,
+    source_kind: 'ontology',
+    source_row_id: entity.id,
     source_entity_id: entity.id,
     source_entity_type: entity.entity_type,
     source_entity_name: entity.name,
@@ -135,8 +137,8 @@ export async function ingestEntity(entity: OntologyEntity): Promise<number> {
     metadata: { ingested_at: new Date().toISOString() },
   }));
 
-  // Upsert by (source_entity_id, chunk_index) so re-ingesting the same
-  // entity overwrites cleanly without duplicating.
+  // Upsert by (source_kind, source_row_id, chunk_index) so re-ingesting
+  // the same source row overwrites cleanly without duplicating.
   const res = await fetch(`${SUPABASE_URL}/rest/v1/knowledge_chunks`, {
     method: 'POST',
     headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=minimal' },
@@ -147,6 +149,210 @@ export async function ingestEntity(entity: OntologyEntity): Promise<number> {
     return 0;
   }
   return rows.length;
+}
+
+// ─── Behavioral RAG (Story 2.9 Phase 2) ─────────────────────────────
+//
+// The ontology layer indexes "who the tenant IS" — agents, roles,
+// projects, etc. The behavioral layer indexes "what HAPPENED" — past
+// chats, atoms the owner taught Iris, client visits, etc. Different
+// retrieval purpose: ontology answers "who handles X"; behavioral
+// answers "what did we discuss last week / what was that thing
+// Maria said about her allergy."
+//
+// All behavioral chunks live in the same knowledge_chunks table with
+// source_kind discriminating which kind of row they came from.
+
+/**
+ * Generic helper: chunk + embed + upsert a behavioral row. Caller
+ * supplies the kind, the row id, an optional preview name (for citing
+ * results), and the raw text to embed. Idempotent on
+ * (tenant_phone, source_kind, source_row_id, chunk_index).
+ */
+async function ingestBehavioral(args: {
+  tenantPhone: string;
+  sourceKind: 'atom' | 'conversation' | 'visit' | 'document' | 'insight' | 'email';
+  sourceRowId: string;
+  sourceName?: string;
+  text: string;
+  metadata?: Record<string, unknown>;
+}): Promise<number> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return 0;
+  if (!args.text?.trim()) return 0;
+
+  const chunks = chunkText(args.text);
+  if (chunks.length === 0) return 0;
+
+  let embeddings;
+  try {
+    embeddings = await embedBatch(chunks);
+  } catch (err) {
+    console.warn(`[kb-behavioral] embed failed (${args.sourceKind} ${args.sourceRowId}):`, err);
+    return 0;
+  }
+
+  const rows = chunks.map((content, i) => ({
+    tenant_phone: args.tenantPhone,
+    source_kind: args.sourceKind,
+    source_row_id: args.sourceRowId,
+    // source_entity_id stays NULL for behavioral rows — they don't
+    // reference an ontology entity.
+    source_entity_id: null,
+    source_entity_type: args.sourceKind,
+    source_entity_name: args.sourceName ?? null,
+    chunk_index: i,
+    content,
+    embedding: embeddings[i]?.embedding,
+    tokens: embeddings[i]?.tokens ?? estimateTokens(content),
+    metadata: { ingested_at: new Date().toISOString(), ...(args.metadata ?? {}) },
+  }));
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/knowledge_chunks`, {
+    method: 'POST',
+    headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(rows),
+  });
+  if (!res.ok) {
+    console.warn(`[kb-behavioral] upsert failed (${args.sourceKind} ${args.sourceRowId}): ${res.status} ${await res.text()}`);
+    return 0;
+  }
+  return rows.length;
+}
+
+/**
+ * Ingest the tenant's knowledge_atoms. Pulls atoms updated since the
+ * last ingestion run (per source_row_id watermark on knowledge_chunks),
+ * embeds, upserts. Cheap to run repeatedly.
+ */
+export async function ingestKnowledgeAtoms(
+  tenantPhone: string,
+): Promise<{ ingested: number; skipped: number; chunks: number }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
+  // Pull all live atoms for this tenant.
+  const atomsRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_atoms?tenant_phone=eq.${tenantPhone}&status=neq.archived&select=id,kind,content,tags,owner_confirmed,updated_at&order=updated_at.desc&limit=500`,
+    { headers: headers() },
+  );
+  if (!atomsRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
+  const atoms: Array<{ id: string; kind: string; content: string; tags?: string[]; owner_confirmed?: boolean; updated_at: string }> =
+    await atomsRes.json();
+  if (atoms.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
+
+  // Watermark: chunks already ingested for this kind, keyed by source_row_id.
+  const wmRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${tenantPhone}&source_kind=eq.atom&select=source_row_id,updated_at`,
+    { headers: headers() },
+  );
+  const wmRows: Array<{ source_row_id: string; updated_at: string }> = wmRes.ok ? await wmRes.json() : [];
+  const wm = new Map<string, number>();
+  for (const r of wmRows) {
+    const ts = new Date(r.updated_at).getTime();
+    if (ts > (wm.get(r.source_row_id) ?? 0)) wm.set(r.source_row_id, ts);
+  }
+
+  let ingested = 0;
+  let skipped = 0;
+  let chunksTotal = 0;
+  for (const atom of atoms) {
+    const atomTs = new Date(atom.updated_at).getTime();
+    if ((wm.get(atom.id) ?? 0) >= atomTs) {
+      skipped++;
+      continue;
+    }
+    const written = await ingestBehavioral({
+      tenantPhone,
+      sourceKind: 'atom',
+      sourceRowId: atom.id,
+      sourceName: `${atom.kind} atom`,
+      text: atom.content,
+      metadata: {
+        kind: atom.kind,
+        tags: atom.tags ?? [],
+        owner_confirmed: !!atom.owner_confirmed,
+      },
+    });
+    if (written > 0) {
+      ingested++;
+      chunksTotal += written;
+    }
+  }
+  return { ingested, skipped, chunks: chunksTotal };
+}
+
+/**
+ * Ingest the tenant's chat history (Iris ↔ owner). Each chat_runs row
+ * = one Iris reply turn. We embed `assistant_reply_preview` so the
+ * owner can later semantically recall things like "what did you tell
+ * me about pricing last week."
+ *
+ * Bounded to the last 90 days to avoid runaway re-ingestion of ancient
+ * chats. Older chats stay queryable but won't be re-embedded if the
+ * preview ever changes.
+ */
+export async function ingestChatRuns(
+  tenantPhone: string,
+): Promise<{ ingested: number; skipped: number; chunks: number }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
+  const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const runsRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/chat_runs?tenant_phone=eq.${tenantPhone}&created_at=gte.${since}&select=id,user_message_preview,assistant_reply_preview,created_at&order=created_at.desc&limit=300`,
+    { headers: headers() },
+  );
+  if (!runsRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
+  const runs: Array<{
+    id: string;
+    user_message_preview?: string;
+    assistant_reply_preview?: string;
+    created_at: string;
+  }> = await runsRes.json();
+  if (runs.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
+
+  const wmRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${tenantPhone}&source_kind=eq.conversation&select=source_row_id`,
+    { headers: headers() },
+  );
+  const seen = new Set<string>(
+    wmRes.ok ? ((await wmRes.json()) as Array<{ source_row_id: string }>).map((r) => r.source_row_id) : [],
+  );
+
+  let ingested = 0;
+  let skipped = 0;
+  let chunksTotal = 0;
+  for (const run of runs) {
+    if (seen.has(run.id)) {
+      skipped++;
+      continue;
+    }
+    // Embed both sides of the turn so either-side recall works.
+    const text = [
+      run.user_message_preview ? `Owner asked: ${run.user_message_preview}` : '',
+      run.assistant_reply_preview ? `Iris replied: ${run.assistant_reply_preview}` : '',
+    ].filter(Boolean).join('\n\n');
+    if (!text.trim()) {
+      skipped++;
+      continue;
+    }
+    const date = new Date(run.created_at).toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+    const written = await ingestBehavioral({
+      tenantPhone,
+      sourceKind: 'conversation',
+      sourceRowId: run.id,
+      sourceName: `Chat on ${date}`,
+      text,
+      metadata: { chat_run_id: run.id, occurred_at: run.created_at },
+    });
+    if (written > 0) {
+      ingested++;
+      chunksTotal += written;
+    }
+  }
+  return { ingested, skipped, chunks: chunksTotal };
 }
 
 /**
