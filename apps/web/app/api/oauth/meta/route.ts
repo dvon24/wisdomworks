@@ -13,11 +13,16 @@ export const dynamic = 'force-dynamic';
 
 const META_AUTH_URL = 'https://www.facebook.com/v25.0/dialog/oauth';
 
+// IMPORTANT: the `instagram_business_*` scopes only exist on Instagram's
+// new direct OAuth endpoint (api.instagram.com/oauth/authorize). When you
+// auth via Facebook Login (facebook.com/dialog/oauth — which is what we
+// do here so we can also see Pages), Meta rejects those names with
+// "Invalid Scopes". The Facebook-Login flow uses these scope names:
 const SCOPES = [
-  'instagram_business_basic',
-  'instagram_business_content_publish',
-  'instagram_business_manage_messages',
-  'instagram_business_manage_comments',
+  'instagram_basic',
+  'instagram_content_publish',
+  'instagram_manage_messages',
+  'instagram_manage_comments',
   'pages_show_list',
   'pages_read_engagement',
   'business_management',

@@ -46,7 +46,7 @@ export async function POST(request: Request) {
   // sends the cookie on credentialed fetches; we trust the cookie's claim,
   // not the body's claim.
   const cookieHeader = request.headers.get('cookie') ?? '';
-  const sessionMatch = cookieHeader.match(/(?:^|;\s*)wisdom_session=([^;]+)/);
+  const sessionMatch = cookieHeader.match(/(?:^|;\s*)ww_session=([^;]+)/);
   if (!sessionMatch) return Response.json({ error: 'no session' }, { status: 401 });
   const verified = await verifySessionToken(decodeURIComponent(sessionMatch[1]!));
   if (!verified) return Response.json({ error: 'invalid session' }, { status: 401 });
