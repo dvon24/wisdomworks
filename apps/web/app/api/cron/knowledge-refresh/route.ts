@@ -11,7 +11,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { ingestOntology, ingestKnowledgeAtoms, ingestChatRuns } from '../../_lib/knowledge-base';
+import { ingestOntology, ingestKnowledgeAtoms, ingestChatRuns, ingestBusinessInsights } from '../../_lib/knowledge-base';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -41,6 +41,7 @@ export async function GET(request: Request) {
       ontology: { ingested: 0, chunks: 0 },
       atoms: { ingested: 0, chunks: 0 },
       conversations: { ingested: 0, chunks: 0 },
+      insights: { ingested: 0, chunks: 0 },
     };
     for (const t of tenants) {
       try {
@@ -64,12 +65,20 @@ export async function GET(request: Request) {
       } catch (err) {
         console.warn(`[knowledge-refresh] chat_runs ${t.phone_number} failed:`, err);
       }
+      try {
+        const i = await ingestBusinessInsights(t.phone_number);
+        totals.insights.ingested += i.ingested;
+        totals.insights.chunks += i.chunks;
+      } catch (err) {
+        console.warn(`[knowledge-refresh] insights ${t.phone_number} failed:`, err);
+      }
     }
     console.log(
       `[knowledge-refresh] tenants=${tenants.length} ` +
       `ontology=${totals.ontology.ingested}/${totals.ontology.chunks} ` +
       `atoms=${totals.atoms.ingested}/${totals.atoms.chunks} ` +
-      `chats=${totals.conversations.ingested}/${totals.conversations.chunks}`,
+      `chats=${totals.conversations.ingested}/${totals.conversations.chunks} ` +
+      `insights=${totals.insights.ingested}/${totals.insights.chunks}`,
     );
     return NextResponse.json({ ok: true, tenants: tenants.length, totals });
   } catch (err) {

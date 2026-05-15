@@ -280,6 +280,84 @@ export async function ingestKnowledgeAtoms(
 }
 
 /**
+ * Ingest the tenant's business insights — past detector findings,
+ * recommendations, QA flags, lapsed-client alerts, etc. These are
+ * already curated summaries (no raw PII), so embedding is safe and
+ * cheap. Useful for owner queries like "what did Marcus flag last
+ * month about scheduling?" or "did we ever spot a lapsed customer
+ * pattern with Maria's segment."
+ *
+ * Bounded to the last 180 days so old, fully-resolved insights stop
+ * re-embedding once they age out.
+ */
+export async function ingestBusinessInsights(
+  tenantPhone: string,
+): Promise<{ ingested: number; skipped: number; chunks: number }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
+  const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+  const insRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/business_insights?tenant_phone=eq.${tenantPhone}&detected_at=gte.${since}&select=id,detector,severity,title,why,recommended_action,expected_impact,status,detected_at&order=detected_at.desc&limit=300`,
+    { headers: headers() },
+  );
+  if (!insRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
+  const insights: Array<{
+    id: string;
+    detector: string;
+    severity: string;
+    title: string;
+    why?: string;
+    recommended_action?: string;
+    expected_impact?: string;
+    status: string;
+    detected_at: string;
+  }> = await insRes.json();
+  if (insights.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
+
+  const wmRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${tenantPhone}&source_kind=eq.insight&select=source_row_id`,
+    { headers: headers() },
+  );
+  const seen = new Set<string>(
+    wmRes.ok ? ((await wmRes.json()) as Array<{ source_row_id: string }>).map((r) => r.source_row_id) : [],
+  );
+
+  let ingested = 0;
+  let skipped = 0;
+  let chunksTotal = 0;
+  for (const ins of insights) {
+    if (seen.has(ins.id)) {
+      skipped++;
+      continue;
+    }
+    const text = [
+      `${ins.detector} flagged: ${ins.title}`,
+      ins.why ? `Reason: ${ins.why}` : '',
+      ins.recommended_action ? `Recommended: ${ins.recommended_action}` : '',
+      ins.expected_impact ? `Impact: ${ins.expected_impact}` : '',
+      `Status: ${ins.status}`,
+    ].filter(Boolean).join('\n');
+    const written = await ingestBehavioral({
+      tenantPhone,
+      sourceKind: 'insight',
+      sourceRowId: ins.id,
+      sourceName: ins.title,
+      text,
+      metadata: {
+        detector: ins.detector,
+        severity: ins.severity,
+        status: ins.status,
+        detected_at: ins.detected_at,
+      },
+    });
+    if (written > 0) {
+      ingested++;
+      chunksTotal += written;
+    }
+  }
+  return { ingested, skipped, chunks: chunksTotal };
+}
+
+/**
  * Ingest the tenant's chat history (Iris ↔ owner). Each chat_runs row
  * = one Iris reply turn. We embed `assistant_reply_preview` so the
  * owner can later semantically recall things like "what did you tell
