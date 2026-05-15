@@ -219,6 +219,7 @@ export {
   searchCloudDocs,
   fetchCloudDoc,
   listCalendarEvents,
+  listCalendars,
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,

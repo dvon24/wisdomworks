@@ -54,6 +54,55 @@ function rawToEvent(raw: GoogleEventRaw): CalendarEvent {
 }
 
 /**
+ * List the user's subscribed Google calendars. Includes the primary
+ * calendar, any calendars they own, and anything they've subscribed to
+ * via "Browse calendars of interest" (Holidays, Sports, etc.) or that
+ * was shared with them.
+ *
+ * Returns one entry per calendar with id, summary, and primary/holiday
+ * hints so the caller can pick which ones to query for events.
+ */
+export interface CalendarListEntry {
+  id: string;
+  summary: string;
+  description?: string;
+  primary?: boolean;
+  // Google's `colorId` + their "type" hint (none, holiday, birthday) —
+  // we set isHoliday=true when the calendar id matches the holidays
+  // pattern OR summary contains "Holidays in ".
+  isHoliday?: boolean;
+  accessRole?: string;
+  timeZone?: string;
+}
+
+export async function listCalendars(
+  ctx: IntegrationContext,
+): Promise<IntegrationResult<CalendarListEntry[]>> {
+  try {
+    const res = await googleFetch(
+      ctx,
+      `${CAL_BASE}/users/me/calendarList?minAccessRole=reader&fields=items(id,summary,description,primary,accessRole,timeZone)`,
+    );
+    if (!res.ok) return { success: false, error: `calendarList failed: ${res.status}` };
+    const data = await res.json();
+    const entries: CalendarListEntry[] = (data.items ?? []).map((c: any) => ({
+      id: c.id,
+      summary: c.summary,
+      description: c.description,
+      primary: c.primary,
+      accessRole: c.accessRole,
+      timeZone: c.timeZone,
+      isHoliday:
+        /^[a-z]+\.[a-z_]+#holiday@group\.v\.calendar\.google\.com$/i.test(c.id) ||
+        /\bHolidays in\b/i.test(c.summary ?? ''),
+    }));
+    return { success: true, data: entries };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+/**
  * List events on the user's primary calendar within a date range.
  * Default range: today through 7 days from now.
  */

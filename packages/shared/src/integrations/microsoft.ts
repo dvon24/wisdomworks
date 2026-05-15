@@ -269,18 +269,64 @@ function msEventToEvent(raw: MsEventRaw): CalendarEvent {
 
 export async function listEvents(
   ctx: IntegrationContext,
-  options?: { from?: Date; to?: Date; limit?: number },
+  options?: { from?: Date; to?: Date; limit?: number; calendarId?: string },
 ): Promise<IntegrationResult<CalendarEvent[]>> {
   try {
     const from = options?.from ?? new Date();
     const to = options?.to ?? new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const url = `${GRAPH_BASE}/me/calendarView?startDateTime=${from.toISOString()}&endDateTime=${to.toISOString()}&$top=${options?.limit ?? 50}&$orderby=start/dateTime`;
+    // calendarView on the user's default calendar OR a specific calendar
+    // (used for Outlook's "Holidays" calendar and any shared/subscribed
+    // calendars). When calendarId is omitted, /me/calendarView hits the
+    // primary; otherwise we route through /me/calendars/{id}/calendarView.
+    const calPath = options?.calendarId
+      ? `/me/calendars/${encodeURIComponent(options.calendarId)}/calendarView`
+      : `/me/calendarView`;
+    const url = `${GRAPH_BASE}${calPath}?startDateTime=${from.toISOString()}&endDateTime=${to.toISOString()}&$top=${options?.limit ?? 50}&$orderby=start/dateTime`;
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${ctx.accessToken}` },
     });
     if (!res.ok) return { success: false, error: `Graph calendar list failed: ${res.status}` };
     const data = await res.json();
     return { success: true, data: (data.value ?? []).map(msEventToEvent) };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+/**
+ * List the user's Outlook calendars (primary, owned, shared with them,
+ * and any subscribed calendars). Mirrors google-calendar.listCalendars
+ * so multi-provider tenants can enumerate everything in one flow.
+ */
+export interface MsCalendarListEntry {
+  id: string;
+  summary: string;
+  primary?: boolean;
+  isHoliday?: boolean;
+  canEdit?: boolean;
+}
+
+export async function listCalendars(
+  ctx: IntegrationContext,
+): Promise<IntegrationResult<MsCalendarListEntry[]>> {
+  try {
+    const url = `${GRAPH_BASE}/me/calendars?$select=id,name,isDefaultCalendar,canEdit`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${ctx.accessToken}` },
+    });
+    if (!res.ok) return { success: false, error: `Graph calendarList failed: ${res.status}` };
+    const data = await res.json();
+    const entries: MsCalendarListEntry[] = (data.value ?? []).map((c: any) => ({
+      id: c.id,
+      summary: c.name,
+      primary: c.isDefaultCalendar,
+      canEdit: c.canEdit,
+      // Outlook auto-adds a "Holidays" calendar when the locale is set
+      // and the user has enabled it under Settings → Calendar. Detect by
+      // name (locale-independent fallback: keep canEdit=false signal).
+      isHoliday: /^Holidays?$/i.test(c.name ?? '') || /Holidays in /i.test(c.name ?? ''),
+    }));
+    return { success: true, data: entries };
   } catch (err) {
     return { success: false, error: String(err) };
   }

@@ -176,7 +176,7 @@ export async function fetchCloudDoc(
 
 export async function listCalendarEvents(
   conn: OAuthConnection,
-  options?: { from?: Date; to?: Date; limit?: number },
+  options?: { from?: Date; to?: Date; limit?: number; calendarId?: string },
 ): Promise<IntegrationResult<CalendarEvent[]>> {
   const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gcal.listEvents(ctx, options);
@@ -186,6 +186,40 @@ export async function listCalendarEvents(
     return apple.listEvents({ ...ctx, username: conn.account_email }, options);
   }
   return { success: false, error: `Calendar not supported for provider: ${conn.provider}` };
+}
+
+/**
+ * List every calendar the user is subscribed to (primary, owned, shared,
+ * Holidays-in-X subscriptions, sports, etc.). Used by Iris to discover
+ * which calendars exist beyond `primary` — most notably the auto-added
+ * "Holidays in <country>" calendar Google subscribes new accounts to.
+ */
+export async function listCalendars(
+  conn: OAuthConnection,
+): Promise<IntegrationResult<gcal.CalendarListEntry[]>> {
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
+  if (conn.provider === 'google') return gcal.listCalendars(ctx);
+  if (conn.provider === 'microsoft') {
+    const msResult = await ms.listCalendars(ctx);
+    if (!msResult.success) return { success: false, error: msResult.error };
+    // Reshape Microsoft entries to match the gcal-shaped union so the
+    // router has one cross-provider type for callers.
+    return {
+      success: true,
+      data: (msResult.data ?? []).map((c) => ({
+        id: c.id,
+        summary: c.summary,
+        primary: c.primary,
+        isHoliday: c.isHoliday,
+      })),
+    };
+  }
+  // Apple CalDAV doesn't yet expose calendar enumeration through our
+  // adapter — fall back to primary so callers don't crash.
+  return {
+    success: true,
+    data: [{ id: 'primary', summary: 'Primary calendar', primary: true }],
+  };
 }
 
 export async function createCalendarEvent(

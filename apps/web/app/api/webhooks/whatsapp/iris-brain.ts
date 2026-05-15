@@ -309,8 +309,21 @@ export async function generateIrisReply(
     })();
 
     return assistantMessage;
-  } catch (error) {
+  } catch (error: any) {
     console.error(`[iris-${surface}] Error:`, error);
-    return `Hi ${user.name}! I had a connection issue. Try again in a moment.`;
+    // Surface the actual cause so the owner can see what failed instead of
+    // a generic "connection issue" that hides every real bug. Strip stack
+    // traces and cap length to keep WhatsApp responses readable. Real
+    // network failures still get the user-friendly suffix.
+    const msg = (error?.message ?? String(error ?? 'unknown')).toString();
+    const short = msg
+      .split('\n')[0]!
+      .replace(/^Error:\s*/i, '')
+      .slice(0, 220);
+    const isNetwork = /fetch|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|socket|aborted/i.test(short);
+    if (isNetwork) {
+      return `Hi ${user.name} — I had a network blip (${short}). Try that again in a moment.`;
+    }
+    return `Hi ${user.name} — something went wrong: ${short}. Want me to retry, or is this a bug to flag?`;
   }
 }

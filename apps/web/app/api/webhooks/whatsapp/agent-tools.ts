@@ -13,6 +13,7 @@ import {
   listEmails,
   sendEmail,
   listCalendarEvents,
+  listCalendars,
   createCalendarEvent,
   analyzeWebsite,
   type OAuthConnection,
@@ -232,7 +233,7 @@ const TOOL_SEND_EMAIL: AnthropicTool = {
 const TOOL_LIST_CALENDAR: AnthropicTool = {
   name: 'list_calendar_events',
   description:
-    "List the user's calendar events. Use when asked about their schedule, upcoming meetings, or what's on the calendar. Default range is today through 7 days from now.",
+    "List the user's calendar events. Use when asked about their schedule, upcoming meetings, or what's on the calendar. Default range is today through 7 days from now. Defaults to the user's primary calendar — to pull events from a holiday or other subscribed calendar, first call `list_calendars`, then pass that calendar's id as `calendarId`.",
   input_schema: {
     type: 'object',
     properties: {
@@ -240,8 +241,19 @@ const TOOL_LIST_CALENDAR: AnthropicTool = {
         type: 'number',
         description: 'How many days from today to look ahead (default 7).',
       },
+      calendarId: {
+        type: 'string',
+        description: "Specific Google Calendar id to query (e.g. 'en.usa#holiday@group.v.calendar.google.com'). Omit for primary calendar. Get valid ids from list_calendars.",
+      },
     },
   },
+};
+
+const TOOL_LIST_CALENDARS: AnthropicTool = {
+  name: 'list_calendars',
+  description:
+    "List all calendars the owner is subscribed to — primary, owned, shared, and Holidays-in-<country> subscriptions Google auto-adds based on locale. Use this when the owner asks about holidays ('are there any holidays this month', 'when's the next US holiday'), when they wonder why you didn't know about a holiday they expected you to see, or when you need to discover which extra calendars exist beyond primary. Returns id + summary + isHoliday hint for each.",
+  input_schema: { type: 'object', properties: {} },
 };
 
 const TOOL_CREATE_CALENDAR_EVENT: AnthropicTool = {
@@ -2042,6 +2054,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   }
   if (hasCalendar) {
     tools.push(TOOL_LIST_CALENDAR);
+    tools.push(TOOL_LIST_CALENDARS);
     tools.push(TOOL_CREATE_CALENDAR_EVENT);
   }
   // Website + team-mutation + connect tools are always available
@@ -2503,12 +2516,14 @@ export async function executeTool(
         const days = call.input.daysAhead ?? 7;
         const from = new Date();
         const to = new Date(from.getTime() + days * 24 * 60 * 60 * 1000);
-        const result = await listCalendarEvents(conn, { from, to });
+        const calendarId: string | undefined = call.input.calendarId;
+        const result = await listCalendarEvents(conn, { from, to, calendarId });
         if (!result.success || !result.data) {
           return { content: `Could not fetch calendar: ${result.error}`, success: false };
         }
+        const calendarLabel = calendarId && calendarId !== 'primary' ? ` (${calendarId})` : '';
         if (result.data.length === 0) {
-          return { content: `No events scheduled in the next ${days} days.`, success: true };
+          return { content: `No events scheduled in the next ${days} days${calendarLabel}.`, success: true };
         }
         const lines = result.data.map((e) => {
           const start = new Date(e.start);
@@ -2521,7 +2536,46 @@ export async function executeTool(
           });
           return `${dateStr}  ${e.title}${e.location ? ` (${e.location})` : ''}`;
         });
-        return { content: `Found ${result.data.length} events:\n${lines.join('\n')}`, success: true };
+        return { content: `Found ${result.data.length} events${calendarLabel}:\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'list_calendars': {
+        // Pull from EVERY connected calendar provider. Multi-provider
+        // owners (Google + Microsoft) see calendars from both lists in
+        // one response so Iris can manage them jointly.
+        const calConns = connections.filter((c) => c.service === 'calendar');
+        if (calConns.length === 0) return { content: 'No calendar connected.', success: false };
+
+        const all: Array<{ provider: string; summary: string; id: string; primary?: boolean; isHoliday?: boolean }> = [];
+        const errors: string[] = [];
+        for (const conn of calConns) {
+          const result = await listCalendars(conn);
+          if (result.success && result.data) {
+            for (const c of result.data) {
+              all.push({ provider: conn.provider, summary: c.summary, id: c.id, primary: c.primary, isHoliday: c.isHoliday });
+            }
+          } else {
+            errors.push(`${conn.provider}: ${result.error ?? 'unknown'}`);
+          }
+        }
+        if (all.length === 0) {
+          return {
+            content: `Could not list calendars: ${errors.join('; ') || 'no calendars found'}`,
+            success: false,
+          };
+        }
+        const lines = all.map((c) => {
+          const tags = [
+            c.primary ? 'primary' : null,
+            c.isHoliday ? 'holiday' : null,
+          ].filter(Boolean);
+          return `- [${c.provider}] ${c.summary}${tags.length > 0 ? ` [${tags.join(', ')}]` : ''}\n    id: ${c.id}`;
+        });
+        const errSuffix = errors.length > 0 ? `\n\n(Errors: ${errors.join('; ')})` : '';
+        return {
+          content: `${all.length} calendar${all.length === 1 ? '' : 's'} across ${calConns.length} provider${calConns.length === 1 ? '' : 's'}:\n${lines.join('\n')}\n\nTo query a non-primary calendar's events, pass its id as calendarId in list_calendar_events.${errSuffix}`,
+          success: true,
+        };
       }
 
       case 'create_calendar_event': {
