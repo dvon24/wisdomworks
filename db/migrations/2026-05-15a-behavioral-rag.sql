@@ -49,6 +49,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS knowledge_chunks_kind_row_idx_uq
 -- old behavior (search across everything). New callers can scope to
 -- behavioral content ('atom', 'conversation', 'visit', 'document',
 -- 'insight') or ontology-only ('ontology').
+--
+-- Drop both the original 4-arg signature AND any prior 5-arg variant
+-- before recreating — CREATE OR REPLACE can't change the RETURNS shape
+-- (we're adding source_kind + source_row_id columns to the result set).
+
+DROP FUNCTION IF EXISTS match_knowledge(TEXT, vector, INTEGER, FLOAT);
+DROP FUNCTION IF EXISTS match_knowledge(TEXT, vector, INTEGER, FLOAT, TEXT[]);
 
 CREATE OR REPLACE FUNCTION match_knowledge(
   p_tenant_phone TEXT,
