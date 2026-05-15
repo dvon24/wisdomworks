@@ -9,6 +9,7 @@ import type {
   IntegrationContext,
   IntegrationResult,
 } from './types';
+import { googleFetch } from './google-refresh';
 
 const CAL_BASE = 'https://www.googleapis.com/calendar/v3';
 
@@ -72,10 +73,7 @@ export async function listEvents(
       maxResults: String(options?.limit ?? 50),
     });
 
-    const res = await fetch(
-      `${CAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params}`,
-      { headers: { Authorization: `Bearer ${ctx.accessToken}` } },
-    );
+    const res = await googleFetch(ctx, `${CAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params}`);
 
     if (!res.ok) return { success: false, error: `Calendar list failed: ${res.status}` };
     const data = await res.json();
@@ -116,17 +114,11 @@ export async function createEvent(
       };
     }
 
-    const res = await fetch(
-      `${CAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${ctx.accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      },
-    );
+    const res = await googleFetch(ctx, `${CAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
 
     if (!res.ok) {
       const err = await res.text();
@@ -158,17 +150,11 @@ export async function updateEvent(
     if (patch.start) body.start = { dateTime: patch.start };
     if (patch.end) body.end = { dateTime: patch.end };
 
-    const res = await fetch(
-      `${CAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${eventId}`,
-      {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${ctx.accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      },
-    );
+    const res = await googleFetch(ctx, `${CAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${eventId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
 
     if (!res.ok) return { success: false, error: `Calendar update failed: ${res.status}` };
     return { success: true, data: rawToEvent(await res.json()) };
@@ -186,13 +172,9 @@ export async function deleteEvent(
   calendarId: string = 'primary',
 ): Promise<IntegrationResult<void>> {
   try {
-    const res = await fetch(
-      `${CAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${eventId}`,
-      {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${ctx.accessToken}` },
-      },
-    );
+    const res = await googleFetch(ctx, `${CAL_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${eventId}`, {
+      method: 'DELETE',
+    });
     if (!res.ok && res.status !== 410) return { success: false, error: `Calendar delete failed: ${res.status}` };
     return { success: true };
   } catch (err) {

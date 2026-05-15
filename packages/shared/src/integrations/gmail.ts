@@ -13,6 +13,7 @@ import type {
   IntegrationContext,
   IntegrationResult,
 } from './types';
+import { googleFetch } from './google-refresh';
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
@@ -127,9 +128,9 @@ export async function listUnreadMessages(
   try {
     // Step 1: list message IDs
     const since = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000);
-    const listRes = await fetch(
+    const listRes = await googleFetch(
+      ctx,
       `${GMAIL_BASE}/messages?q=is:unread+after:${since}&maxResults=${limit}`,
-      { headers: { Authorization: `Bearer ${ctx.accessToken}` } },
     );
 
     if (!listRes.ok) {
@@ -143,14 +144,63 @@ export async function listUnreadMessages(
     // Step 2: fetch each message in parallel
     const messages = await Promise.all(
       ids.map(async (id) => {
-        const msgRes = await fetch(`${GMAIL_BASE}/messages/${id}?format=full`, {
-          headers: { Authorization: `Bearer ${ctx.accessToken}` },
-        });
+        const msgRes = await googleFetch(ctx, `${GMAIL_BASE}/messages/${id}?format=full`);
         if (!msgRes.ok) return null;
         return rawToEmail(await msgRes.json());
       }),
     );
 
+    return { success: true, data: messages.filter((m): m is EmailMessage => m !== null) };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+/**
+ * Search messages (read or unread) by sender, subject, body keyword.
+ * Bug fix 2026-05-15: Iris previously had no Gmail search path — when
+ * Devon asked "did you see Ron's email?", search_emails rejected
+ * Google providers and fell back to list_unread_emails (24h, unread-
+ * only) which couldn't find a read or older email. This fixes that.
+ *
+ * Gmail's `q=` parameter supports the same search syntax as the web UI:
+ * `from:ron`, `subject:lease`, `"some quoted phrase"`, `older_than:30d`,
+ * etc. We compose `q` from the structured options.
+ */
+export async function searchMessages(
+  ctx: IntegrationContext,
+  opts: { from?: string; subject?: string; bodyKeyword?: string; sinceDays?: number; limit?: number },
+): Promise<IntegrationResult<EmailMessage[]>> {
+  try {
+    const limit = Math.min(opts.limit ?? 10, 25);
+    const sinceDays = opts.sinceDays ?? 30;
+
+    const qParts: string[] = [];
+    if (opts.from) qParts.push(`from:${opts.from}`);
+    if (opts.subject) qParts.push(`subject:${opts.subject}`);
+    if (opts.bodyKeyword) qParts.push(opts.bodyKeyword);
+    qParts.push(`newer_than:${sinceDays}d`);
+    const q = qParts.join(' ');
+
+    const listRes = await googleFetch(
+      ctx,
+      `${GMAIL_BASE}/messages?q=${encodeURIComponent(q)}&maxResults=${limit}`,
+    );
+    if (!listRes.ok) {
+      return { success: false, error: `Gmail search failed: ${listRes.status}` };
+    }
+    const listData = await listRes.json();
+    const ids: string[] = (listData.messages ?? []).map((m: any) => m.id);
+    if (ids.length === 0) return { success: true, data: [] };
+
+    const messages = await Promise.all(
+      ids.map(async (id) => {
+        const msgRes = await googleFetch(ctx, `${GMAIL_BASE}/messages/${id}?format=full`);
+        if (!msgRes.ok) return null;
+        const raw = await msgRes.json();
+        return rawToEmail(raw);
+      }),
+    );
     return { success: true, data: messages.filter((m): m is EmailMessage => m !== null) };
   } catch (err) {
     return { success: false, error: String(err) };
@@ -222,12 +272,9 @@ export async function sendEmail(
       .replace(/\//g, '_')
       .replace(/=+$/, '');
 
-    const sendRes = await fetch(`${GMAIL_BASE}/messages/send`, {
+    const sendRes = await googleFetch(ctx, `${GMAIL_BASE}/messages/send`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${ctx.accessToken}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ raw: encoded }),
     });
 
@@ -250,12 +297,9 @@ export async function markAsRead(
   messageId: string,
 ): Promise<IntegrationResult<void>> {
   try {
-    const res = await fetch(`${GMAIL_BASE}/messages/${messageId}/modify`, {
+    const res = await googleFetch(ctx, `${GMAIL_BASE}/messages/${messageId}/modify`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${ctx.accessToken}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ removeLabelIds: ['UNREAD'] }),
     });
     if (!res.ok) return { success: false, error: `Gmail markAsRead failed: ${res.status}` };
@@ -273,10 +317,7 @@ export async function getMessageReadState(
   messageId: string,
 ): Promise<IntegrationResult<{ isRead: boolean } | null>> {
   try {
-    const res = await fetch(
-      `${GMAIL_BASE}/messages/${messageId}?format=minimal&fields=labelIds`,
-      { headers: { Authorization: `Bearer ${ctx.accessToken}` } },
-    );
+    const res = await googleFetch(ctx, `${GMAIL_BASE}/messages/${messageId}?format=minimal&fields=labelIds`);
     if (res.status === 404) return { success: true, data: null };
     if (!res.ok) return { success: false, error: `Gmail readState failed: ${res.status}` };
     const data = await res.json();
@@ -312,10 +353,7 @@ export async function listMessageAttachments(
   messageId: string,
 ): Promise<IntegrationResult<EmailAttachmentRef[]>> {
   try {
-    const res = await fetch(
-      `${GMAIL_BASE}/messages/${messageId}?format=full`,
-      { headers: { Authorization: `Bearer ${ctx.accessToken}` } },
-    );
+    const res = await googleFetch(ctx, `${GMAIL_BASE}/messages/${messageId}?format=full`);
     if (!res.ok) return { success: false, error: `Gmail message fetch failed: ${res.status}` };
     const data = await res.json();
     const parts = flattenParts(data.payload);
@@ -338,10 +376,7 @@ export async function fetchMessageAttachment(
   attachmentId: string,
 ): Promise<IntegrationResult<FetchedAttachment>> {
   try {
-    const res = await fetch(
-      `${GMAIL_BASE}/messages/${messageId}/attachments/${attachmentId}`,
-      { headers: { Authorization: `Bearer ${ctx.accessToken}` } },
-    );
+    const res = await googleFetch(ctx, `${GMAIL_BASE}/messages/${messageId}/attachments/${attachmentId}`);
     if (!res.ok) return { success: false, error: `Gmail attachment fetch failed: ${res.status}` };
     const data = await res.json();
     if (!data.data) return { success: false, error: 'Gmail attachment had no data field' };

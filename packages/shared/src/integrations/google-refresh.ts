@@ -101,3 +101,31 @@ export async function callGoogleWithRefresh<T extends Response>(
 
   return args.call(refreshed.accessToken);
 }
+
+/**
+ * Convenience wrapper: takes an IntegrationContext-shaped object + a URL
+ * and runs a Google API fetch with auto-refresh on 401. Lets adapters
+ * replace `fetch(url, { headers: { Authorization: \`Bearer ${ctx.accessToken}\` } })`
+ * with `googleFetch(ctx, url)` while keeping the same single-line shape.
+ *
+ * Caller can pass `init` for non-GET methods (POST/PATCH body, etc.) — the
+ * Authorization header is set automatically; if the caller's init also has
+ * headers they're merged with the Authorization header taking precedence.
+ */
+export async function googleFetch(
+  ctx: { accessToken: string; refreshToken?: string | null },
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  return callGoogleWithRefresh({
+    accessToken: ctx.accessToken,
+    refreshToken: ctx.refreshToken ?? null,
+    call: (token) => fetch(url, {
+      ...init,
+      headers: {
+        ...(init?.headers ?? {}),
+        Authorization: `Bearer ${token}`,
+      },
+    }),
+  });
+}

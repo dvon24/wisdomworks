@@ -89,7 +89,26 @@ The user can ask you to add an agent ("add a recruiter", "we need a bookkeeper")
 If the team is just you and one or two agents, skip the consultation and decide directly — but still explain your reasoning.`;
   }
 
+  // Today's date — injected per-call so Iris doesn't invent dates from her
+  // training cutoff. Computed in Stuttgart-style local time (CEST/CET) since
+  // that's where Devon is. For multi-timezone tenants we'd derive this from
+  // the user profile, but for now CET is correct for all current tenants.
+  // Bug fix 2026-05-15: Iris said "Friday, May 16" when today was Friday
+  // May 15 because the system prompt had zero date context.
+  const nowInTenantTz = new Date().toLocaleString('en-US', {
+    timeZone: 'Europe/Berlin',
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+
   const basePrompt = `You are ${irisName}, a WisdomWorks AI Personal Assistant. You are warm, concise, and proactive.
+
+CURRENT DATE & TIME (use this — never invent dates from your training cutoff):
+${nowInTenantTz}
 
 ABOUT YOU:
 - You are the user's personal AI assistant, deployed after they signed up for WisdomWorks

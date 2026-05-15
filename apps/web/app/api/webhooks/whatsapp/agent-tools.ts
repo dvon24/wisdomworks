@@ -2307,13 +2307,46 @@ export async function executeTool(
         if (!from && !subject && !bodyKeyword) {
           return { content: 'Need at least one of: from, subject, body_keyword.', success: false };
         }
-        const isImap = conn.provider === 'yahoo' || conn.provider === 'imap';
-        if (!isImap) {
-          return { content: `search_emails only supports Yahoo/IMAP today. For ${conn.provider}, use list_unread_emails for the last 24h.`, success: false };
-        }
         const limit = Math.min(typeof call.input.limit === 'number' ? call.input.limit : 10, 25);
         const sinceDays = typeof call.input.since_days === 'number' ? call.input.since_days : 30;
-        const result = await searchImap(conn as any, { from, subject, bodyKeyword, sinceDays, limit });
+
+        // Bug fix 2026-05-15: route per provider. Yahoo/IMAP via searchImap,
+        // Google via Gmail's q-search. Microsoft would need Graph search;
+        // not built yet — surfaces a clear error.
+        let result: any;
+        if (conn.provider === 'yahoo' || conn.provider === 'imap') {
+          result = await searchImap(conn as any, { from, subject, bodyKeyword, sinceDays, limit });
+        } else if (conn.provider === 'google') {
+          const { gmail } = await import('@wisdomworks/shared');
+          const ctx = {
+            accessToken: (conn as any).access_token,
+            refreshToken: (conn as any).refresh_token,
+            metadata: (conn as any).metadata,
+          };
+          const r = await gmail.searchMessages(ctx, { from, subject, bodyKeyword, sinceDays, limit });
+          // Map Gmail's EmailMessage shape onto the searchImap-shaped one
+          // the rendering code below expects (date, fromName, body,
+          // threadId, isUnread).
+          if (r.success && r.data) {
+            result = {
+              success: true,
+              data: r.data.map((m: any) => ({
+                date: m.date,
+                from: m.from,
+                fromName: m.fromName,
+                subject: m.subject,
+                body: m.body || m.bodyPreview || '',
+                threadId: m.threadId,
+                isUnread: m.isUnread,
+              })),
+            };
+          } else {
+            result = r;
+          }
+        } else {
+          return { content: `search_emails for ${conn.provider} not yet implemented. Use list_unread_emails for the last 24h.`, success: false };
+        }
+
         if (!result.success || !result.data) {
           return { content: `Could not search emails: ${result.error}`, success: false };
         }
@@ -2322,7 +2355,7 @@ export async function executeTool(
         }
         // Return enough body to draft a reply. Cap each preview at ~500 chars
         // so total stays manageable; the model can ask for more if needed.
-        const lines = result.data.map((e, i) => {
+        const lines = result.data.map((e: any, i: number) => {
           const date = new Date(e.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
           const readMark = e.isUnread ? '🔵' : '⚪';
           const senderLine = `${i + 1}. ${readMark} From: ${e.fromName ?? e.from} <${e.from}>`;
