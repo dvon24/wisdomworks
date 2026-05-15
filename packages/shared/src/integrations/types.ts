@@ -99,6 +99,12 @@ export interface IntegrationContext {
   refreshToken?: string;
   /** Provider-specific extra config (e.g., CalDAV URL for Apple, IG account ID for Meta) */
   metadata?: Record<string, unknown>;
+  /** Optional callback fired when the adapter refreshes an expired
+   *  access token. Caller can persist the new token to oauth_connections
+   *  so subsequent calls reuse it instead of refreshing from scratch
+   *  every time. Adapters in packages/shared can't import from apps/web,
+   *  so persistence is the caller's responsibility. */
+  onTokenRefreshed?: (newAccessToken: string, expiresAtIso: string) => void | Promise<void>;
 }
 
 export interface IntegrationResult<T> {

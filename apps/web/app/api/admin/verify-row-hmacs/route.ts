@@ -23,6 +23,7 @@
 import {
   verifyRowHmac,
   computeComplianceProfileHmac,
+  computeOAuthConnectionHmac,
 } from '@wisdomworks/shared';
 import { logAuditEvent } from '../../_lib/audit-log';
 
@@ -119,16 +120,80 @@ export async function GET(request: Request) {
       }
     }
 
+    // Phase B (added 2026-05-15) — also walk oauth_connections.
+    const oauthTampered: Array<{ phone_number: string; provider: string; service: string; reason: string }> = [];
+    const oauthUnsigned: string[] = [];
+    const oauthRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/oauth_connections?select=phone_number,provider,service,account_email,access_token,refresh_token,status,hmac`,
+      { headers: headers() },
+    );
+    if (oauthRes.ok) {
+      const rows = await oauthRes.json();
+      for (const row of rows as any[]) {
+        const tag = `${row.phone_number}/${row.provider}/${row.service}`;
+        if (!row.hmac) {
+          oauthUnsigned.push(tag);
+          continue;
+        }
+        const recomputed = computeOAuthConnectionHmac({
+          phone_number: row.phone_number,
+          provider: row.provider,
+          service: row.service,
+          account_email: row.account_email,
+          access_token: row.access_token,
+          refresh_token: row.refresh_token,
+          status: row.status,
+        });
+        const check = verifyRowHmac(
+          {
+            type: 'oauth_connection',
+            phone_number: row.phone_number,
+            provider: row.provider,
+            service: row.service,
+            account_email: row.account_email,
+            access_token: row.access_token,
+            refresh_token: row.refresh_token,
+            status: row.status,
+          },
+          row.hmac,
+          { treatUnsignedAsLegacy: true },
+        );
+        if (!check.verified && check.reason === 'hmac_mismatch') {
+          oauthTampered.push({ phone_number: row.phone_number, provider: row.provider, service: row.service, reason: check.reason });
+          void logAuditEvent({
+            tenantPhone: row.phone_number,
+            actor: 'admin (verify-row-hmacs)',
+            actorType: 'admin',
+            action: 'governance.bypass',
+            resource: 'oauth_connections',
+            outcome: 'failure',
+            payload: {
+              detector: 'row_hmac_sweep',
+              table: 'oauth_connections',
+              connection: `${row.provider}/${row.service}`,
+              expected_hmac_prefix: recomputed.slice(0, 16),
+              stored_hmac_prefix: row.hmac.slice(0, 16),
+            },
+            redact: false,
+          });
+        }
+      }
+    }
+
     return Response.json({
       scanned_at: new Date().toISOString(),
       inventory,
-      tampered,
-      unsigned_count: unsigned.length,
-      unsigned_sample: unsigned.slice(0, 20),
-      // tenant_compliance_profiles is the only table fully wired in Phase A.
-      // oauth_connections + project_connections are in the schema but their
-      // write paths haven't been wired yet — those would show all-legacy here.
-      coverage_note: 'Phase A: tenant_compliance_profiles fully wired. oauth_connections + project_connections await Phase B write-path wiring + backfill.',
+      tenant_compliance_profiles: {
+        tampered,
+        unsigned_count: unsigned.length,
+        unsigned_sample: unsigned.slice(0, 20),
+      },
+      oauth_connections: {
+        tampered: oauthTampered,
+        unsigned_count: oauthUnsigned.length,
+        unsigned_sample: oauthUnsigned.slice(0, 20),
+      },
+      coverage_note: 'Phase B: tenant_compliance_profiles + oauth_connections both wired. project_connections still pending — its write path lives in apps/web/_lib/integrations/project-connections (TODO).',
     });
   } catch (err: any) {
     console.error('[verify-row-hmacs] error:', err);

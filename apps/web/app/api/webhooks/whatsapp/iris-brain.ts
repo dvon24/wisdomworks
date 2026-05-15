@@ -140,6 +140,23 @@ export async function generateIrisReply(
   });
 
   const connections = await loadConnectionsForPhone(user.phoneNumber);
+  // Bind the persist-refreshed-token callback onto each Google connection
+  // so router-mediated calls (Gmail/Calendar via listEmails / listCalendarEvents)
+  // also persist refreshed tokens — same loop the direct adapter calls
+  // (GSC/GA/Sheets) get via googleIntegrationCtx.
+  const { persistRefreshedAccessToken } = await import('../../_lib/oauth-token-store');
+  for (const c of connections) {
+    if (c.provider !== 'google') continue;
+    (c as any).onTokenRefreshed = (newAccessToken: string, expiresAtIso: string) => {
+      void persistRefreshedAccessToken({
+        phoneNumber: user.phoneNumber,
+        provider: c.provider,
+        service: c.service,
+        newAccessToken,
+        expiresAtIso,
+      });
+    };
+  }
   console.log(`[iris-${surface}] Loaded ${connections.length} connection(s) for ${user.phoneNumber}: ${connections.map((c) => `${c.provider}/${c.service}`).join(', ') || 'none'}`);
   const tools = buildToolList(connections);
   const messages: any[] = buildContextMessages(user);

@@ -12,7 +12,7 @@
  * encrypted at rest, consistent with everywhere else.
  */
 
-import { encryptToken } from '@wisdomworks/shared';
+import { encryptToken, computeOAuthConnectionHmac } from '@wisdomworks/shared';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -41,18 +41,39 @@ export async function saveOAuthConnection(conn: OAuthConnectionInsert): Promise<
     return false;
   }
 
+  const encryptedAccess = await encryptToken(conn.access_token);
+  const encryptedRefresh = conn.refresh_token ? await encryptToken(conn.refresh_token) : null;
+
+  // Story 6.8 Phase B — HMAC the row at write time. If HMAC_ROW_SECRET is
+  // missing the helper throws; we log and write unsigned (legacy path).
+  let hmac: string | null = null;
+  try {
+    hmac = computeOAuthConnectionHmac({
+      phone_number: conn.phone_number,
+      provider: conn.provider,
+      service: conn.service,
+      account_email: conn.account_email ?? null,
+      access_token: encryptedAccess,
+      refresh_token: encryptedRefresh,
+      status: 'active',
+    });
+  } catch (err) {
+    console.warn('[oauth-save] HMAC compute failed (writing unsigned):', err);
+  }
+
   const payload = {
     phone_number: conn.phone_number,
     provider: conn.provider,
     service: conn.service,
     account_email: conn.account_email ?? null,
     account_name: conn.account_name ?? null,
-    access_token: await encryptToken(conn.access_token),
-    refresh_token: conn.refresh_token ? await encryptToken(conn.refresh_token) : null,
+    access_token: encryptedAccess,
+    refresh_token: encryptedRefresh,
     expires_at: conn.expires_at ?? null,
     scopes: conn.scopes ?? [],
     metadata: conn.metadata ?? {},
     status: 'active',
+    hmac,
     updated_at: new Date().toISOString(),
   };
 

@@ -113,13 +113,18 @@ export async function callGoogleWithRefresh<T extends Response>(
  * headers they're merged with the Authorization header taking precedence.
  */
 export async function googleFetch(
-  ctx: { accessToken: string; refreshToken?: string | null },
+  ctx: {
+    accessToken: string;
+    refreshToken?: string | null;
+    onTokenRefreshed?: (newAccessToken: string, expiresAtIso: string) => void | Promise<void>;
+  },
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
   return callGoogleWithRefresh({
     accessToken: ctx.accessToken,
     refreshToken: ctx.refreshToken ?? null,
+    onTokenRefreshed: ctx.onTokenRefreshed,
     call: (token) => fetch(url, {
       ...init,
       headers: {

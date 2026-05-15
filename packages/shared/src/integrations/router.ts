@@ -25,11 +25,19 @@ import type {
 /** Connection shape — matches oauth_connections table */
 export interface OAuthConnection {
   provider: 'google' | 'microsoft' | 'meta' | 'apple' | 'yahoo' | 'imap';
-  service: 'email' | 'calendar' | 'instagram';
+  service: 'email' | 'calendar' | 'instagram' | 'drive' | 'sheets' | 'search_console' | 'analytics' | 'payments' | 'booking' | 'accounting';
   account_email?: string;
   access_token: string;
   refresh_token?: string;
   metadata?: Record<string, unknown>;
+  /** Optional callback fired when the adapter refreshes an expired
+   *  access token. Caller (apps/web side) binds this to its own
+   *  persistence helper so the refreshed token is written back to
+   *  oauth_connections — without this, every refresh starts from
+   *  scratch and the encrypted-but-stale token sits in the DB.
+   *  packages/shared can't import from apps/web, so the callback
+   *  binding lives at the calling layer. */
+  onTokenRefreshed?: (newAccessToken: string, expiresAtIso: string) => void | Promise<void>;
 }
 
 // ─── Email ───
@@ -38,7 +46,7 @@ export async function listEmails(
   conn: OAuthConnection,
   limit?: number,
 ): Promise<IntegrationResult<EmailMessage[]>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gmail.listUnreadMessages(ctx, limit);
   if (conn.provider === 'microsoft') return ms.listUnreadMessages(ctx, limit);
   if (conn.provider === 'yahoo' || conn.provider === 'imap') {
@@ -55,7 +63,7 @@ export async function sendEmail(
   conn: OAuthConnection,
   req: SendEmailRequest,
 ): Promise<IntegrationResult<{ messageId: string }>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gmail.sendEmail(ctx, req);
   if (conn.provider === 'microsoft') return ms.sendEmail(ctx, req);
   return { success: false, error: `Send not supported for provider: ${conn.provider}` };
@@ -65,7 +73,7 @@ export async function markEmailRead(
   conn: OAuthConnection,
   messageId: string,
 ): Promise<IntegrationResult<void>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gmail.markAsRead(ctx, messageId);
   if (conn.provider === 'microsoft') return ms.markAsRead(ctx, messageId);
   return { success: false, error: `markRead not supported for provider: ${conn.provider}` };
@@ -82,7 +90,7 @@ export async function getEmailReadState(
   conn: OAuthConnection,
   messageId: string,
 ): Promise<IntegrationResult<{ isRead: boolean } | null>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gmail.getMessageReadState(ctx, messageId);
   if (conn.provider === 'microsoft') return ms.getMessageReadState(ctx, messageId);
   if (conn.provider === 'yahoo' || conn.provider === 'imap') {
@@ -103,7 +111,7 @@ export async function listEmailAttachments(
   conn: OAuthConnection,
   messageId: string,
 ): Promise<IntegrationResult<EmailAttachmentRef[]>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gmail.listMessageAttachments(ctx, messageId);
   if (conn.provider === 'microsoft') return ms.listMessageAttachments(ctx, messageId);
   if (conn.provider === 'yahoo' || conn.provider === 'imap') {
@@ -122,7 +130,7 @@ export async function fetchEmailAttachment(
   messageId: string,
   attachmentId: string,
 ): Promise<IntegrationResult<FetchedAttachment>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gmail.fetchMessageAttachment(ctx, messageId, attachmentId);
   if (conn.provider === 'microsoft') return ms.fetchMessageAttachment(ctx, messageId, attachmentId);
   if (conn.provider === 'yahoo' || conn.provider === 'imap') {
@@ -143,7 +151,7 @@ export async function searchCloudDocs(
   query: string,
   limit: number = 15,
 ): Promise<IntegrationResult<CloudDocRef[]>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return cloudDocs.searchDrive(ctx, query, limit);
   if (conn.provider === 'microsoft') return cloudDocs.searchOneDrive(ctx, query, limit);
   return { success: false, error: `Cloud-doc search not supported for ${conn.provider}` };
@@ -158,7 +166,7 @@ export async function fetchCloudDoc(
   conn: OAuthConnection,
   fileId: string,
 ): Promise<IntegrationResult<FetchedCloudDoc>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return cloudDocs.fetchDriveFile(ctx, fileId);
   if (conn.provider === 'microsoft') return cloudDocs.fetchOneDriveFile(ctx, fileId);
   return { success: false, error: `Cloud-doc fetch not supported for ${conn.provider}` };
@@ -170,7 +178,7 @@ export async function listCalendarEvents(
   conn: OAuthConnection,
   options?: { from?: Date; to?: Date; limit?: number },
 ): Promise<IntegrationResult<CalendarEvent[]>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gcal.listEvents(ctx, options);
   if (conn.provider === 'microsoft') return ms.listEvents(ctx, options);
   if (conn.provider === 'apple') {
@@ -184,7 +192,7 @@ export async function createCalendarEvent(
   conn: OAuthConnection,
   event: CreateCalendarEvent,
 ): Promise<IntegrationResult<CalendarEvent>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gcal.createEvent(ctx, event);
   if (conn.provider === 'microsoft') return ms.createEvent(ctx, event);
   if (conn.provider === 'apple') {
@@ -199,7 +207,7 @@ export async function updateCalendarEvent(
   eventId: string,
   patch: Partial<CreateCalendarEvent>,
 ): Promise<IntegrationResult<CalendarEvent>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gcal.updateEvent(ctx, eventId, patch);
   if (conn.provider === 'microsoft') return ms.updateEvent(ctx, eventId, patch);
   return { success: false, error: `Update event not supported for provider: ${conn.provider}` };
@@ -209,7 +217,7 @@ export async function deleteCalendarEvent(
   conn: OAuthConnection,
   eventId: string,
 ): Promise<IntegrationResult<void>> {
-  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
   if (conn.provider === 'google') return gcal.deleteEvent(ctx, eventId);
   if (conn.provider === 'microsoft') return ms.deleteEvent(ctx, eventId);
   return { success: false, error: `Delete event not supported for provider: ${conn.provider}` };

@@ -2371,11 +2371,8 @@ export async function executeTool(
           result = await searchImap(conn as any, { from, subject, bodyKeyword, sinceDays, limit });
         } else if (conn.provider === 'google') {
           const { gmail } = await import('@wisdomworks/shared');
-          const ctx = {
-            accessToken: (conn as any).access_token,
-            refreshToken: (conn as any).refresh_token,
-            metadata: (conn as any).metadata,
-          };
+          const { googleIntegrationCtx } = await import('../../_lib/google-ctx');
+          const ctx = googleIntegrationCtx(conn as any);
           const r = await gmail.searchMessages(ctx, { from, subject, bodyKeyword, sinceDays, limit });
           // Map Gmail's EmailMessage shape onto the searchImap-shaped one
           // the rendering code below expects (date, fromName, body,
@@ -5495,11 +5492,8 @@ export async function executeTool(
         // for Gmail/Calendar; we do it inline here since GSC/GA bypass
         // the router. Passes refresh_token too so the adapter can refresh
         // expired access tokens (no manual reconnect every hour).
-        const ctx = {
-          accessToken: conn.access_token,
-          refreshToken: conn.refresh_token,
-          metadata: conn.metadata,
-        };
+        const { googleIntegrationCtx } = await import('../../_lib/google-ctx');
+        const ctx = googleIntegrationCtx(conn as any);
         try {
           const { googleSearchConsole } = await import('@wisdomworks/shared');
           const siteUrl = call.input.site_url ? String(call.input.site_url).trim() : '';
@@ -5544,11 +5538,8 @@ export async function executeTool(
           return { content: 'Analytics not connected. Owner needs to reconnect Google in the deck to grant the analytics.readonly scope.', success: false };
         }
         // Same snake-case → camelCase mapping as the GSC tool above.
-        const ctx = {
-          accessToken: conn.access_token,
-          refreshToken: conn.refresh_token,
-          metadata: conn.metadata,
-        };
+        const { googleIntegrationCtx } = await import('../../_lib/google-ctx');
+        const ctx = googleIntegrationCtx(conn as any);
         try {
           const { googleAnalytics } = await import('@wisdomworks/shared');
           const propertyId = call.input.property_id ? String(call.input.property_id).trim() : '';
