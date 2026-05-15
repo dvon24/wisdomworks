@@ -284,11 +284,13 @@ export interface ConnectionRow {
   status: string;
   expires_at?: string;
   created_at: string;
+  scopes?: string[];
+  last_rotated_at?: string;
 }
 
 export async function fetchConnectionsForOwner(tenantPhone: string): Promise<ConnectionRow[]> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
-  const url = `${SUPABASE_URL}/rest/v1/oauth_connections?phone_number=eq.${tenantPhone}&select=provider,service,account_email,status,expires_at,created_at&order=created_at.desc`;
+  const url = `${SUPABASE_URL}/rest/v1/oauth_connections?phone_number=eq.${tenantPhone}&select=provider,service,account_email,status,expires_at,created_at,scopes,last_rotated_at&order=created_at.desc`;
   const res = await fetch(url, { headers: supaHeaders(), cache: 'no-store' });
   if (!res.ok) return [];
   return res.json();

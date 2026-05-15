@@ -18,8 +18,70 @@ import {
   fetchConnectionsForOwner,
   fetchActiveDispositionRules,
 } from '../_lib/deck-data';
+import { ConnectionActions } from './connection-actions';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Render the granted-scopes for a connection in human-readable form.
+ * Each scope URL → its short name + 1-line description so the owner
+ * can see exactly what permissions they've granted.
+ */
+function ScopesList({ scopes }: { scopes: string[] }) {
+  if (!scopes || scopes.length === 0) {
+    return <span style={{ opacity: 0.5 }}>—</span>;
+  }
+  const labeled = scopes
+    .map(scopeLabel)
+    .filter((s): s is { label: string; note: string } => s !== null);
+  if (labeled.length === 0) {
+    return <span style={{ opacity: 0.6 }}>{scopes.length} scope{scopes.length === 1 ? '' : 's'}</span>;
+  }
+  return (
+    <details>
+      <summary style={{ cursor: 'pointer', listStyle: 'none' }}>
+        {labeled.length} scope{labeled.length === 1 ? '' : 's'}
+      </summary>
+      <ul style={{ margin: '6px 0 0 0', padding: '0 0 0 14px' }}>
+        {labeled.map((s, i) => (
+          <li key={i} style={{ marginBottom: 4 }}>
+            <strong style={{ fontWeight: 500 }}>{s.label}</strong>
+            <span style={{ opacity: 0.7 }}> — {s.note}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+/** Map known OAuth scope URLs to human labels. Unknown scopes show their tail. */
+function scopeLabel(scope: string): { label: string; note: string } | null {
+  const known: Record<string, { label: string; note: string }> = {
+    'https://www.googleapis.com/auth/userinfo.email': { label: 'Email address', note: 'identity only' },
+    'https://www.googleapis.com/auth/userinfo.profile': { label: 'Name + photo', note: 'identity only' },
+    'https://www.googleapis.com/auth/gmail.readonly': { label: 'Read Gmail', note: 'list + read messages' },
+    'https://www.googleapis.com/auth/gmail.send': { label: 'Send Gmail', note: 'send on your behalf' },
+    'https://www.googleapis.com/auth/calendar': { label: 'Read+write Calendar', note: 'list events, create, update, delete' },
+    'https://www.googleapis.com/auth/drive.readonly': { label: 'Read Drive', note: 'search + read your files' },
+    'https://www.googleapis.com/auth/spreadsheets': { label: 'Read+write Sheets', note: 'list, read, append rows' },
+    'https://www.googleapis.com/auth/webmasters.readonly': { label: 'Read Search Console', note: 'impressions, clicks, queries' },
+    'https://www.googleapis.com/auth/analytics.readonly': { label: 'Read Analytics 4', note: 'sessions, users, conversions' },
+    openid: { label: 'OpenID', note: 'sign-in only' },
+    email: { label: 'Email', note: 'identity only (Microsoft)' },
+    profile: { label: 'Profile', note: 'identity only (Microsoft)' },
+    offline_access: { label: 'Offline access', note: 'mints refresh tokens (so we can act when you\'re offline)' },
+    'User.Read': { label: 'Read user profile', note: 'Microsoft identity' },
+    'Mail.Read': { label: 'Read mail', note: 'Outlook' },
+    'Mail.Send': { label: 'Send mail', note: 'Outlook' },
+    'Calendars.ReadWrite': { label: 'Read+write Calendar', note: 'Outlook calendar' },
+    'Files.Read.All': { label: 'Read OneDrive', note: 'all files you have access to' },
+  };
+  if (known[scope]) return known[scope];
+  // Unknown scope — fall back to the tail segment.
+  const tail = scope.split('/').pop() ?? scope;
+  if (tail.length > 60) return null;
+  return { label: tail, note: 'unknown scope (raw value)' };
+}
 
 interface IntegrationCheck {
   label: string;
@@ -94,9 +156,11 @@ export default async function SettingsPage() {
                 <th>Provider</th>
                 <th>Service</th>
                 <th>Account</th>
+                <th>Scopes granted</th>
                 <th>Status</th>
-                <th>Connected</th>
+                <th>Last rotated</th>
                 <th>Expires</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -105,9 +169,20 @@ export default async function SettingsPage() {
                   <td style={{ fontWeight: 500, color: 'var(--text)' }}>{c.provider}</td>
                   <td>{c.service}</td>
                   <td style={{ fontFamily: 'Geist Mono, monospace', fontSize: 12 }}>{c.account_email ?? '—'}</td>
+                  <td style={{ fontSize: 11, color: 'var(--text-dim)', maxWidth: 320 }}>
+                    <ScopesList scopes={c.scopes ?? []} />
+                  </td>
                   <td><StatusPill status={c.status} /></td>
-                  <td style={{ fontSize: 12 }}>{c.created_at ? fmtDate(c.created_at) : '—'}</td>
+                  <td style={{ fontSize: 12 }}>{c.last_rotated_at ? fmtDate(c.last_rotated_at) : (c.created_at ? fmtDate(c.created_at) : '—')}</td>
                   <td style={{ fontSize: 12 }}>{c.expires_at ? fmtDate(c.expires_at) : '—'}</td>
+                  <td>
+                    <ConnectionActions
+                      ownerPhone={phone}
+                      provider={c.provider}
+                      service={c.service}
+                      status={c.status}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>
