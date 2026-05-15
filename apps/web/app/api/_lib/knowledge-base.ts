@@ -228,9 +228,12 @@ export async function ingestKnowledgeAtoms(
   tenantPhone: string,
 ): Promise<{ ingested: number; skipped: number; chunks: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
-  // Pull all live atoms for this tenant.
+  // Pull all live atoms for this tenant. The real table is
+  // tenant_knowledge_atoms (not knowledge_atoms) — earlier draft used the
+  // wrong name and PostgREST returned an empty 200 instead of an error
+  // because the path "knowledge_atoms" was treated as "no such resource".
   const atomsRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/knowledge_atoms?tenant_phone=eq.${tenantPhone}&status=neq.archived&select=id,kind,content,tags,owner_confirmed,updated_at&order=updated_at.desc&limit=500`,
+    `${SUPABASE_URL}/rest/v1/tenant_knowledge_atoms?tenant_phone=eq.${tenantPhone}&status=eq.active&select=id,kind,content,tags,owner_confirmed,updated_at&order=updated_at.desc&limit=500`,
     { headers: headers() },
   );
   if (!atomsRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
@@ -372,8 +375,11 @@ export async function ingestChatRuns(
 ): Promise<{ ingested: number; skipped: number; chunks: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
   const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  // chat_runs uses `started_at`, not `created_at` — earlier draft had
+  // the wrong column name and PostgREST 400'd the request, causing the
+  // fetch to !ok and the function to silently return 0/0/0.
   const runsRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/chat_runs?tenant_phone=eq.${tenantPhone}&created_at=gte.${since}&select=id,user_message_preview,assistant_reply_preview,created_at&order=created_at.desc&limit=300`,
+    `${SUPABASE_URL}/rest/v1/chat_runs?tenant_phone=eq.${tenantPhone}&started_at=gte.${since}&select=id,user_message_preview,assistant_reply_preview,started_at&order=started_at.desc&limit=300`,
     { headers: headers() },
   );
   if (!runsRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
@@ -381,7 +387,7 @@ export async function ingestChatRuns(
     id: string;
     user_message_preview?: string;
     assistant_reply_preview?: string;
-    created_at: string;
+    started_at: string;
   }> = await runsRes.json();
   if (runs.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
 
@@ -410,7 +416,7 @@ export async function ingestChatRuns(
       skipped++;
       continue;
     }
-    const date = new Date(run.created_at).toLocaleString('en-US', {
+    const date = new Date(run.started_at).toLocaleString('en-US', {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
@@ -423,7 +429,7 @@ export async function ingestChatRuns(
       sourceRowId: run.id,
       sourceName: `Chat on ${date}`,
       text,
-      metadata: { chat_run_id: run.id, occurred_at: run.created_at },
+      metadata: { chat_run_id: run.id, occurred_at: run.started_at },
     });
     if (written > 0) {
       ingested++;

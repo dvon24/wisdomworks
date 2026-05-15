@@ -74,6 +74,7 @@ export async function POST(request: Request) {
   try {
     const result = await queryKnowledge(cleanPhone, question, {
       limit: 8,
+      minSimilarity: 0.15, // probe-only — lower than prod's 0.4 so partial matches surface
       sourceKinds: ['atom', 'conversation', 'insight'],
       audit: false,
       source: 'probe',
