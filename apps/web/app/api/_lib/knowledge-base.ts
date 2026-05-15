@@ -226,14 +226,16 @@ async function ingestBehavioral(args: {
  */
 export async function ingestKnowledgeAtoms(
   tenantPhone: string,
+  options: { maxRows?: number } = {},
 ): Promise<{ ingested: number; skipped: number; chunks: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
+  const maxRows = Math.max(1, Math.min(options.maxRows ?? 500, 500));
   // Pull all live atoms for this tenant. The real table is
   // tenant_knowledge_atoms (not knowledge_atoms) — earlier draft used the
   // wrong name and PostgREST returned an empty 200 instead of an error
   // because the path "knowledge_atoms" was treated as "no such resource".
   const atomsRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/tenant_knowledge_atoms?tenant_phone=eq.${tenantPhone}&status=eq.active&select=id,kind,content,tags,owner_confirmed,updated_at&order=updated_at.desc&limit=500`,
+    `${SUPABASE_URL}/rest/v1/tenant_knowledge_atoms?tenant_phone=eq.${tenantPhone}&status=eq.active&select=id,kind,content,tags,owner_confirmed,updated_at&order=updated_at.desc&limit=${maxRows}`,
     { headers: headers() },
   );
   if (!atomsRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
@@ -295,11 +297,13 @@ export async function ingestKnowledgeAtoms(
  */
 export async function ingestBusinessInsights(
   tenantPhone: string,
+  options: { maxRows?: number } = {},
 ): Promise<{ ingested: number; skipped: number; chunks: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
+  const maxRows = Math.max(1, Math.min(options.maxRows ?? 300, 300));
   const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
   const insRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/business_insights?tenant_phone=eq.${tenantPhone}&detected_at=gte.${since}&select=id,detector,severity,title,why,recommended_action,expected_impact,status,detected_at&order=detected_at.desc&limit=300`,
+    `${SUPABASE_URL}/rest/v1/business_insights?tenant_phone=eq.${tenantPhone}&detected_at=gte.${since}&select=id,detector,severity,title,why,recommended_action,expected_impact,status,detected_at&order=detected_at.desc&limit=${maxRows}`,
     { headers: headers() },
   );
   if (!insRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
@@ -372,14 +376,16 @@ export async function ingestBusinessInsights(
  */
 export async function ingestChatRuns(
   tenantPhone: string,
+  options: { maxRows?: number } = {},
 ): Promise<{ ingested: number; skipped: number; chunks: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
+  const maxRows = Math.max(1, Math.min(options.maxRows ?? 300, 300));
   const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
   // chat_runs uses `started_at`, not `created_at` — earlier draft had
   // the wrong column name and PostgREST 400'd the request, causing the
   // fetch to !ok and the function to silently return 0/0/0.
   const runsRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/chat_runs?tenant_phone=eq.${tenantPhone}&started_at=gte.${since}&select=id,user_message_preview,assistant_reply_preview,started_at&order=started_at.desc&limit=300`,
+    `${SUPABASE_URL}/rest/v1/chat_runs?tenant_phone=eq.${tenantPhone}&started_at=gte.${since}&select=id,user_message_preview,assistant_reply_preview,started_at&order=started_at.desc&limit=${maxRows}`,
     { headers: headers() },
   );
   if (!runsRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };

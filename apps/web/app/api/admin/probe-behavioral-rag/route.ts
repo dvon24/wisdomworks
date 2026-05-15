@@ -47,23 +47,31 @@ export async function POST(request: Request) {
   const cleanPhone = String(phone).replace(/[\s\-+()]/g, '');
   const question: string = body?.question?.toString().trim() || 'What did we discuss recently and what facts have I told you?';
 
+  // Cap ingest rows so the probe fits inside Vercel's 60s function timeout.
+  // Each row = one OpenAI embed call (~300-800ms) + one Supabase upsert.
+  // Full bulk ingestion is the cron's job — the probe just verifies that
+  // the chain works. Caller can override via `?maxRows=NN` if needed.
+  const url = new URL(request.url);
+  const maxRowsOverride = Number(url.searchParams.get('maxRows')) || 0;
+  const maxRows = maxRowsOverride > 0 ? Math.min(maxRowsOverride, 100) : 20;
+
   const ingest = {
     atoms: { ingested: 0, skipped: 0, chunks: 0, error: undefined as string | undefined },
     chat_runs: { ingested: 0, skipped: 0, chunks: 0, error: undefined as string | undefined },
     insights: { ingested: 0, skipped: 0, chunks: 0, error: undefined as string | undefined },
   };
   try {
-    Object.assign(ingest.atoms, await ingestKnowledgeAtoms(cleanPhone));
+    Object.assign(ingest.atoms, await ingestKnowledgeAtoms(cleanPhone, { maxRows }));
   } catch (err: any) {
     ingest.atoms.error = err?.message ?? String(err);
   }
   try {
-    Object.assign(ingest.chat_runs, await ingestChatRuns(cleanPhone));
+    Object.assign(ingest.chat_runs, await ingestChatRuns(cleanPhone, { maxRows }));
   } catch (err: any) {
     ingest.chat_runs.error = err?.message ?? String(err);
   }
   try {
-    Object.assign(ingest.insights, await ingestBusinessInsights(cleanPhone));
+    Object.assign(ingest.insights, await ingestBusinessInsights(cleanPhone, { maxRows }));
   } catch (err: any) {
     ingest.insights.error = err?.message ?? String(err);
   }
