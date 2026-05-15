@@ -19,7 +19,10 @@ const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 const SERVICE_SCOPE_MAP: Array<{ service: string; scopeNeedle: string }> = [
   { service: 'email', scopeNeedle: 'gmail' },
   { service: 'calendar', scopeNeedle: '/calendar' },
-  { service: 'drive', scopeNeedle: 'drive.readonly' },
+  // Match either read (drive.readonly) OR write (drive.file) — granting
+  // just one is enough to create the drive row. The adapter knows which
+  // ops are allowed based on the scopes column.
+  { service: 'drive', scopeNeedle: 'drive.' },
   { service: 'search_console', scopeNeedle: 'webmasters' },
   { service: 'analytics', scopeNeedle: 'analytics.readonly' },
   { service: 'sheets', scopeNeedle: 'spreadsheets' },

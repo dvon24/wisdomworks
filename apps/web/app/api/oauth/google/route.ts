@@ -28,6 +28,11 @@ const SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/drive.readonly',
+  // drive.file — added 2026-05-15. Narrow write scope: lets us create
+  // files and manage files we created. Needed by uploadToGoogleDrive
+  // (create_document tool). drive.readonly alone would 403 on insert.
+  // This is the privacy-preserving alternative to full drive r/w.
+  'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/webmasters.readonly',
   'https://www.googleapis.com/auth/analytics.readonly',
   // Sheets read+write — added 2026-05-15 for Mira (Financial Advisor)

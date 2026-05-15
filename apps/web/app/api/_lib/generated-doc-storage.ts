@@ -51,7 +51,20 @@ export async function uploadGeneratedDoc(input: {
       body: new Blob([input.buffer.buffer as ArrayBuffer], { type: input.mimeType }),
     });
     if (!uploadRes.ok) {
-      console.warn('[generated-doc-storage] upload failed:', uploadRes.status, await uploadRes.text());
+      const body = await uploadRes.text().catch(() => '<no body>');
+      // 404 on POST means the bucket doesn't exist — surface that clearly
+      // so the owner knows to create it in Supabase Dashboard. This is
+      // a ONE-TIME platform-owner setup step, not a per-customer thing.
+      if (uploadRes.status === 404 || body.includes('Bucket not found')) {
+        console.error(
+          `[generated-doc-storage] Bucket "${BUCKET}" does not exist. ` +
+          `Create it in Supabase Dashboard → Storage → New bucket with public-read enabled. ` +
+          `Without this bucket, create_document → send_email attachment chain breaks. ` +
+          `Response: ${body.slice(0, 200)}`,
+        );
+      } else {
+        console.warn('[generated-doc-storage] upload failed:', uploadRes.status, body.slice(0, 300));
+      }
       return null;
     }
     const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${path}`;

@@ -2725,9 +2725,15 @@ export async function executeTool(
             filename: safeName,
             mimeType: mime,
           });
+          // The storage_url is the ONLY URL send_email can attach. Drive
+          // and OneDrive URLs are auth-gated (sharing links can't be
+          // fetched server-side without an OAuth token). If storage upload
+          // failed, Iris must NOT try to attach to email — she should
+          // either send via WhatsApp or surface the bucket-missing case
+          // to the owner.
           const attachableNote = attachable
-            ? `\n  storage_url (use for email attachments): ${attachable.publicUrl}`
-            : '';
+            ? `\n  storage_url (use this — and ONLY this — when attaching to email): ${attachable.publicUrl}`
+            : `\n  storage_url: NOT AVAILABLE — Supabase 'generated-docs' bucket missing or unreachable. Do NOT attach this file to email (drive/onedrive URLs aren't fetchable server-side). If the user wants it emailed, tell them the admin must create the 'generated-docs' bucket in Supabase Storage with public-read enabled.`;
 
           // Destination preference: Google Drive → OneDrive → WhatsApp document fallback
           const googleConn = connections.find((c) => c.provider === 'google');

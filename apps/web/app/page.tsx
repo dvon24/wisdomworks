@@ -304,6 +304,7 @@ export default function CommandDeck() {
       'https://www.googleapis.com/auth/gmail.send': 'Send Gmail on your behalf',
       'https://www.googleapis.com/auth/calendar': 'Read+write Google Calendar',
       'https://www.googleapis.com/auth/drive.readonly': 'Read Google Drive files',
+      'https://www.googleapis.com/auth/drive.file': 'Create + manage Drive files we make for you',
       'https://www.googleapis.com/auth/spreadsheets': 'Read+write Google Sheets',
       'https://www.googleapis.com/auth/webmasters.readonly': 'Read Search Console (SEO data)',
       'https://www.googleapis.com/auth/analytics.readonly': 'Read Google Analytics (site traffic)',

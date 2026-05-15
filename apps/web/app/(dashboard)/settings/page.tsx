@@ -63,6 +63,7 @@ function scopeLabel(scope: string): { label: string; note: string } | null {
     'https://www.googleapis.com/auth/gmail.send': { label: 'Send Gmail', note: 'send on your behalf' },
     'https://www.googleapis.com/auth/calendar': { label: 'Read+write Calendar', note: 'list events, create, update, delete' },
     'https://www.googleapis.com/auth/drive.readonly': { label: 'Read Drive', note: 'search + read your files' },
+    'https://www.googleapis.com/auth/drive.file': { label: 'Create + manage Drive files', note: 'only files we create on your behalf' },
     'https://www.googleapis.com/auth/spreadsheets': { label: 'Read+write Sheets', note: 'list, read, append rows' },
     'https://www.googleapis.com/auth/webmasters.readonly': { label: 'Read Search Console', note: 'impressions, clicks, queries' },
     'https://www.googleapis.com/auth/analytics.readonly': { label: 'Read Analytics 4', note: 'sessions, users, conversions' },
