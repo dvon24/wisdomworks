@@ -56,8 +56,20 @@ export async function POST(request: Request) {
   const force = url.searchParams.get('force') === 'true';
 
   const results = {
-    oauth_connections: { scanned: 0, signed: 0, skipped_already_valid: 0, errored: 0 },
-    tenant_compliance_profiles: { scanned: 0, signed: 0, skipped_already_valid: 0, errored: 0 },
+    oauth_connections: {
+      scanned: 0,
+      signed: 0,
+      skipped_already_valid: 0,
+      errored: 0,
+      errors: [] as Array<{ row: string; error: string }>,
+    },
+    tenant_compliance_profiles: {
+      scanned: 0,
+      signed: 0,
+      skipped_already_valid: 0,
+      errored: 0,
+      errors: [] as Array<{ row: string; error: string }>,
+    },
   };
 
   try {
@@ -111,11 +123,23 @@ export async function POST(request: Request) {
               body: JSON.stringify({ hmac: newHmac }),
             },
           );
-          if (patchRes.ok) results.oauth_connections.signed++;
-          else results.oauth_connections.errored++;
-        } catch (err) {
+          if (patchRes.ok) {
+            results.oauth_connections.signed++;
+          } else {
+            const errText = await patchRes.text().catch(() => '<no body>');
+            results.oauth_connections.errored++;
+            results.oauth_connections.errors.push({
+              row: `${row.phone_number}/${row.provider}/${row.service}`,
+              error: `PATCH ${patchRes.status}: ${errText.slice(0, 300)}`,
+            });
+          }
+        } catch (err: any) {
           console.warn(`[backfill-hmacs] oauth row failed for ${row.phone_number}/${row.provider}/${row.service}:`, err);
           results.oauth_connections.errored++;
+          results.oauth_connections.errors.push({
+            row: `${row.phone_number}/${row.provider}/${row.service}`,
+            error: `EXCEPTION: ${err?.message ?? String(err)}`,
+          });
         }
       }
     }
@@ -163,11 +187,23 @@ export async function POST(request: Request) {
               body: JSON.stringify({ hmac: newHmac }),
             },
           );
-          if (patchRes.ok) results.tenant_compliance_profiles.signed++;
-          else results.tenant_compliance_profiles.errored++;
-        } catch (err) {
+          if (patchRes.ok) {
+            results.tenant_compliance_profiles.signed++;
+          } else {
+            const errText = await patchRes.text().catch(() => '<no body>');
+            results.tenant_compliance_profiles.errored++;
+            results.tenant_compliance_profiles.errors.push({
+              row: row.tenant_phone,
+              error: `PATCH ${patchRes.status}: ${errText.slice(0, 300)}`,
+            });
+          }
+        } catch (err: any) {
           console.warn(`[backfill-hmacs] compliance row failed for ${row.tenant_phone}:`, err);
           results.tenant_compliance_profiles.errored++;
+          results.tenant_compliance_profiles.errors.push({
+            row: row.tenant_phone,
+            error: `EXCEPTION: ${err?.message ?? String(err)}`,
+          });
         }
       }
     }
