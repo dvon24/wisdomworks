@@ -421,6 +421,7 @@ export async function GET(request: Request) {
         service: c.service,
         accountEmail: c.account_email,
         accountName: c.account_name,
+        scopes: c.scopes ?? [],
       })),
       todaysCalendar,
       pendingEmailDrafts: pendingEmailDrafts.map((d: any) => ({

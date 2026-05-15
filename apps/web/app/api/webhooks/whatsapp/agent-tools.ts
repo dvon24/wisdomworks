@@ -1565,11 +1565,12 @@ const TOOL_ADD_TOOL_TO_AGENT: AnthropicTool = {
 const TOOL_UPDATE_AGENT: AnthropicTool = {
   name: 'update_agent',
   description:
-    "Update an agent's role, description, or channels. Use when the user wants to refocus an agent's responsibilities (e.g. \"Marcus should also handle au7o billing\").",
+    "Update an agent's name, role, description, or channels. Use when the user wants to rename an agent (\"rename Mira to Nora\") or refocus their responsibilities (\"Marcus should also handle au7o billing\"). The `newName` field handles rename — pass agentName as the CURRENT name and newName as the desired NEW name.",
   input_schema: {
     type: 'object',
     properties: {
-      agentName: { type: 'string' },
+      agentName: { type: 'string', description: "The agent's CURRENT name (used to look them up)." },
+      newName: { type: 'string', description: 'Optional new name — only set when the user wants to rename the agent.' },
       role: { type: 'string', description: 'Optional new role/title.' },
       description: { type: 'string', description: 'Optional new short description.' },
       addChannels: { type: 'array', items: { type: 'string' }, description: 'Channels to add (e.g. Slack, Email).' },
@@ -5270,6 +5271,46 @@ export async function executeTool(
           return { content: `Couldn't find "${call.input.agentName}".`, success: false };
         }
         const changes: string[] = [];
+        const oldName = agent.name;
+
+        // Bug fix 2026-05-15: support real rename via the newName field.
+        // Iris previously said "I can't rename — update_agent has no name
+        // field"; that was true, this fixes it. The rename touches BOTH
+        // the chat-side team profile AND the agent_configs DB row that
+        // drives the deck. Without the DB update, the deck Team view
+        // would still show the old name.
+        const newName = call.input.newName?.toString().trim();
+        if (newName && newName.toLowerCase() !== oldName?.toLowerCase()) {
+          // 1. Update the chat-side team profile.
+          agent.name = newName;
+          // 2. Also update agent_configs.agent_name in the DB so the deck
+          //    shows the new name. Best-effort — log if it fails but don't
+          //    break the rename.
+          try {
+            const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+            const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+            if (supaUrl && supaKey) {
+              const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+              await fetch(
+                `${supaUrl}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&agent_name=eq.${encodeURIComponent(oldName ?? '')}`,
+                {
+                  method: 'PATCH',
+                  headers: {
+                    apikey: supaKey,
+                    Authorization: `Bearer ${supaKey}`,
+                    'Content-Type': 'application/json',
+                    Prefer: 'return=minimal',
+                  },
+                  body: JSON.stringify({ agent_name: newName }),
+                },
+              );
+            }
+          } catch (err) {
+            console.warn('[update_agent] agent_configs rename failed (chat-side still applied):', err);
+          }
+          changes.push(`name → "${newName}"`);
+        }
+
         if (call.input.role) {
           agent.role = call.input.role;
           changes.push(`role → "${call.input.role}"`);
@@ -5288,11 +5329,11 @@ export async function executeTool(
           changes.push(`channels: ${merged.join(', ')}`);
         }
         if (changes.length === 0) {
-          return { content: 'Nothing to update — pass role, description, or addChannels.', success: false };
+          return { content: 'Nothing to update — pass newName, role, description, or addChannels.', success: false };
         }
         user.profile.team = team;
         await saveUserContext(user);
-        return { content: `Updated ${agent.name}: ${changes.join('; ')}.`, success: true };
+        return { content: `Updated ${oldName}${newName ? ` (now "${newName}")` : ''}: ${changes.join('; ')}.`, success: true };
       }
 
       case 'move_agent_under_manager': {

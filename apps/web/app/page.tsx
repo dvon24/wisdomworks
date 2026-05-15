@@ -294,6 +294,34 @@ export default function CommandDeck() {
     }
   }, [connForm]);
 
+  // Map an OAuth scope URL/string to a human-readable label.
+  // Used by the Connections list's "Scopes granted" expandable section.
+  function humanScopeLabel(scope: string): string {
+    const known: Record<string, string> = {
+      'https://www.googleapis.com/auth/userinfo.email': 'Email address (identity only)',
+      'https://www.googleapis.com/auth/userinfo.profile': 'Name + photo (identity only)',
+      'https://www.googleapis.com/auth/gmail.readonly': 'Read Gmail',
+      'https://www.googleapis.com/auth/gmail.send': 'Send Gmail on your behalf',
+      'https://www.googleapis.com/auth/calendar': 'Read+write Google Calendar',
+      'https://www.googleapis.com/auth/drive.readonly': 'Read Google Drive files',
+      'https://www.googleapis.com/auth/spreadsheets': 'Read+write Google Sheets',
+      'https://www.googleapis.com/auth/webmasters.readonly': 'Read Search Console (SEO data)',
+      'https://www.googleapis.com/auth/analytics.readonly': 'Read Google Analytics (site traffic)',
+      openid: 'Sign in',
+      email: 'Email address (Microsoft)',
+      profile: 'Profile (Microsoft)',
+      offline_access: 'Refresh tokens (act when you\'re offline)',
+      'User.Read': 'Read Microsoft profile',
+      'Mail.Read': 'Read Outlook mail',
+      'Mail.Send': 'Send Outlook mail',
+      'Calendars.ReadWrite': 'Read+write Outlook calendar',
+      'Files.Read.All': 'Read OneDrive files',
+    };
+    if (known[scope]) return known[scope]!;
+    const tail = scope.split('/').pop() ?? scope;
+    return tail.length > 60 ? scope.slice(0, 60) + '…' : tail;
+  }
+
   // Find which team member owns a given service (email/calendar/instagram).
   // Looks at each agent's channels/tools/role metadata; falls back to the personal assistant.
   function findOwnerAgent(service: string): { name: string; role: string } | null {
@@ -1216,10 +1244,12 @@ export default function CommandDeck() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {tenantData.connections.map((c: any, i: number) => {
                     const owner = findOwnerAgent(c.service);
+                    const deckOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+                    const oauthBase = (process.env.NEXT_PUBLIC_WEBSITE_URL || deckOrigin).replace(/\/$/, '');
                     return (
-                      <div key={i} className="glass" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, background: 'rgba(44, 176, 112, 0.06)', border: '1px solid rgba(44, 176, 112, 0.25)' }}>
+                      <div key={i} className="glass" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, background: 'rgba(44, 176, 112, 0.06)', border: '1px solid rgba(44, 176, 112, 0.25)', flexWrap: 'wrap' }}>
                         <span style={{ fontSize: 18, color: '#15803d' }}>✓</span>
-                        <div style={{ flex: 1 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 13, fontWeight: 600 }}>
                             {c.provider === 'google' ? 'Google' : c.provider === 'microsoft' ? 'Microsoft' : c.provider === 'apple' ? 'Apple iCloud' : c.provider === 'yahoo' ? 'Yahoo Mail' : c.provider}
                             <span style={{ color: 'var(--text-faint)', fontWeight: 400 }}> · {c.service}</span>
@@ -1230,21 +1260,68 @@ export default function CommandDeck() {
                               Owned by {owner.name} · {owner.role}
                             </div>
                           )}
+                          {Array.isArray(c.scopes) && c.scopes.length > 0 && (
+                            <details style={{ marginTop: 6 }}>
+                              <summary style={{ fontSize: 10.5, color: 'var(--text-faint)', cursor: 'pointer' }}>
+                                Scopes granted ({c.scopes.length})
+                              </summary>
+                              <ul style={{ margin: '4px 0 0 16px', padding: 0, fontSize: 10.5, color: 'var(--text-dim)' }}>
+                                {c.scopes.slice(0, 12).map((s: string, j: number) => (
+                                  <li key={j} style={{ marginBottom: 2 }}>{humanScopeLabel(s)}</li>
+                                ))}
+                              </ul>
+                            </details>
+                          )}
                         </div>
-                        <button
-                          onClick={() => {
-                            if (c.provider === 'yahoo' || c.provider === 'apple') {
-                              setConnForm(c.provider);
-                              setConnEmail(c.accountEmail || '');
-                              setConnPassword('');
-                              setConnError('');
-                            }
-                          }}
-                          className="btn ghost"
-                          style={{ fontSize: 11 }}
-                        >
-                          Reconnect
-                        </button>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            onClick={() => {
+                              // Trigger the OAuth flow again to refresh scopes / tokens.
+                              // For local-creds providers (Yahoo/Apple), open the inline form.
+                              if (c.provider === 'yahoo' || c.provider === 'apple') {
+                                setConnForm(c.provider);
+                                setConnEmail(c.accountEmail || '');
+                                setConnPassword('');
+                                setConnError('');
+                              } else if (phoneNumber) {
+                                // OAuth providers: send the user to the provider's
+                                // consent screen via our /api/oauth/<provider> route.
+                                // Same URL as the "Add a service" cards below.
+                                const oauthUrl = `${oauthBase}/api/oauth/${c.provider}?phone=${encodeURIComponent(phoneNumber)}`;
+                                window.location.href = oauthUrl;
+                              }
+                            }}
+                            className="btn ghost"
+                            style={{ fontSize: 11 }}
+                          >
+                            Reconnect
+                          </button>
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Disconnect ${c.provider}/${c.service}?\n\nThis revokes WisdomWorks' use of this connection. To FULLY revoke at ${c.provider}, you'll be taken to their settings after.`)) return;
+                              try {
+                                const res = await fetch('/api/connections/disconnect', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ phone: phoneNumber, provider: c.provider, service: c.service }),
+                                  credentials: 'include',
+                                });
+                                const data = await res.json();
+                                if (data.next_step_at_provider) {
+                                  window.open(data.next_step_at_provider, '_blank', 'noopener,noreferrer');
+                                }
+                                // Reload to refresh the connections list.
+                                window.location.reload();
+                              } catch (err) {
+                                alert(`Disconnect failed: ${err}`);
+                              }
+                            }}
+                            className="btn ghost"
+                            style={{ fontSize: 11, color: 'var(--bad-text)' }}
+                          >
+                            Disconnect
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
