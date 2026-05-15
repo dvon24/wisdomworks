@@ -21,10 +21,21 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 export async function GET(request: Request) {
+  // Auth: accept EITHER Vercel's CRON_SECRET (auto-invocation) OR the
+  // platform owner's OWNER_API_TOKEN (manual admin trigger). If neither
+  // env var is set, the route is unauthenticated — log a warning so it's
+  // visible during ops. (Production should always have CRON_SECRET set.)
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = request.headers.get('authorization');
-    if (auth !== `Bearer ${cronSecret}`) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const ownerToken = process.env.OWNER_API_TOKEN;
+  const auth = request.headers.get('authorization');
+  if (cronSecret || ownerToken) {
+    const validCron = cronSecret && auth === `Bearer ${cronSecret}`;
+    const validOwner = ownerToken && auth === `Bearer ${ownerToken}`;
+    if (!validCron && !validOwner) {
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
+  } else {
+    console.warn('[knowledge-refresh] WARNING: neither CRON_SECRET nor OWNER_API_TOKEN set — route is unauthenticated. Set CRON_SECRET in Vercel env vars.');
   }
 
   if (!SUPABASE_URL || !SUPABASE_KEY) {
