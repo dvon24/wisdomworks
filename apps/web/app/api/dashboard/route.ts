@@ -72,7 +72,7 @@ export async function GET(request: Request) {
       ),
       // Story 2.1b/c — recent agent_runs for the activity feed (incl. delegation)
       fetch(
-        `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&order=started_at.desc&limit=50&select=agent_instance_id,trigger,outcome,output_summary,metadata,started_at,duration_ms,tokens_in,tokens_out,delegated_to_lane,delegation_reason,delegation_status`,
+        `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&outcome=neq.dismissed&order=started_at.desc&limit=50&select=id,agent_instance_id,trigger,outcome,output_summary,metadata,started_at,duration_ms,tokens_in,tokens_out,delegated_to_lane,delegation_reason,delegation_status`,
         { headers },
       ),
     ]);
@@ -197,6 +197,7 @@ export async function GET(request: Request) {
         const agent = instanceIdToAgent.get(run.agent_instance_id);
         if (!agent) return null;
         return {
+          id: run.id,
           agentName: agent.name,
           agentRole: agent.role,
           agentId: (agent.name || '').toLowerCase().replace(/\s+/g, '-'),

@@ -1672,12 +1672,30 @@ export default function CommandDeck() {
                       <button
                         className="btn ghost"
                         style={{ fontSize: 10.5, padding: '4px 10px' }}
-                        onClick={() => {
+                        onClick={async () => {
+                          // Optimistic client-side hide so the UI feels instant.
+                          // Then PATCH server-side so dismissals survive reloads.
                           setDismissedApprovals((prev) => {
                             const next = new Set(prev);
                             for (const p of approvals) next.add(p.agentId + '|' + p.startedAt);
                             return next;
                           });
+                          const ids = approvals.map((p: any) => p.id).filter(Boolean);
+                          if (ids.length === 0 || !phoneNumber) return;
+                          try {
+                            await fetch('/api/approvals/dismiss', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              credentials: 'include',
+                              body: JSON.stringify({ phone: phoneNumber, ids }),
+                            });
+                            // Refresh tenantData so the source of truth catches up.
+                            const r = await fetch(`/api/dashboard?phone=${encodeURIComponent(phoneNumber)}`, { credentials: 'include' });
+                            const d = await r.json();
+                            if (!d.error) setTenantData(d);
+                          } catch (err) {
+                            console.warn('[dismiss-all] server PATCH failed (optimistic state still applied):', err);
+                          }
                         }}
                       >
                         Dismiss all
@@ -1710,7 +1728,21 @@ export default function CommandDeck() {
                           <button
                             className="btn ghost"
                             style={{ flex: 1, fontSize: 11, padding: '5px 8px', justifyContent: 'center' }}
-                            onClick={() => setDismissedApprovals((prev) => new Set(prev).add(id))}
+                            onClick={async () => {
+                              // Optimistic client-side hide, then persist server-side.
+                              setDismissedApprovals((prev) => new Set(prev).add(id));
+                              if (!p.id || !phoneNumber) return;
+                              try {
+                                await fetch('/api/approvals/dismiss', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  credentials: 'include',
+                                  body: JSON.stringify({ phone: phoneNumber, ids: [p.id] }),
+                                });
+                              } catch (err) {
+                                console.warn('[dismiss-one] server PATCH failed (optimistic state still applied):', err);
+                              }
+                            }}
                           >
                             Dismiss
                           </button>
