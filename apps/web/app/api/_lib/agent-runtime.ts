@@ -408,7 +408,7 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
     fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${tenantPhone}&select=business_name,business_type`, { headers: headers() }),
     fetch(`${SUPABASE_URL}/rest/v1/ontology_entities?tenant_phone=eq.${tenantPhone}&entity_type=eq.documentation&select=metadata&order=updated_at.desc&limit=1`, { headers: headers() }),
     fetch(`${SUPABASE_URL}/rest/v1/oauth_connections?phone_number=eq.${tenantPhone}&status=eq.active&select=provider,service,account_email`, { headers: headers() }),
-    fetch(`${SUPABASE_URL}/rest/v1/agent_runs?agent_instance_id=eq.${instanceId}&order=started_at.desc&limit=3&select=outcome,output_summary,started_at`, { headers: headers() }),
+    fetch(`${SUPABASE_URL}/rest/v1/agent_runs?agent_instance_id=eq.${instanceId}&order=started_at.desc&limit=3&select=outcome,output_summary,started_at,metadata`, { headers: headers() }),
   ]);
 
   const ctxRows = ctxRes.ok ? await ctxRes.json() : [];
@@ -853,6 +853,45 @@ async function callAnthropicForTick(model: string, systemPrompt: string): Promis
   };
 }
 
+/**
+ * Compute a stable digest of the inputs an agent's reasoning depends on.
+ * Used by tickAgent's no-change cost-guard: if this hash matches the
+ * previous tick's stored hash, the world looks the same and we skip the
+ * LLM call (avoids agents proposing identical recommendations every
+ * cron firing).
+ *
+ * Inputs intentionally limited to "things that change when the outside
+ * world changes" — not the agent's own past output (otherwise the hash
+ * shifts on every tick from its own prior runs, defeating the guard).
+ *
+ * Returns a short hex digest. Stored in agent_runs.metadata.world_state_hash.
+ */
+function computeWorldStateHash(ctx: TickContext): string {
+  // Cheap deterministic serialization. Numbers, sorted strings, no
+  // floating timestamps that change per ms.
+  const shape = {
+    conns: ctx.connections.map((c) => `${c.provider}/${c.service}`).sort(),
+    projects: ctx.projects.map((p: any) => `${p.project_name}|${p.latest_snapshot?.signature ?? ''}`).sort(),
+    pending_delegations: ctx.pendingDelegations.length,
+    lane_inbox: ctx.laneInbox?.length ?? 0,
+    consult_inbox: ctx.consultInbox?.length ?? 0,
+    consult_outbox: ctx.consultOutbox?.length ?? 0,
+    pending_approvals_count: ctx.systemState?.pending_approvals_count ?? 0,
+    atoms_count: ctx.knowledgeAtoms?.length ?? 0,
+  };
+  // Deterministic JSON (keys are already alphabetical from object literal order).
+  const json = JSON.stringify(shape);
+  // Lightweight 32-bit hash; collisions don't matter since we ALSO check the
+  // 4-hour window — false-positive match on a stale hash will resolve on the
+  // next change or the next 4hr window.
+  let h = 2166136261;  // FNV-1a init
+  for (let i = 0; i < json.length; i++) {
+    h ^= json.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 async function pushEscalationToOwner(tenantPhone: string, agentName: string, agentRole: string, observation: string, recommendation: string): Promise<void> {
   // Escalations now flow into the notification queue and surface in the
   // next scheduled digest (morning/lunch/afternoon). No more individual
@@ -910,6 +949,43 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
         metadata: { autonomy, cost_guard: 'starved' },
       });
       return;
+    }
+
+    // COST GUARD #2 — change-detection. The previous starvation guard
+    // catches agents with zero signal. This one catches agents that HAVE
+    // signal but the signal hasn't CHANGED since the last tick. Riley /
+    // Marcus example: the approval queue size and the recent commits hash
+    // are the only things they can "see," and those don't move tick-to-
+    // tick. Without this, every cron tick fires a fresh LLM call that
+    // proposes the same recommendation as last time ("surface oldest
+    // 3-5 pending approvals"). We now compute a hash of the relevant
+    // world state, compare to the most-recent tick's stored hash, and
+    // emit no_op if nothing has changed in the last 4 hours.
+    //
+    // What goes into the hash: connection count + service shape, project
+    // last_synced_at digest, pending delegations count, lane inbox count,
+    // consult inbox count. These are the inputs the agent's reasoning
+    // depends on. If none changed, the LLM would produce the same output.
+    const worldStateHash = computeWorldStateHash(ctx);
+    const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
+    const lastTick = ctx.recentRunsForAgent?.[0];
+    if (lastTick) {
+      const lastHash = (lastTick as any)?.metadata?.world_state_hash;
+      const lastTime = new Date(lastTick.started_at).getTime();
+      const ageMs = Date.now() - lastTime;
+      if (lastHash === worldStateHash && ageMs < FOUR_HOURS_MS) {
+        await logRun({
+          tenant_phone: instance.tenant_phone,
+          agent_instance_id: instance.id,
+          trigger: 'tick',
+          phase: 'observe',
+          outcome: 'no_op',
+          duration_ms: Date.now() - start,
+          output_summary: `${config.agent_name} sees no change since ${Math.round(ageMs / 60000)}min ago — same signal shape, same world. Staying quiet until something actually changes.`,
+          metadata: { autonomy, cost_guard: 'no_change', world_state_hash: worldStateHash },
+        });
+        return;
+      }
     }
 
     if (!ANTHROPIC_API_KEY) {
@@ -1046,6 +1122,10 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
         escalation_priority: result.escalation_priority,
         proposed_action: result.proposed_action,
         delegations_handled: ctx.pendingDelegations.map((d) => d.id),
+        // Persist the world-state hash so the next tick can compare and
+        // skip the LLM call if nothing has changed. See computeWorldStateHash
+        // + the no_change cost-guard earlier in tickAgent.
+        world_state_hash: worldStateHash,
         // Story 2.11 — keep BMAD solution briefs as a structured payload.
         // Only stored if the brief passed the hard rules above; otherwise null.
         solution_brief: sanitizedBrief,
