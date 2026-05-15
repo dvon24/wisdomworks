@@ -48,13 +48,34 @@ export async function GET(request: Request) {
     );
     const tenants: { phone_number: string }[] = res.ok ? await res.json() : [];
 
+    // Per-source batch caps. Embedding is the slow step (~300-800ms per
+    // OpenAI call), so a full run of unbounded ingests easily blows past
+    // Vercel's 60s timeout when there's months of history to backfill.
+    // 30 rows × 4 sources = ~120 OpenAI calls per tenant per hour, which
+    // fits comfortably even at conservative latency. Watermarks (per-row
+    // source_row_id "seen" set) mean already-ingested rows are skipped
+    // fast on subsequent runs.
+    const ATOMS_PER_RUN = 30;
+    const CHAT_RUNS_PER_RUN = 30;
+    const INSIGHTS_PER_RUN = 30;
+
     const totals = {
       ontology: { ingested: 0, chunks: 0 },
       atoms: { ingested: 0, chunks: 0 },
       conversations: { ingested: 0, chunks: 0 },
       insights: { ingested: 0, chunks: 0 },
     };
+    // Deadline guard — bail at 50s in case we underestimate per-row cost
+    // and don't want a 504 on the last tenant. Each tenant gets equal
+    // share of the remaining budget.
+    const startedAt = Date.now();
+    const HARD_DEADLINE_MS = 50_000;
+
     for (const t of tenants) {
+      if (Date.now() - startedAt > HARD_DEADLINE_MS) {
+        console.warn(`[knowledge-refresh] deadline reached; ${tenants.length - tenants.indexOf(t)} tenants deferred to next run`);
+        break;
+      }
       try {
         const o = await ingestOntology(t.phone_number);
         totals.ontology.ingested += o.ingested;
@@ -63,21 +84,21 @@ export async function GET(request: Request) {
         console.warn(`[knowledge-refresh] ontology ${t.phone_number} failed:`, err);
       }
       try {
-        const a = await ingestKnowledgeAtoms(t.phone_number);
+        const a = await ingestKnowledgeAtoms(t.phone_number, { maxRows: ATOMS_PER_RUN });
         totals.atoms.ingested += a.ingested;
         totals.atoms.chunks += a.chunks;
       } catch (err) {
         console.warn(`[knowledge-refresh] atoms ${t.phone_number} failed:`, err);
       }
       try {
-        const c = await ingestChatRuns(t.phone_number);
+        const c = await ingestChatRuns(t.phone_number, { maxRows: CHAT_RUNS_PER_RUN });
         totals.conversations.ingested += c.ingested;
         totals.conversations.chunks += c.chunks;
       } catch (err) {
         console.warn(`[knowledge-refresh] chat_runs ${t.phone_number} failed:`, err);
       }
       try {
-        const i = await ingestBusinessInsights(t.phone_number);
+        const i = await ingestBusinessInsights(t.phone_number, { maxRows: INSIGHTS_PER_RUN });
         totals.insights.ingested += i.ingested;
         totals.insights.chunks += i.chunks;
       } catch (err) {
