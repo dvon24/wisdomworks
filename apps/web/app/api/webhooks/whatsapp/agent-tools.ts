@@ -128,6 +128,7 @@ import {
   type SheetSpec,
 } from '../../_lib/doc-gen';
 import { saveUserContext, type UserContext } from './context-store';
+import { regenerateOrgDoc } from '../../_lib/regenerate-org-doc';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -5217,14 +5218,45 @@ export async function executeTool(
 
         const id = name.toLowerCase().replace(/\s+/g, '-');
         const tier = (['Haiku', 'Sonnet', 'Opus'].includes(call.input.tier) ? call.input.tier : 'Sonnet') as string;
-        const newAgent = {
-          id,
-          name,
-          role,
-          tier,
-          description: call.input.description?.toString(),
-          tools: Array.isArray(call.input.tools) ? call.input.tools : [],
-          channels: Array.isArray(call.input.channels) ? call.input.channels : [],
+        const description = call.input.description?.toString();
+        const tools = Array.isArray(call.input.tools) ? call.input.tools : [];
+        const channels = Array.isArray(call.input.channels) ? call.input.channels : [];
+        const newAgent = { id, name, role, tier, description, tools, channels };
+
+        // Bug fix 2026-05-15: add_agent_to_team previously ONLY wrote to
+        // user.profile.team (chat profile). The deck Team view and the
+        // documentation ontology read from agent_configs — so new agents
+        // appeared in chat memory but were invisible everywhere else.
+        // Now: also INSERT into agent_configs and regen the documentation
+        // entity so the deck + team_breakdown stay in sync.
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        const persistAgent = async () => {
+          if (!supaUrl || !supaKey) return;
+          try {
+            await fetch(`${supaUrl}/rest/v1/agent_configs`, {
+              method: 'POST',
+              headers: {
+                apikey: supaKey,
+                Authorization: `Bearer ${supaKey}`,
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal,resolution=merge-duplicates',
+              },
+              body: JSON.stringify({
+                tenant_phone: cleanPhone,
+                agent_name: name,
+                agent_role: role,
+                status: 'active',
+                output_channels: channels,
+                model_routing: { primary: tier },
+                governance_rules: [],
+                config: { description, tools, source: 'whatsapp:add_agent_to_team' },
+              }),
+            });
+          } catch (err) {
+            console.warn('[add_agent_to_team] agent_configs insert failed (chat-side still applied):', err);
+          }
         };
 
         const parent = call.input.parentAgentName?.toString().toLowerCase();
@@ -5239,12 +5271,21 @@ export async function executeTool(
           manager.subTeam = sub;
           user.profile.team = team;
           await saveUserContext(user);
+          await persistAgent();
+          // Fire-and-forget regen so doc entity reflects the new team.
+          void regenerateOrgDoc(user.phoneNumber).catch((err) =>
+            console.warn('[add_agent_to_team] regen failed:', err),
+          );
           return { content: `Added ${name} (${role}) under ${manager.name}. ${manager.name}'s team is now ${sub.count}.`, success: true };
         }
 
         team.push(newAgent as any);
         user.profile.team = team;
         await saveUserContext(user);
+        await persistAgent();
+        void regenerateOrgDoc(user.phoneNumber).catch((err) =>
+          console.warn('[add_agent_to_team] regen failed:', err),
+        );
         return { content: `Added ${name} (${role}) as a top-level agent on the team.`, success: true };
       }
 
@@ -5339,6 +5380,11 @@ export async function executeTool(
         }
         user.profile.team = team;
         await saveUserContext(user);
+        // Regen docs so the deck + documentation entity reflect the rename
+        // or role/channel changes. Fire-and-forget — never block on this.
+        void regenerateOrgDoc(user.phoneNumber).catch((err) =>
+          console.warn('[update_agent] regen failed:', err),
+        );
         return { content: `Updated ${oldName}${newName ? ` (now "${newName}")` : ''}: ${changes.join('; ')}.`, success: true };
       }
 
@@ -5399,6 +5445,39 @@ export async function executeTool(
         const target = call.input.agentName?.toString().toLowerCase();
         if (!target) return { content: 'Missing agentName.', success: false };
 
+        // Bug fix 2026-05-15: removal previously ONLY touched the chat
+        // profile. The deck Team view and the documentation entity read
+        // agent_configs — so removed agents kept showing on the deck.
+        // Mark them status='removed' (soft delete preserves history for
+        // audit + lets the agent be reinstated). Then regen the doc.
+        const removeFromAgentConfigs = async (agentName: string) => {
+          const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+          if (!supaUrl || !supaKey) return;
+          const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+          try {
+            await fetch(
+              `${supaUrl}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&agent_name=eq.${encodeURIComponent(agentName)}`,
+              {
+                method: 'PATCH',
+                headers: {
+                  apikey: supaKey,
+                  Authorization: `Bearer ${supaKey}`,
+                  'Content-Type': 'application/json',
+                  Prefer: 'return=minimal',
+                },
+                body: JSON.stringify({ status: 'removed' }),
+              },
+            );
+          } catch (err) {
+            console.warn('[remove_agent_from_team] agent_configs soft-delete failed:', err);
+          }
+        };
+        const triggerRegen = () =>
+          void regenerateOrgDoc(user.phoneNumber).catch((err) =>
+            console.warn('[remove_agent_from_team] regen failed:', err),
+          );
+
         const topIdx = team.findIndex((a) => a.name?.toLowerCase() === target || a.id?.toLowerCase() === target);
         if (topIdx >= 0) {
           if (team[topIdx]?.required) {
@@ -5407,6 +5486,8 @@ export async function executeTool(
           const removed = team.splice(topIdx, 1)[0];
           user.profile.team = team;
           await saveUserContext(user);
+          if (removed?.name) await removeFromAgentConfigs(removed.name);
+          triggerRegen();
           return { content: `Removed ${removed?.name} from the team.`, success: true };
         }
         for (const a of team) {
@@ -5417,6 +5498,8 @@ export async function executeTool(
             a.subTeam.count = a.subTeam.agents.length;
             user.profile.team = team;
             await saveUserContext(user);
+            if (removed?.name) await removeFromAgentConfigs(removed.name);
+            triggerRegen();
             return { content: `Removed ${removed?.name} from ${a.name}'s sub-team.`, success: true };
           }
         }
