@@ -48,7 +48,19 @@ export async function uploadGeneratedDoc(input: {
         'Content-Type': input.mimeType,
         'x-upsert': 'false',
       },
-      body: new Blob([input.buffer.buffer as ArrayBuffer], { type: input.mimeType }),
+      // CRITICAL: Node.js Buffer.from() uses a SHARED 8KB pool for small
+      // buffers — `buffer.buffer` is the entire pool, not just our bytes.
+      // Using `buffer.buffer` directly uploads ~8KB of garbage padding to
+      // every doc (caught by /api/admin/probe-storage: 30 bytes in, 8190
+      // bytes out). Copy into a fresh, non-pooled Uint8Array so only OUR
+      // bytes get uploaded. (Buffer itself can't be a BlobPart under
+      // strict TS because its underlying ArrayBufferLike isn't narrowed
+      // to ArrayBuffer.)
+      body: (() => {
+        const view = new Uint8Array(input.buffer.byteLength);
+        view.set(input.buffer);
+        return new Blob([view], { type: input.mimeType });
+      })(),
     });
     if (!uploadRes.ok) {
       const body = await uploadRes.text().catch(() => '<no body>');
