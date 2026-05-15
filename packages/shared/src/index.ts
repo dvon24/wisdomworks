@@ -208,7 +208,7 @@ export type {
 } from './integrations';
 
 // Provider namespaces for the agent-tools executors (each is `import * as`-style).
-export { googleSearchConsole, googleAnalytics, gmail } from './integrations';
+export { googleSearchConsole, googleAnalytics, googleSheets, gmail } from './integrations';
 export {
   listEmails,
   sendEmail,

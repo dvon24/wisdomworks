@@ -1705,6 +1705,52 @@ const TOOL_GET_SEARCH_CONSOLE_DATA: AnthropicTool = {
   },
 };
 
+const TOOL_LIST_SHEETS: AnthropicTool = {
+  name: 'list_sheets',
+  description:
+    "List the owner's Google Spreadsheets, recent first. Optional `query` substring matches the file name. Use when the owner says 'show my sheets' or 'find my budget spreadsheet'. Returns each sheet's id (use for read_sheet / append_sheet_rows), name, last-modified time, and web URL.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Optional filename substring filter (e.g. "budget").' },
+      limit: { type: 'number', description: 'Default 25, max 100.' },
+    },
+  },
+};
+
+const TOOL_READ_SHEET: AnthropicTool = {
+  name: 'read_sheet',
+  description:
+    "Read cells from a Google Sheet. spreadsheet_id from list_sheets. range uses A1 notation: 'Sheet1' for the whole tab, 'Sheet1!A1:C10' for a bounded range, 'A1:C10' for the first sheet. Returns the cell values as a 2D array. Use to pull tracking data, budget rows, anything Mira (or the owner) needs to reason about.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      spreadsheet_id: { type: 'string', description: "Sheet id from list_sheets (or a Google Sheets URL — the long string after /d/)." },
+      range: { type: 'string', description: "A1-notation range. Default 'Sheet1' for the whole first tab." },
+    },
+    required: ['spreadsheet_id'],
+  },
+};
+
+const TOOL_APPEND_SHEET_ROWS: AnthropicTool = {
+  name: 'append_sheet_rows',
+  description:
+    "Append rows to a Google Sheet. The new rows go after the last row with data in the matching range. Each row is an array of cell values. Use for budget tracking, log entries, expense capture — anything Mira (Financial Advisor) or the owner wants persisted in a sheet. Requires the spreadsheets write scope; if the owner's Google connection only has drive.readonly, this will 403 and the error will tell them to reconnect.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      spreadsheet_id: { type: 'string', description: 'Sheet id from list_sheets.' },
+      range: { type: 'string', description: "Tab + range to append to, e.g. 'Sheet1!A:C'. The append finds the last row of data within this range and inserts new rows beneath it." },
+      values: {
+        type: 'array',
+        description: "2D array — each inner array is one row of cells. Numbers, strings, and booleans are all accepted. Formulas (e.g. '=SUM(A1:A5)') are evaluated by Sheets.",
+        items: { type: 'array', items: {} },
+      },
+    },
+    required: ['spreadsheet_id', 'range', 'values'],
+  },
+};
+
 const TOOL_GET_ANALYTICS_DATA: AnthropicTool = {
   name: 'get_analytics_data',
   description:
@@ -2159,6 +2205,13 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   }
   if (conns.some((c) => c.provider === 'google' && c.service === 'analytics')) {
     tools.push(TOOL_GET_ANALYTICS_DATA);
+  }
+  // Sheets — Mira (Financial Advisor) needs read+write to track budgets.
+  // Surface only when sheets scope was granted.
+  if (conns.some((c) => c.provider === 'google' && c.service === 'sheets')) {
+    tools.push(TOOL_LIST_SHEETS);
+    tools.push(TOOL_READ_SHEET);
+    tools.push(TOOL_APPEND_SHEET_ROWS);
   }
 
   return tools;
@@ -5535,6 +5588,86 @@ export async function executeTool(
           return { content: `${header}\n\n${lines.join('\n')}`, success: true };
         } catch (err) {
           return { content: `GA tool error: ${err}`, success: false };
+        }
+      }
+
+      case 'list_sheets': {
+        const conn = (connections as any[]).find((c) => c.provider === 'google' && c.service === 'sheets');
+        if (!conn) {
+          return { content: 'Google Sheets not connected. Owner needs to reconnect Google in the deck to grant the spreadsheets scope.', success: false };
+        }
+        const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+        try {
+          const { googleSheets } = await import('@wisdomworks/shared');
+          const query = call.input.query ? String(call.input.query).trim() : undefined;
+          const limit = typeof call.input.limit === 'number' ? Math.min(call.input.limit, 100) : 25;
+          const r = await googleSheets.listSpreadsheets(ctx, { query, limit });
+          if (!r.success || !r.data) return { content: `List sheets failed: ${r.error}`, success: false };
+          if (r.data.length === 0) {
+            return { content: query ? `No spreadsheets matched "${query}".` : 'No spreadsheets found in this Google account.', success: true };
+          }
+          const lines = r.data.map((s, i) => `  ${i + 1}. ${s.name}\n     id: ${s.id}\n     modified: ${new Date(s.modifiedTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}\n     ${s.webViewLink}`);
+          return { content: `${r.data.length} spreadsheet${r.data.length === 1 ? '' : 's'}:\n\n${lines.join('\n\n')}`, success: true };
+        } catch (err) {
+          return { content: `Sheets list error: ${err}`, success: false };
+        }
+      }
+
+      case 'read_sheet': {
+        const conn = (connections as any[]).find((c) => c.provider === 'google' && c.service === 'sheets');
+        if (!conn) {
+          return { content: 'Google Sheets not connected. Owner needs to reconnect Google in the deck to grant the spreadsheets scope.', success: false };
+        }
+        const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+        // Accept either a raw id or a Google Sheets URL — extract the id
+        // from URLs like https://docs.google.com/spreadsheets/d/<ID>/...
+        let spreadsheetId = String(call.input.spreadsheet_id ?? '').trim();
+        const urlMatch = spreadsheetId.match(/\/d\/([a-zA-Z0-9_-]+)/);
+        if (urlMatch) spreadsheetId = urlMatch[1]!;
+        if (!spreadsheetId) return { content: 'spreadsheet_id required.', success: false };
+        const range = String(call.input.range ?? 'Sheet1').trim();
+        try {
+          const { googleSheets } = await import('@wisdomworks/shared');
+          const r = await googleSheets.readRange(ctx, spreadsheetId, range);
+          if (!r.success || !r.data) return { content: `Read sheet failed: ${r.error}`, success: false };
+          const rows = r.data.values;
+          if (rows.length === 0) return { content: `Range "${range}" is empty.`, success: true };
+          // Render as a simple table preview, capped at 50 rows + 8 cols.
+          const previewRows = rows.slice(0, 50).map((row) =>
+            row.slice(0, 8).map((c) => String(c ?? '').slice(0, 60)).join(' | '),
+          );
+          const truncNote = rows.length > 50 ? `\n[showing 50 of ${rows.length} rows]` : '';
+          return { content: `Range ${r.data.range}:\n\n${previewRows.join('\n')}${truncNote}`, success: true };
+        } catch (err) {
+          return { content: `Sheets read error: ${err}`, success: false };
+        }
+      }
+
+      case 'append_sheet_rows': {
+        const conn = (connections as any[]).find((c) => c.provider === 'google' && c.service === 'sheets');
+        if (!conn) {
+          return { content: 'Google Sheets not connected. Owner needs to reconnect Google in the deck to grant the spreadsheets scope.', success: false };
+        }
+        const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata };
+        let spreadsheetId = String(call.input.spreadsheet_id ?? '').trim();
+        const urlMatch = spreadsheetId.match(/\/d\/([a-zA-Z0-9_-]+)/);
+        if (urlMatch) spreadsheetId = urlMatch[1]!;
+        if (!spreadsheetId) return { content: 'spreadsheet_id required.', success: false };
+        const range = String(call.input.range ?? 'Sheet1!A:Z').trim();
+        const values = call.input.values;
+        if (!Array.isArray(values) || values.length === 0) {
+          return { content: 'values must be a non-empty 2D array (each inner array = one row).', success: false };
+        }
+        try {
+          const { googleSheets } = await import('@wisdomworks/shared');
+          const r = await googleSheets.appendRows(ctx, spreadsheetId, range, values as any[][]);
+          if (!r.success || !r.data) return { content: `Append failed: ${r.error}`, success: false };
+          return {
+            content: `✓ Appended ${r.data.updatedRows} row${r.data.updatedRows === 1 ? '' : 's'} to ${r.data.updatedRange}.`,
+            success: true,
+          };
+        } catch (err) {
+          return { content: `Sheets append error: ${err}`, success: false };
         }
       }
 

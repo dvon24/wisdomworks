@@ -30,6 +30,10 @@ const SCOPES = [
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/webmasters.readonly',
   'https://www.googleapis.com/auth/analytics.readonly',
+  // Sheets read+write — added 2026-05-15 for Mira (Financial Advisor)
+  // who needs to read tracking sheets and append rows. Tenants
+  // connected before this scope was added need to reconnect to grant.
+  'https://www.googleapis.com/auth/spreadsheets',
 ];
 
 export async function GET(request: Request) {

@@ -22,6 +22,7 @@ const SERVICE_SCOPE_MAP: Array<{ service: string; scopeNeedle: string }> = [
   { service: 'drive', scopeNeedle: 'drive.readonly' },
   { service: 'search_console', scopeNeedle: 'webmasters' },
   { service: 'analytics', scopeNeedle: 'analytics.readonly' },
+  { service: 'sheets', scopeNeedle: 'spreadsheets' },
 ];
 
 export async function GET(request: Request) {
