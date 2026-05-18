@@ -547,6 +547,19 @@ export default function CommandDeck() {
 
         <div style={{ flex: 1 }} />
 
+        {/* Link to the persistent "What Iris Has Learned About You"
+            deck page (Package 1 of the unified trust model — see
+            project_unified_trust_model.md). The page is its own
+            route; opens in same tab. */}
+        <a
+          href={phoneNumber ? `/iris-profile?phone=${encodeURIComponent(phoneNumber)}` : '/iris-profile'}
+          className="pill"
+          style={{ cursor: 'pointer', textDecoration: 'none', marginRight: 6, color: 'var(--text-dim)' }}
+          title="What Iris has learned about you"
+        >
+          What Iris knows
+        </a>
+
         <button
           type="button"
           className="pill info"
