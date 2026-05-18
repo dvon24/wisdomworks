@@ -1658,6 +1658,29 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Package 3 — promotion candidates (unified trust model) ────────────
+
+const TOOL_LIST_PROMOTION_CANDIDATES: AnthropicTool = {
+  name: 'list_promotion_candidates',
+  description:
+    "List agents who have EARNED a promotion to a higher autonomy level based on their recent activity, approval rate, proven techniques, owner praise, and clean correction record. Use when owner asks 'who should I promote', 'which agents are ready for more autonomy', 'show me promotion candidates', 'who's earned more trust'. Each candidate comes with the evidence packet (why they qualify) so the owner can decide. If no candidates exist, says so — being explicit about it is important since silence is ambiguous.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_APPROVE_PROMOTION: AnthropicTool = {
+  name: 'approve_promotion',
+  description:
+    "Approve a promotion candidate, bumping an agent's autonomy level. Use when owner says 'promote Marcus', 'yes, level Riley up', 'approve the L3 for Alex', 'promote that one'. Pass the agent's exact name AND the target level (must match what list_promotion_candidates suggested — owner cannot skip levels via this tool). The change takes effect on the agent's next tick.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentName: { type: 'string', description: "Exact agent name as it appears on the team." },
+      targetAutonomy: { type: 'string', enum: ['L2', 'L3', 'L4'], description: 'Target level — must match the level the promotion-candidate cron proposed.' },
+    },
+    required: ['agentName', 'targetAutonomy'],
+  },
+};
+
 // ─── Per-agent SOP viewer (owner-disposition epic, follow-up) ──────────
 
 const TOOL_SHOW_AGENT_SOP: AnthropicTool = {
@@ -2263,6 +2286,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_CONSULT_MANAGER);
   tools.push(TOOL_DISPATCH_TO_AGENTS);
   tools.push(TOOL_SHOW_AGENT_SOP);
+  tools.push(TOOL_LIST_PROMOTION_CANDIDATES);
+  tools.push(TOOL_APPROVE_PROMOTION);
   tools.push(TOOL_CONNECT_SERVICE);
   tools.push(TOOL_LIST_SNAPSHOTS);
   tools.push(TOOL_ROLLBACK_STATE);
@@ -5980,6 +6005,67 @@ export async function executeTool(
           };
         }
         return { content: renderSopForChat(sop), success: true };
+      }
+
+      case 'list_promotion_candidates': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const { scoreAllAgentsForPromotion } = await import('../../_lib/promotion-candidates');
+        const candidates = await scoreAllAgentsForPromotion(cleanPhone);
+        if (candidates.length === 0) {
+          return {
+            content: "No agents have earned a promotion right now. The candidacy cron checks weekly using approval rate + proven techniques + owner affirmations + correction history. Use show_agent_sop to see where each agent is on their trust ladder.",
+            success: true,
+          };
+        }
+        const lines = [`📈 ${candidates.length} promotion candidate${candidates.length === 1 ? '' : 's'}:`];
+        for (const c of candidates) {
+          lines.push('', `**${c.agent_name}** (${c.agent_role}) — ${c.current_autonomy} → ${c.candidate_autonomy}`);
+          lines.push(`   ${c.reason}`);
+        }
+        lines.push('', 'Reply "promote <agent> to <level>" to approve, or "show me X\'s SOP" to dig in first.');
+        return { content: lines.join('\n'), success: true };
+      }
+
+      case 'approve_promotion': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const agentName = String(call.input.agentName ?? '').trim();
+        const targetAutonomy = String(call.input.targetAutonomy ?? '').trim();
+        if (!agentName) return { content: 'Missing agentName.', success: false };
+        if (!['L2', 'L3', 'L4'].includes(targetAutonomy)) {
+          return { content: `Invalid targetAutonomy "${targetAutonomy}" — must be L2, L3, or L4.`, success: false };
+        }
+        const { applyPromotion } = await import('../../_lib/promotion-candidates');
+        const applied = await applyPromotion(cleanPhone, agentName, targetAutonomy as 'L2' | 'L3' | 'L4');
+        if (!applied) {
+          return { content: `Promotion failed — couldn't find ${agentName} or write to agent_configs.`, success: false };
+        }
+        // Close the matching insight so it stops surfacing.
+        try {
+          const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+          if (supaUrl && supaKey) {
+            const sig = `promotion.${agentName.toLowerCase()}.${targetAutonomy}`;
+            await fetch(
+              `${supaUrl}/rest/v1/business_insights?tenant_phone=eq.${cleanPhone}&signature=eq.${encodeURIComponent(sig)}&status=eq.proposed`,
+              {
+                method: 'PATCH',
+                headers: {
+                  apikey: supaKey,
+                  Authorization: `Bearer ${supaKey}`,
+                  'Content-Type': 'application/json',
+                  Prefer: 'return=minimal',
+                },
+                body: JSON.stringify({ status: 'executed' }),
+              },
+            );
+          }
+        } catch {}
+        return {
+          content: `✓ ${agentName} promoted to ${applied}. The new autonomy takes effect on their next tick (~15 min).`,
+          success: true,
+        };
       }
 
       case 'connect_service': {
