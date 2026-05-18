@@ -1815,14 +1815,16 @@ const TOOL_SHOW_EMAIL_INDEXING_PREFS: AnthropicTool = {
 const TOOL_UPDATE_EMAIL_INDEXING_PREFS: AnthropicTool = {
   name: 'update_email_indexing_prefs',
   description:
-    "Update the owner's privacy controls on sent-email indexing. Use when owner says 'don't index my attorney's emails', 'add doctor@kp.org to my email deny list', 'stop indexing anything to mybank.com', 'pause sent-email indexing', 'remove ron@law.com from the deny list', 'turn email indexing back on'. Pass `addAddresses` / `addDomains` to add to the deny list, `removeAddresses` / `removeDomains` to take them off, and `enable` to toggle the master switch. Adding a rule also retroactively deletes any previously-indexed chunks matching that recipient.",
+    "Update the owner's privacy controls on email indexing. Two separate master switches (sent + received) and a shared deny list (deny rules apply to BOTH directions — denying 'kp.org' blocks mail TO kp.org addresses AND mail FROM them). Use when owner says 'don't index my attorney's emails', 'add doctor@kp.org to my email deny list', 'stop indexing anything to/from mybank.com', 'pause sent-email indexing', 'pause inbox indexing', 'remove ron@law.com from the deny list', 'turn all email indexing back on'. Pass `addAddresses` / `addDomains` to add to the deny list, `removeAddresses` / `removeDomains` to take them off, and `enableSent` / `enableReceived` to toggle each master switch. Adding a rule also retroactively deletes any previously-indexed chunks matching that contact.",
   input_schema: {
     type: 'object',
     properties: {
-      enable: { type: 'boolean', description: 'Master switch — true to enable sent-email indexing, false to pause it entirely.' },
-      addAddresses: { type: 'array', items: { type: 'string' }, description: 'Email addresses to add to the deny list (case-insensitive).' },
+      enableSent: { type: 'boolean', description: 'Master switch for SENT-email indexing — true to enable, false to pause entirely.' },
+      enableReceived: { type: 'boolean', description: 'Master switch for RECEIVED-email (inbox) indexing — true to enable, false to pause entirely.' },
+      enable: { type: 'boolean', description: 'DEPRECATED — sets BOTH sent and received together. Prefer enableSent + enableReceived when the owner specifies direction.' },
+      addAddresses: { type: 'array', items: { type: 'string' }, description: 'Email addresses to add to the deny list (case-insensitive). Applies to BOTH directions.' },
       removeAddresses: { type: 'array', items: { type: 'string' }, description: 'Email addresses to remove from the deny list.' },
-      addDomains: { type: 'array', items: { type: 'string' }, description: 'Email domains to add to the deny list (e.g. "kp.org" blocks all addresses ending in @kp.org and @*.kp.org).' },
+      addDomains: { type: 'array', items: { type: 'string' }, description: 'Email domains to add to the deny list (e.g. "kp.org" blocks all addresses ending in @kp.org and @*.kp.org). Applies to BOTH directions.' },
       removeDomains: { type: 'array', items: { type: 'string' }, description: 'Email domains to remove from the deny list.' },
       notes: { type: 'string', description: 'Optional free-form note for the owner\'s reference (why this rule exists).' },
     },
@@ -3001,26 +3003,28 @@ export async function executeTool(
         const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
         const { getEmailIndexingPrefs } = await import('../../_lib/knowledge-base');
         const prefs = await getEmailIndexingPrefs(cleanPhone);
-        // Default state when no row exists yet
-        const enabled = prefs?.sent_emails_enabled ?? true;
+        const sentEnabled = prefs?.sent_emails_enabled ?? true;
+        const receivedEnabled = prefs?.received_emails_enabled ?? true;
         const denyAddrs = prefs?.deny_addresses ?? [];
         const denyDomains = prefs?.deny_domains ?? [];
-        const lines: string[] = [`📧 Sent-email indexing privacy controls:`];
-        lines.push(`   Status: ${enabled ? '✓ enabled' : '✗ paused'}`);
+        const lines: string[] = [`📧 Email indexing privacy controls:`];
+        lines.push(`   Sent-email indexing: ${sentEnabled ? '✓ enabled' : '✗ paused'}`);
+        lines.push(`   Inbox indexing: ${receivedEnabled ? '✓ enabled' : '✗ paused'}`);
         if (denyAddrs.length === 0 && denyDomains.length === 0) {
-          lines.push('   Deny list: empty — all sent emails are indexed (with PII redaction).');
+          lines.push('   Deny list: empty — all enabled directions are indexed (with PII redaction).');
         } else {
+          lines.push('   Deny list (applies to BOTH directions):');
           if (denyAddrs.length > 0) {
-            lines.push(`   Excluded addresses (${denyAddrs.length}):`);
-            for (const a of denyAddrs) lines.push(`      • ${a}`);
+            lines.push(`     Addresses (${denyAddrs.length}):`);
+            for (const a of denyAddrs) lines.push(`        • ${a}`);
           }
           if (denyDomains.length > 0) {
-            lines.push(`   Excluded domains (${denyDomains.length}):`);
-            for (const d of denyDomains) lines.push(`      • @${d} (and subdomains)`);
+            lines.push(`     Domains (${denyDomains.length}):`);
+            for (const d of denyDomains) lines.push(`        • @${d} (and subdomains)`);
           }
         }
         if (prefs?.notes) lines.push(`   Notes: ${prefs.notes}`);
-        lines.push('', 'Adjust with update_email_indexing_prefs ("don\'t index emails to X", "remove X from deny list", "pause indexing").');
+        lines.push('', 'Adjust with update_email_indexing_prefs ("don\'t index emails to/from X", "pause inbox indexing", "remove X from deny list").');
         return { content: lines.join('\n'), success: true };
       }
 
@@ -3036,7 +3040,11 @@ export async function executeTool(
         const removeAddresses = Array.isArray(call.input.removeAddresses) ? call.input.removeAddresses : [];
         const addDomains = Array.isArray(call.input.addDomains) ? call.input.addDomains : [];
         const removeDomains = Array.isArray(call.input.removeDomains) ? call.input.removeDomains : [];
-        const enable = typeof call.input.enable === 'boolean' ? call.input.enable : undefined;
+        // `enable` is the deprecated single-flag shorthand; explicit
+        // enableSent/enableReceived take precedence when present.
+        const enableShorthand = typeof call.input.enable === 'boolean' ? call.input.enable : undefined;
+        const enableSent = typeof call.input.enableSent === 'boolean' ? call.input.enableSent : enableShorthand;
+        const enableReceived = typeof call.input.enableReceived === 'boolean' ? call.input.enableReceived : enableShorthand;
         const notes = typeof call.input.notes === 'string' ? call.input.notes : undefined;
 
         const added: string[] = [];
@@ -3065,13 +3073,14 @@ export async function executeTool(
         }
 
         const updated = await setEmailIndexingPrefs(cleanPhone, {
-          sent_emails_enabled: enable,
+          sent_emails_enabled: enableSent,
+          received_emails_enabled: enableReceived,
           deny_addresses: Array.from(curAddrs),
           deny_domains: Array.from(curDomains),
           notes,
         });
         if (!updated) {
-          return { content: 'Could not save privacy prefs. Try again, and if it keeps failing, the migration `2026-05-18-email-indexing-prefs.sql` may not be applied yet.', success: false };
+          return { content: 'Could not save privacy prefs. Try again, and if it keeps failing, migrations `2026-05-18-email-indexing-prefs.sql` and `2026-05-18b-received-emails-pref.sql` may not be applied yet.', success: false };
         }
 
         // Retroactive cleanup — purge already-indexed chunks matching
@@ -3087,8 +3096,10 @@ export async function executeTool(
         }
 
         const parts: string[] = [];
-        if (enable === true) parts.push('Sent-email indexing ✓ enabled');
-        if (enable === false) parts.push('Sent-email indexing ✗ paused');
+        if (enableSent === true) parts.push('Sent-email indexing ✓ enabled');
+        if (enableSent === false) parts.push('Sent-email indexing ✗ paused');
+        if (enableReceived === true) parts.push('Inbox indexing ✓ enabled');
+        if (enableReceived === false) parts.push('Inbox indexing ✗ paused');
         if (added.length > 0) parts.push(`Added to deny list: ${added.join(', ')}`);
         if (removed.length > 0) parts.push(`Removed from deny list: ${removed.join(', ')}`);
         if (purgedTotal > 0) parts.push(`Purged ${purgedTotal} previously-indexed chunk${purgedTotal === 1 ? '' : 's'} matching the new rules.`);

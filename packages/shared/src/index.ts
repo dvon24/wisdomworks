@@ -221,6 +221,7 @@ export {
   listCalendarEvents,
   listCalendars,
   listSentEmails,
+  listReceivedEmails,
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,

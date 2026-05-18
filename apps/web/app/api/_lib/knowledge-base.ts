@@ -12,7 +12,7 @@
  */
 
 import { embedBatch, embedText, estimateTokens } from './embeddings';
-import { redactPII, listSentEmails, type OAuthConnection } from '@wisdomworks/shared';
+import { redactPII, listSentEmails, listReceivedEmails, type OAuthConnection } from '@wisdomworks/shared';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -732,11 +732,127 @@ export async function ingestSentEmails(
   return { ingested, skipped, chunks: chunksTotal, redactedAny: redactedAnyCount, denied };
 }
 
+/**
+ * Mirror of ingestSentEmails for INBOX (received) mail. Same PII
+ * redaction, same deny-list filtering (deny "kp.org" blocks mail FROM
+ * kp.org addresses on this path, mail TO them on the sent path), but
+ * gated by a separate `received_emails_enabled` master switch so the
+ * owner can independently toggle each direction.
+ *
+ * Source kind is still 'email' (single bucket for both directions) —
+ * metadata.kind distinguishes 'sent_email' vs 'received_email' for
+ * filtering at query time.
+ */
+export async function ingestReceivedEmails(
+  tenantPhone: string,
+  options: { maxRows?: number } = {},
+): Promise<SentEmailIngestResult> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
+  const maxRows = Math.max(2, Math.min(options.maxRows ?? 100, 100));
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+
+  // Privacy gate — separate master switch from sent emails.
+  const prefs = await getEmailIndexingPrefs(cleanPhone);
+  if (prefs && prefs.received_emails_enabled === false) {
+    return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0, disabled: true };
+  }
+  const denyAddrs = new Set(
+    (prefs?.deny_addresses ?? []).map((a) => a.toLowerCase().trim()).filter(Boolean),
+  );
+  const denyDomains = (prefs?.deny_domains ?? []).map((d) => d.toLowerCase().trim().replace(/^\./, '')).filter(Boolean);
+
+  const connRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/oauth_connections?phone_number=eq.${cleanPhone}&service=eq.email&status=eq.active&provider=eq.google&select=phone_number,provider,service,account_email,access_token,refresh_token,expires_at,metadata`,
+    { headers: headers() },
+  );
+  if (!connRes.ok) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
+  const conns: OAuthConnection[] = await connRes.json();
+  if (conns.length === 0) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
+  const conn = conns[0]!;
+
+  const wmRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${cleanPhone}&source_kind=eq.email&select=source_row_id`,
+    { headers: headers() },
+  );
+  const seen = new Set<string>(
+    wmRes.ok ? ((await wmRes.json()) as Array<{ source_row_id: string }>).map((r) => r.source_row_id) : [],
+  );
+
+  const overFetch = Math.min(100, Math.max(maxRows, seen.size + maxRows));
+  const listed = await listReceivedEmails(conn, { sinceDays: 90, limit: overFetch });
+  if (!listed.success || !listed.data) {
+    return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
+  }
+  if (listed.data.length === 0) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
+
+  let ingested = 0;
+  let skipped = 0;
+  let chunksTotal = 0;
+  let redactedAnyCount = 0;
+  let denied = 0;
+  for (const mail of listed.data) {
+    if (ingested >= maxRows) break;
+    if (seen.has(mail.id)) {
+      skipped++;
+      continue;
+    }
+    // Privacy filter — for received mail, the contact is the SENDER.
+    // Check `from` against deny list.
+    const fromLower = (mail.from ?? '').toLowerCase().trim();
+    const fromBare = fromLower.match(/<([^>]+)>/)?.[1] ?? fromLower;
+    const fromDomain = fromBare.split('@')[1];
+    const isDenied =
+      denyAddrs.has(fromBare) ||
+      (fromDomain ? denyDomains.some((d) => fromDomain === d || fromDomain.endsWith(`.${d}`)) : false);
+    if (isDenied) {
+      denied++;
+      continue;
+    }
+    const rawText = [
+      `From: ${mail.fromName ? `${mail.fromName} <${mail.from}>` : mail.from}`,
+      `Subject: ${mail.subject ?? ''}`,
+      `Received: ${mail.date}`,
+      '',
+      mail.body ?? mail.bodyPreview ?? '',
+    ].join('\n');
+    const { redacted, redactedAny } = redactPII(rawText);
+    if (redactedAny) redactedAnyCount++;
+
+    const receivedDate = new Date(mail.date).toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const written = await ingestBehavioral({
+      tenantPhone: cleanPhone,
+      sourceKind: 'email',
+      sourceRowId: mail.id,
+      sourceName: `Received: ${(mail.subject ?? '(no subject)').slice(0, 80)} (${receivedDate})`,
+      text: redacted,
+      metadata: {
+        kind: 'received_email',
+        received_at: mail.date,
+        sender: fromBare,
+        provider: conn.provider,
+        pii_redacted: redactedAny,
+      },
+    });
+    if (written > 0) {
+      ingested++;
+      chunksTotal += written;
+    }
+  }
+  return { ingested, skipped, chunks: chunksTotal, redactedAny: redactedAnyCount, denied };
+}
+
 // ─── Email indexing preferences (privacy controls) ──────────────────────
 
 export interface EmailIndexingPrefs {
   tenant_phone: string;
   sent_emails_enabled: boolean;
+  /** Added 2026-05-18 — separate master switch for inbox-side indexing
+   *  so owner can independently toggle each direction. Default true. */
+  received_emails_enabled: boolean;
   deny_addresses: string[];
   deny_domains: string[];
   notes?: string;
@@ -771,7 +887,7 @@ export async function getEmailIndexingPrefs(
  */
 export async function setEmailIndexingPrefs(
   tenantPhone: string,
-  patch: Partial<Pick<EmailIndexingPrefs, 'sent_emails_enabled' | 'deny_addresses' | 'deny_domains' | 'notes'>>,
+  patch: Partial<Pick<EmailIndexingPrefs, 'sent_emails_enabled' | 'received_emails_enabled' | 'deny_addresses' | 'deny_domains' | 'notes'>>,
 ): Promise<EmailIndexingPrefs | null> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
   const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
@@ -779,6 +895,7 @@ export async function setEmailIndexingPrefs(
   const body = {
     tenant_phone: cleanPhone,
     sent_emails_enabled: patch.sent_emails_enabled ?? existing?.sent_emails_enabled ?? true,
+    received_emails_enabled: patch.received_emails_enabled ?? existing?.received_emails_enabled ?? true,
     deny_addresses: patch.deny_addresses ?? existing?.deny_addresses ?? [],
     deny_domains: patch.deny_domains ?? existing?.deny_domains ?? [],
     notes: patch.notes ?? existing?.notes ?? null,

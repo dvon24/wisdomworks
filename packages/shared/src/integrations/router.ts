@@ -74,6 +74,21 @@ export async function listSentEmails(
   return { success: false, error: `Sent-mail listing not yet supported for provider: ${conn.provider}` };
 }
 
+/**
+ * List the owner's recent INBOX (received) messages — symmetric to
+ * listSentEmails. Powers received-email indexing so behavioral RAG
+ * covers "what did Ron ask me about the timeline" alongside "what
+ * I told Ron about it." Gmail-only today.
+ */
+export async function listReceivedEmails(
+  conn: OAuthConnection,
+  opts: { sinceDays?: number; limit?: number } = {},
+): Promise<IntegrationResult<EmailMessage[]>> {
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
+  if (conn.provider === 'google') return gmail.listInboxMessages(ctx, opts);
+  return { success: false, error: `Inbox listing not yet supported for provider: ${conn.provider}` };
+}
+
 export async function sendEmail(
   conn: OAuthConnection,
   req: SendEmailRequest,

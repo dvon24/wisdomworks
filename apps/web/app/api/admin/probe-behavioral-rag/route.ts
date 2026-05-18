@@ -23,7 +23,7 @@
  *   - Diagnosing why Iris's recall_from_memory returned nothing
  */
 
-import { ingestKnowledgeAtoms, ingestChatRuns, ingestBusinessInsights, ingestSentEmails, queryKnowledge } from '../../_lib/knowledge-base';
+import { ingestKnowledgeAtoms, ingestChatRuns, ingestBusinessInsights, ingestSentEmails, ingestReceivedEmails, queryKnowledge } from '../../_lib/knowledge-base';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -59,7 +59,8 @@ export async function POST(request: Request) {
     atoms: { ingested: 0, skipped: 0, chunks: 0, error: undefined as string | undefined },
     chat_runs: { ingested: 0, skipped: 0, chunks: 0, error: undefined as string | undefined },
     insights: { ingested: 0, skipped: 0, chunks: 0, error: undefined as string | undefined },
-    sent_emails: { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, error: undefined as string | undefined },
+    sent_emails: { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0, disabled: false, error: undefined as string | undefined },
+    received_emails: { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0, disabled: false, error: undefined as string | undefined },
   };
   try {
     Object.assign(ingest.atoms, await ingestKnowledgeAtoms(cleanPhone, { maxRows }));
@@ -77,10 +78,15 @@ export async function POST(request: Request) {
     ingest.insights.error = err?.message ?? String(err);
   }
   try {
-    // Sent emails capped tighter (provider API + redaction is slower per row)
-    Object.assign(ingest.sent_emails, await ingestSentEmails(cleanPhone, { maxRows: Math.min(maxRows, 10) }));
+    // Email ingestion capped tighter (provider API + redaction is slow per row)
+    Object.assign(ingest.sent_emails, await ingestSentEmails(cleanPhone, { maxRows: Math.min(maxRows, 8) }));
   } catch (err: any) {
     ingest.sent_emails.error = err?.message ?? String(err);
+  }
+  try {
+    Object.assign(ingest.received_emails, await ingestReceivedEmails(cleanPhone, { maxRows: Math.min(maxRows, 8) }));
+  } catch (err: any) {
+    ingest.received_emails.error = err?.message ?? String(err);
   }
 
   let matches: any[] = [];

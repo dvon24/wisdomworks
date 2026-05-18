@@ -248,6 +248,49 @@ export async function listSentMessages(
 }
 
 /**
+ * List the owner's recent INBOX messages — read + unread, last N days.
+ * Mirror of listSentMessages but pulls received mail. Used by the
+ * behavioral RAG pipeline so semantic recall covers what others have
+ * written to the owner ("what did Ron ask me about the timeline")
+ * not just what the owner replied ("what I told Ron").
+ *
+ * Includes archived and read mail (q=in:inbox would miss archived);
+ * we use category:primary as a broader net and let the caller filter.
+ */
+export async function listInboxMessages(
+  ctx: IntegrationContext,
+  opts: { sinceDays?: number; limit?: number } = {},
+): Promise<IntegrationResult<EmailMessage[]>> {
+  try {
+    const sinceDays = opts.sinceDays ?? 90;
+    const limit = Math.min(opts.limit ?? 50, 100);
+    // in:inbox catches read+unread inbox mail; newer_than bounds the window.
+    // Excludes Sent (those are picked up by listSentMessages).
+    const q = `in:inbox newer_than:${sinceDays}d`;
+    const listRes = await googleFetch(
+      ctx,
+      `${GMAIL_BASE}/messages?q=${encodeURIComponent(q)}&maxResults=${limit}`,
+    );
+    if (!listRes.ok) return { success: false, error: `Gmail inbox-list failed: ${listRes.status}` };
+    const listData = await listRes.json();
+    const ids: string[] = (listData.messages ?? []).map((m: any) => m.id);
+    if (ids.length === 0) return { success: true, data: [] };
+
+    const messages = await Promise.all(
+      ids.map(async (id) => {
+        const msgRes = await googleFetch(ctx, `${GMAIL_BASE}/messages/${id}?format=full`);
+        if (!msgRes.ok) return null;
+        const raw = await msgRes.json();
+        return rawToEmail(raw);
+      }),
+    );
+    return { success: true, data: messages.filter((m): m is EmailMessage => m !== null) };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+/**
  * Send an email. Constructs a raw RFC 2822 message and submits to Gmail.
  * Bug fix 2026-05-14: builds multipart/mixed when attachments are present
  * so create_document → send_email chains actually deliver the doc.
