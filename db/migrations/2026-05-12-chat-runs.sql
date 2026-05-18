@@ -1,6 +1,6 @@
 -- Item #3 (monetization sprint): per-action cost transparency.
 --
--- Iris (Sophia's chat brain) is the biggest single token source, but every
+-- Iris (the owner's chat brain) is the biggest single token source, but every
 -- reply only logged to console — invisible to the dashboard and to the
 -- owner. This table captures one row per chat reply (WhatsApp + deck) so
 -- monthly usage actually adds up to the real bill.

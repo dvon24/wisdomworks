@@ -1,11 +1,11 @@
 -- Known people registry.
 --
--- Sophia confused Devon's attorney (Ron) with Alex (the Au7o Director
+-- Iris confused Devon's attorney (Ron) with Alex (the Au7o Director
 -- agent) because there's no entity disambiguation — agents have no
 -- structured concept of who is who in the owner's network.
 --
 -- This table fixes that. Owner can say "Ron Beaman is my attorney" and
--- Sophia stores it. Future prompts inject the list so agents always know
+-- Iris stores it. Future prompts inject the list so agents always know
 -- which name refers to a real person vs another teammate.
 --
 -- Also auto-populated via email-learn cron when signatures parse out

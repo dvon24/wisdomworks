@@ -1,7 +1,7 @@
 -- Phase 2 — Research requests (web search + competitive intelligence).
 --
 -- Any agent can call request_research(topic, why) to ask for outside-the-system
--- research on a topic. Sophia is the designated executor — she picks up
+-- research on a topic. Iris is the designated executor — she picks up
 -- pending requests on her tick, runs the search via Anthropic's web_search
 -- tool, synthesizes a brief, and drops it into the approval queue.
 --

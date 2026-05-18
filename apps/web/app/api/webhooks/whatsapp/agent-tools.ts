@@ -1686,7 +1686,7 @@ const TOOL_APPROVE_PROMOTION: AnthropicTool = {
 const TOOL_SHOW_AGENT_SOP: AnthropicTool = {
   name: 'show_agent_sop',
   description:
-    "Show the owner a synthesized OPERATING MANUAL for one specific agent on the team. Use when owner asks 'what is X actually doing', 'show me Marcus's SOP', 'what has Riley learned', 'how does Alex operate', 'what's Sophia been up to lately'. Synthesizes from the agent's recent ticks (activity log) + lane-scoped proven techniques + guardrails (corrections + disposition rules) + domain-tagged atoms + tools. Pass `mode='narrative'` for a Sonnet-synthesized prose summary (slightly slower but more readable); default `mode='structured'` returns a tighter bullet view.",
+    "Show the owner a synthesized OPERATING MANUAL for one specific agent on the team. Use when owner asks 'what is X actually doing', 'show me Marcus's SOP', 'what has Riley learned', 'how does Alex operate', 'what's Iris been up to lately'. Synthesizes from the agent's recent ticks (activity log) + lane-scoped proven techniques + guardrails (corrections + disposition rules) + domain-tagged atoms + tools. Pass `mode='narrative'` for a Sonnet-synthesized prose summary (slightly slower but more readable); default `mode='structured'` returns a tighter bullet view.",
   input_schema: {
     type: 'object',
     properties: {
@@ -6145,7 +6145,26 @@ export async function executeTool(
       case 'get_search_console_data': {
         const conn = (connections as any[]).find((c) => c.provider === 'google' && c.service === 'search_console');
         if (!conn) {
-          return { content: 'Search Console not connected. Owner needs to reconnect Google in the deck to grant the webmasters.readonly scope.', success: false };
+          // Be specific about WHICH state we're in — owner sees
+          // "GSC connected" on the deck because there's a generic
+          // Google connection, but the search_console-specific row
+          // (with the webmasters.readonly scope) is missing.
+          const hasAnyGoogle = (connections as any[]).some((c) => c.provider === 'google');
+          if (hasAnyGoogle) {
+            const services = (connections as any[])
+              .filter((c) => c.provider === 'google')
+              .map((c) => c.service)
+              .join(', ');
+            return {
+              content:
+                `Google is connected (services: ${services}) but the Search Console scope was NOT granted at consent time. ` +
+                `The deck shows Google as connected for the OTHER services, which is why this looks confusing. ` +
+                `Owner needs to: open the deck → Connections tab → click Reconnect on Google → at the Google consent screen, make sure "View Search Console data for your verified sites" is checked. ` +
+                `After that, a separate connection row appears for Search Console and this tool will work.`,
+              success: false,
+            };
+          }
+          return { content: 'No Google account connected. Owner needs to connect Google in the deck → Connections tab.', success: false };
         }
         // Map OAuthConnection (snake_case from DB) → IntegrationContext
         // (camelCase the adapters expect). The shared router does this

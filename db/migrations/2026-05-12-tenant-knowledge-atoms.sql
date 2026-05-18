@@ -1,10 +1,10 @@
 -- Phase 1A — Conversation-to-knowledge atoms.
 --
--- When the owner texts Sophia about their business (a competitor, a goal,
+-- When the owner texts Iris about their business (a competitor, a goal,
 -- a preference, a person, a constraint), facts get extracted asynchronously
 -- and stored as discrete "atoms" the whole team can read. Today those facts
 -- live only in whatsapp_contexts.conversation_history — opaque to other
--- agents. This makes Sophia's chat compound across the team.
+-- agents. This makes Iris's chat compound across the team.
 --
 -- Each atom is small (1-2 sentences), classified by kind, scored by
 -- confidence, traceable to source. Owner can confirm/correct atoms to

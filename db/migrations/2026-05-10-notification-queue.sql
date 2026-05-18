@@ -2,7 +2,7 @@
 --
 -- Every proactive WhatsApp push - escalations, email-attention digests,
 -- follow-up prompts, briefing items - lands here instead of being sent
--- as a separate text. Sophia's digest synthesizer drains the queue and
+-- as a separate text. Iris's digest synthesizer drains the queue and
 -- bundles everything into ONE structured message:
 --
 --   Important
