@@ -229,36 +229,71 @@ export async function ingestKnowledgeAtoms(
   options: { maxRows?: number } = {},
 ): Promise<{ ingested: number; skipped: number; chunks: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
-  const maxRows = Math.max(1, Math.min(options.maxRows ?? 500, 500));
-  // Pull all live atoms for this tenant. The real table is
-  // tenant_knowledge_atoms (not knowledge_atoms) — earlier draft used the
-  // wrong name and PostgREST returned an empty 200 instead of an error
-  // because the path "knowledge_atoms" was treated as "no such resource".
-  const atomsRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/tenant_knowledge_atoms?tenant_phone=eq.${tenantPhone}&status=eq.active&select=id,kind,content,tags,owner_confirmed,updated_at&order=updated_at.desc&limit=${maxRows}`,
-    { headers: headers() },
-  );
-  if (!atomsRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
-  const atoms: Array<{ id: string; kind: string; content: string; tags?: string[]; owner_confirmed?: boolean; updated_at: string }> =
-    await atomsRes.json();
-  if (atoms.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
+  // maxRows is the TOTAL embed budget per call. Split half for forward fill
+  // (atoms updated since last ingest) and half for backfill (older atoms
+  // that haven't been ingested yet) so each cron run progresses both ends.
+  const maxRows = Math.max(2, Math.min(options.maxRows ?? 500, 500));
+  const half = Math.ceil(maxRows / 2);
 
-  // Watermark: chunks already ingested for this kind, keyed by source_row_id.
+  // Watermark map (source_row_id → last ingested timestamp) for the
+  // updated-since check used by the forward pass.
   const wmRes = await fetch(
     `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${tenantPhone}&source_kind=eq.atom&select=source_row_id,updated_at`,
     { headers: headers() },
   );
   const wmRows: Array<{ source_row_id: string; updated_at: string }> = wmRes.ok ? await wmRes.json() : [];
   const wm = new Map<string, number>();
+  const seenIds = new Set<string>();
   for (const r of wmRows) {
+    seenIds.add(r.source_row_id);
     const ts = new Date(r.updated_at).getTime();
     if (ts > (wm.get(r.source_row_id) ?? 0)) wm.set(r.source_row_id, ts);
   }
 
+  // FORWARD PASS — atoms with updated_at greater than our chunk's
+  // updated_at (recent edits + brand-new atoms). Pulled DESC.
+  // BACKFILL PASS — atoms whose id has NEVER been ingested. Pulled ASC
+  // so the oldest unseen atoms come first; each run nibbles further back.
+  // We over-fetch by 2× seen size on both sides so we always have enough
+  // headroom to find `half` unseen rows even when the boundary is dense
+  // with already-seen IDs.
+  const overFetch = Math.min(500, Math.max(half, seenIds.size * 2 + half));
+  const [recentRes, oldestRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/tenant_knowledge_atoms?tenant_phone=eq.${tenantPhone}&status=eq.active&select=id,kind,content,tags,owner_confirmed,updated_at&order=updated_at.desc&limit=${overFetch}`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/tenant_knowledge_atoms?tenant_phone=eq.${tenantPhone}&status=eq.active&select=id,kind,content,tags,owner_confirmed,updated_at&order=updated_at.asc&limit=${overFetch}`,
+      { headers: headers() },
+    ),
+  ]);
+  if (!recentRes.ok && !oldestRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
+  const recent: Array<{ id: string; kind: string; content: string; tags?: string[]; owner_confirmed?: boolean; updated_at: string }> =
+    recentRes.ok ? await recentRes.json() : [];
+  const oldest: typeof recent = oldestRes.ok ? await oldestRes.json() : [];
+
+  // De-dup across the two query results (small atom collections may
+  // overlap entirely).
+  const candidates: typeof recent = [];
+  const candidateIds = new Set<string>();
+  for (const a of recent) {
+    if (candidateIds.has(a.id)) continue;
+    candidateIds.add(a.id);
+    candidates.push(a);
+  }
+  for (const a of oldest) {
+    if (candidateIds.has(a.id)) continue;
+    candidateIds.add(a.id);
+    candidates.push(a);
+  }
+  if (candidates.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
+
   let ingested = 0;
   let skipped = 0;
   let chunksTotal = 0;
-  for (const atom of atoms) {
+  for (const atom of candidates) {
+    if (ingested >= maxRows) break;
     const atomTs = new Date(atom.updated_at).getTime();
     if ((wm.get(atom.id) ?? 0) >= atomTs) {
       skipped++;
@@ -300,14 +335,33 @@ export async function ingestBusinessInsights(
   options: { maxRows?: number } = {},
 ): Promise<{ ingested: number; skipped: number; chunks: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
-  const maxRows = Math.max(1, Math.min(options.maxRows ?? 300, 300));
+  const maxRows = Math.max(2, Math.min(options.maxRows ?? 300, 300));
   const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
-  const insRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/business_insights?tenant_phone=eq.${tenantPhone}&detected_at=gte.${since}&select=id,detector,severity,title,why,recommended_action,expected_impact,status,detected_at&order=detected_at.desc&limit=${maxRows}`,
+
+  const wmRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${tenantPhone}&source_kind=eq.insight&select=source_row_id`,
     { headers: headers() },
   );
-  if (!insRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
-  const insights: Array<{
+  const seen = new Set<string>(
+    wmRes.ok ? ((await wmRes.json()) as Array<{ source_row_id: string }>).map((r) => r.source_row_id) : [],
+  );
+  const half = Math.ceil(maxRows / 2);
+  const overFetch = Math.min(500, Math.max(half, seen.size * 2 + half));
+
+  // Two-pass: newest (forward fill) + oldest unseen (backfill). Same
+  // pattern as ingestKnowledgeAtoms — see comments there for rationale.
+  const [recentRes, oldestRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/business_insights?tenant_phone=eq.${tenantPhone}&detected_at=gte.${since}&select=id,detector,severity,title,why,recommended_action,expected_impact,status,detected_at&order=detected_at.desc&limit=${overFetch}`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/business_insights?tenant_phone=eq.${tenantPhone}&detected_at=gte.${since}&select=id,detector,severity,title,why,recommended_action,expected_impact,status,detected_at&order=detected_at.asc&limit=${overFetch}`,
+      { headers: headers() },
+    ),
+  ]);
+  if (!recentRes.ok && !oldestRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
+  const recent: Array<{
     id: string;
     detector: string;
     severity: string;
@@ -317,21 +371,28 @@ export async function ingestBusinessInsights(
     expected_impact?: string;
     status: string;
     detected_at: string;
-  }> = await insRes.json();
-  if (insights.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
+  }> = recentRes.ok ? await recentRes.json() : [];
+  const oldest: typeof recent = oldestRes.ok ? await oldestRes.json() : [];
 
-  const wmRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${tenantPhone}&source_kind=eq.insight&select=source_row_id`,
-    { headers: headers() },
-  );
-  const seen = new Set<string>(
-    wmRes.ok ? ((await wmRes.json()) as Array<{ source_row_id: string }>).map((r) => r.source_row_id) : [],
-  );
+  const candidates: typeof recent = [];
+  const candidateIds = new Set<string>();
+  for (const i of recent) {
+    if (candidateIds.has(i.id)) continue;
+    candidateIds.add(i.id);
+    candidates.push(i);
+  }
+  for (const i of oldest) {
+    if (candidateIds.has(i.id)) continue;
+    candidateIds.add(i.id);
+    candidates.push(i);
+  }
+  if (candidates.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
 
   let ingested = 0;
   let skipped = 0;
   let chunksTotal = 0;
-  for (const ins of insights) {
+  for (const ins of candidates) {
+    if (ingested >= maxRows) break;
     if (seen.has(ins.id)) {
       skipped++;
       continue;
@@ -379,23 +440,8 @@ export async function ingestChatRuns(
   options: { maxRows?: number } = {},
 ): Promise<{ ingested: number; skipped: number; chunks: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0 };
-  const maxRows = Math.max(1, Math.min(options.maxRows ?? 300, 300));
+  const maxRows = Math.max(2, Math.min(options.maxRows ?? 300, 300));
   const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-  // chat_runs uses `started_at`, not `created_at` — earlier draft had
-  // the wrong column name and PostgREST 400'd the request, causing the
-  // fetch to !ok and the function to silently return 0/0/0.
-  const runsRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/chat_runs?tenant_phone=eq.${tenantPhone}&started_at=gte.${since}&select=id,user_message_preview,assistant_reply_preview,started_at&order=started_at.desc&limit=${maxRows}`,
-    { headers: headers() },
-  );
-  if (!runsRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
-  const runs: Array<{
-    id: string;
-    user_message_preview?: string;
-    assistant_reply_preview?: string;
-    started_at: string;
-  }> = await runsRes.json();
-  if (runs.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
 
   const wmRes = await fetch(
     `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${tenantPhone}&source_kind=eq.conversation&select=source_row_id`,
@@ -404,11 +450,52 @@ export async function ingestChatRuns(
   const seen = new Set<string>(
     wmRes.ok ? ((await wmRes.json()) as Array<{ source_row_id: string }>).map((r) => r.source_row_id) : [],
   );
+  const half = Math.ceil(maxRows / 2);
+  const overFetch = Math.min(500, Math.max(half, seen.size * 2 + half));
+
+  // Two-pass: forward fill (most recent chat_runs) + backfill (oldest
+  // unseen). With only forward fill the cron would index the last 30
+  // chats and never touch older history — owner queries about anything
+  // from a month ago would miss. The backfill pass walks oldest-first
+  // and nibbles further back each run until caught up.
+  const [recentRes, oldestRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/chat_runs?tenant_phone=eq.${tenantPhone}&started_at=gte.${since}&select=id,user_message_preview,assistant_reply_preview,started_at&order=started_at.desc&limit=${overFetch}`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/chat_runs?tenant_phone=eq.${tenantPhone}&started_at=gte.${since}&select=id,user_message_preview,assistant_reply_preview,started_at&order=started_at.asc&limit=${overFetch}`,
+      { headers: headers() },
+    ),
+  ]);
+  if (!recentRes.ok && !oldestRes.ok) return { ingested: 0, skipped: 0, chunks: 0 };
+  const recent: Array<{
+    id: string;
+    user_message_preview?: string;
+    assistant_reply_preview?: string;
+    started_at: string;
+  }> = recentRes.ok ? await recentRes.json() : [];
+  const oldest: typeof recent = oldestRes.ok ? await oldestRes.json() : [];
+
+  const candidates: typeof recent = [];
+  const candidateIds = new Set<string>();
+  for (const r of recent) {
+    if (candidateIds.has(r.id)) continue;
+    candidateIds.add(r.id);
+    candidates.push(r);
+  }
+  for (const r of oldest) {
+    if (candidateIds.has(r.id)) continue;
+    candidateIds.add(r.id);
+    candidates.push(r);
+  }
+  if (candidates.length === 0) return { ingested: 0, skipped: 0, chunks: 0 };
 
   let ingested = 0;
   let skipped = 0;
   let chunksTotal = 0;
-  for (const run of runs) {
+  for (const run of candidates) {
+    if (ingested >= maxRows) break;
     if (seen.has(run.id)) {
       skipped++;
       continue;
