@@ -1694,15 +1694,21 @@ const TOOL_APPROVE_PROMOTION: AnthropicTool = {
 const TOOL_ADMIN_DEDUPE_AGENTS: AnthropicTool = {
   name: 'admin_dedupe_agents',
   description:
-    "PLATFORM-OWNER ONLY. Dedupes duplicate agent_configs rows for a tenant — when the deck shows the same agent twice (e.g. '3 Mira's'), this runs the cleanup. Keeps the OLDEST active row for each name (preserves history), marks newer duplicates as status='removed'. Idempotent. Use this when the owner reports duplicate agents in the deck. Returns a summary: which names had duplicates, how many were cleaned, which row was kept.",
+    "Dedupes duplicate agent_configs rows in the owner's own tenant. Use when the owner reports the same agent appearing multiple times in the deck (e.g. '3 Mira's'). Keeps the OLDEST active row for each name (preserves history + skill records that reference its id); marks newer duplicates as status='removed' (REVERSIBLE — use admin_restore_agent within 30 days to undo). Tenant-scoped: always acts on the calling owner's data, never another tenant's. Before invoking at L1/L2 autonomy: propose the action to the owner first (\"I see 3 Mira rows — clean them up?\") and wait for explicit approval.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_ADMIN_RESTORE_AGENT: AnthropicTool = {
+  name: 'admin_restore_agent',
+  description:
+    "Undoes a previous admin_dedupe_agents action by restoring soft-removed agent_configs rows for a given agent name. Use when the owner says 'restore the X you removed', 'bring back the duplicates of Y', 'undo that dedup', or when they realize the wrong row was kept. Tenant-scoped to the owner's own data. Pass the agent_name; restores all soft-removed rows for that name within the last 30 days. If the owner only wants ONE restored, ask them to specify a date or just say 'restore the most recent one'.",
   input_schema: {
     type: 'object',
     properties: {
-      phone: {
-        type: 'string',
-        description: 'Tenant phone whose agent_configs to dedupe. Defaults to the current owner if omitted (which is the normal case).',
-      },
+      agentName: { type: 'string', description: 'Name of the agent whose removed rows should be restored.' },
+      mostRecentOnly: { type: 'boolean', description: 'When true, restore only the most-recently-removed row (recommended default — restoring ALL recreates the duplicate state).' },
     },
+    required: ['agentName'],
   },
 };
 
@@ -2317,13 +2323,23 @@ export function buildToolList(
   tools.push(TOOL_LIST_PROMOTION_CANDIDATES);
   tools.push(TOOL_APPROVE_PROMOTION);
 
-  // Platform-owner-only admin remediation tools. Gated by env var so
-  // future tenants don't see them; only the platform owner's Iris does.
+  // Tier A admin remediation — every tenant's Iris gets these, scoped
+  // to her own tenant. The executor enforces tenant-scope at runtime
+  // (Customer-A's Iris physically can't act on Customer-B's data).
+  // Decision rationale: party-mode 2026-05-18 — "customers don't go
+  // to Vercel to enable self-healing." See project_unified_trust_model
+  // memory + the discussion in conversation.
+  tools.push(TOOL_ADMIN_DEDUPE_AGENTS);
+  tools.push(TOOL_ADMIN_RESTORE_AGENT);
+
+  // Tier B platform-admin tools (cross-tenant, only for the platform
+  // owner). Gated by env var. No Tier B tools today, but the gate is
+  // ready for when we add them (e.g., admin_cross_tenant_health).
   if (options.ownerPhone && process.env.PLATFORM_OWNER_PHONE) {
     const cleanOwnerPhone = process.env.PLATFORM_OWNER_PHONE.replace(/[\s\-+()]/g, '');
     const cleanUserPhone = options.ownerPhone.replace(/[\s\-+()]/g, '');
     if (cleanOwnerPhone === cleanUserPhone) {
-      tools.push(TOOL_ADMIN_DEDUPE_AGENTS);
+      // Future cross-tenant admin tools register here.
     }
   }
   tools.push(TOOL_CONNECT_SERVICE);
@@ -6134,27 +6150,25 @@ export async function executeTool(
 
       case 'admin_dedupe_agents': {
         if (!user) return { content: 'Internal: user context required.', success: false };
-        // Defense-in-depth — even though the tool is only EXPOSED to
-        // the platform owner via the gate above, double-check at exec
-        // time so a stale tool reference can't be replayed by another
-        // tenant. Belt-and-suspenders.
-        const cleanUserPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
-        const platformOwner = (process.env.PLATFORM_OWNER_PHONE ?? '').replace(/[\s\-+()]/g, '');
-        if (!platformOwner || cleanUserPhone !== platformOwner) {
-          return {
-            content: 'This is a platform-owner-only tool — not available for your tenant.',
-            success: false,
-          };
-        }
         const ownerToken = process.env.OWNER_API_TOKEN;
         const appUrl = process.env.NEXT_PUBLIC_APP_BASE_URL ?? '';
         if (!ownerToken || !appUrl) {
           return {
-            content: 'admin_dedupe_agents needs OWNER_API_TOKEN + NEXT_PUBLIC_APP_BASE_URL in env. Tell Devon to set them in Vercel.',
+            content: 'admin_dedupe_agents needs OWNER_API_TOKEN + NEXT_PUBLIC_APP_BASE_URL in env. Tell the platform owner to set them in Vercel.',
             success: false,
           };
         }
-        const targetPhone = call.input.phone ? String(call.input.phone).trim() : user.phoneNumber;
+        // Tier A tenant-scope enforcement: ALWAYS use the caller's
+        // own phone. Iris can't act on another tenant's data through
+        // this tool. The only override is the platform owner — when
+        // PLATFORM_OWNER_PHONE matches the caller, they can pass
+        // call.input.phone to operate on any tenant.
+        const cleanUserPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const platformOwner = (process.env.PLATFORM_OWNER_PHONE ?? '').replace(/[\s\-+()]/g, '');
+        const isPlatformOwner = platformOwner && cleanUserPhone === platformOwner;
+        const targetPhone = (isPlatformOwner && call.input.phone)
+          ? String(call.input.phone).trim()
+          : cleanUserPhone;
         try {
           const res = await fetch(`${appUrl}/api/admin/dedupe-agents`, {
             method: 'POST',
@@ -6173,6 +6187,41 @@ export async function executeTool(
           return { content: data.interpretation ?? `Deduped ${data.rows_marked_removed ?? 0} duplicate row(s).`, success: true };
         } catch (err: any) {
           return { content: `admin_dedupe_agents error: ${err?.message ?? String(err)}`, success: false };
+        }
+      }
+
+      case 'admin_restore_agent': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const ownerToken = process.env.OWNER_API_TOKEN;
+        const appUrl = process.env.NEXT_PUBLIC_APP_BASE_URL ?? '';
+        if (!ownerToken || !appUrl) {
+          return {
+            content: 'admin_restore_agent needs OWNER_API_TOKEN + NEXT_PUBLIC_APP_BASE_URL in env.',
+            success: false,
+          };
+        }
+        const agentName = String(call.input.agentName ?? '').trim();
+        if (!agentName) {
+          return { content: 'Missing agentName — which agent should be restored?', success: false };
+        }
+        const mostRecentOnly = call.input.mostRecentOnly !== false; // default true (recommended)
+        const cleanUserPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        try {
+          const res = await fetch(`${appUrl}/api/admin/restore-agent`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${ownerToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ phone: cleanUserPhone, agentName, mostRecentOnly }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            return { content: `Restore endpoint failed: ${data.error ?? JSON.stringify(data).slice(0, 200)}`, success: false };
+          }
+          return { content: data.interpretation ?? `Restored ${data.rows_restored ?? 0} row(s) for ${agentName}.`, success: true };
+        } catch (err: any) {
+          return { content: `admin_restore_agent error: ${err?.message ?? String(err)}`, success: false };
         }
       }
 
