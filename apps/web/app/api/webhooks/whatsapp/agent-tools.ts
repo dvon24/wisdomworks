@@ -1658,6 +1658,22 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Per-agent SOP viewer (owner-disposition epic, follow-up) ──────────
+
+const TOOL_SHOW_AGENT_SOP: AnthropicTool = {
+  name: 'show_agent_sop',
+  description:
+    "Show the owner a synthesized OPERATING MANUAL for one specific agent on the team. Use when owner asks 'what is X actually doing', 'show me Marcus's SOP', 'what has Riley learned', 'how does Alex operate', 'what's Sophia been up to lately'. Synthesizes from the agent's recent ticks (activity log) + lane-scoped proven techniques + guardrails (corrections + disposition rules) + domain-tagged atoms + tools. Pass `mode='narrative'` for a Sonnet-synthesized prose summary (slightly slower but more readable); default `mode='structured'` returns a tighter bullet view.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentName: { type: 'string', description: "Exact name of the agent on the team (case-insensitive)." },
+      mode: { type: 'string', enum: ['structured', 'narrative'], description: "Default 'structured' (fast bullet view). 'narrative' adds a 2-3 paragraph prose summary at the top — use when the owner wants a readable digest." },
+    },
+    required: ['agentName'],
+  },
+};
+
 // ─── Story 2.9 Phase 3 (Layer 2) — Orchestrator dispatch ────────────────
 // Iris-as-orchestrator: fan out a signal to multiple agents in parallel,
 // each gets their role-filtered recent context, returns synthesized
@@ -2246,6 +2262,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_REMOVE_AGENT);
   tools.push(TOOL_CONSULT_MANAGER);
   tools.push(TOOL_DISPATCH_TO_AGENTS);
+  tools.push(TOOL_SHOW_AGENT_SOP);
   tools.push(TOOL_CONNECT_SERVICE);
   tools.push(TOOL_LIST_SNAPSHOTS);
   tools.push(TOOL_ROLLBACK_STATE);
@@ -5945,6 +5962,24 @@ export async function executeTool(
         }
         lines.push('', 'Synthesize these inputs for the owner — call out agreement vs. disagreement, surface the highest-leverage next step.');
         return { content: lines.join('\n'), success: true };
+      }
+
+      case 'show_agent_sop': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const agentName = String(call.input.agentName ?? '').trim();
+        if (!agentName) return { content: 'Missing agentName.', success: false };
+        const mode = call.input.mode === 'narrative' ? 'narrative' : 'structured';
+        const { buildAgentSop, renderSopForChat } = await import('../../_lib/agent-sop');
+        const sop = await buildAgentSop(cleanPhone, agentName, { mode });
+        if (!sop) {
+          const team = user.profile?.team ?? [];
+          return {
+            content: `No agent named "${agentName}" found on the team. Roster: ${team.map((a) => a.name).join(', ')}.`,
+            success: false,
+          };
+        }
+        return { content: renderSopForChat(sop), success: true };
       }
 
       case 'connect_service': {
