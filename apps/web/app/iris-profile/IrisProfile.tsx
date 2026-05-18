@@ -207,6 +207,16 @@ export function IrisProfile({ phone: phoneProp }: IrisProfilePageProps) {
             right. Dismiss what's wrong.
           </div>
           <div className={styles.headerMeta}>
+            <a
+              href={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("phone")
+                ? `/?phone=${encodeURIComponent(new URLSearchParams(window.location.search).get("phone")!)}`
+                : "/"}
+              className={styles.linkBtn}
+              style={{ textDecoration: "none" }}
+            >
+              ← Back to deck
+            </a>
+            <span className={styles.metaDivider} />
             <span className="mono">
               Last updated {data ? relativeTime(data.computed_at) : "…"}
             </span>
@@ -320,6 +330,28 @@ export function IrisProfile({ phone: phoneProp }: IrisProfilePageProps) {
                   you've corrected them on, and what they know about your world. Tap any name to
                   read theirs.
                 </p>
+                {/* Outcome legend — the activity chips on each agent card
+                    use these four words; this section explains them once
+                    so the owner knows what they mean. */}
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 12,
+                    marginTop: 12,
+                    padding: "10px 12px",
+                    border: "1px solid var(--glass-border)",
+                    borderRadius: 8,
+                    fontSize: 11,
+                    color: "var(--text-dim)",
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <span><strong style={{ color: "var(--text)" }}>observed</strong> = noticed, nothing to act on</span>
+                  <span><strong style={{ color: "var(--text)" }}>proposed</strong> = asked you to approve before acting</span>
+                  <span><strong style={{ color: "var(--text)" }}>acted</strong> = did it themselves (within their autonomy level)</span>
+                  <span><strong style={{ color: "var(--text)" }}>escalated</strong> = flagged it for your attention</span>
+                </div>
               </header>
               {data.agents.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>

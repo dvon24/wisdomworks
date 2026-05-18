@@ -58,8 +58,13 @@ export interface AgentSop {
     total_ticks: number;
     by_outcome: Record<string, number>;
     last_acted_at?: string | null;
-    sample_outputs: string[];
+    /** Each sample = one meaningful agent_run, decomposed for UI
+     *  rendering (chip + text instead of one pre-formatted line). */
+    sample_outputs: Array<{ outcome: string; text: string }>;
   };
+  /** Convenience flag for UI rendering. True when the agent has not
+   *  produced ANY ticks in the activity window. */
+  idle?: boolean;
   /** Package 2 — owner praise/affirmation summary for this agent.
    *  Pulled from tenant_disposition_rules where attributed_to_agent =
    *  this agent's name. Populated regardless of mode. */
@@ -211,14 +216,14 @@ export async function buildAgentSop(
         recent_activity.total_ticks = runs.length;
         const byOutcome: Record<string, number> = {};
         let lastActed: string | null = null;
-        const samples: string[] = [];
+        const samples: Array<{ outcome: string; text: string }> = [];
         for (const r of runs) {
           byOutcome[r.outcome] = (byOutcome[r.outcome] ?? 0) + 1;
           if ((r.outcome === 'acted' || r.outcome === 'proposed') && !lastActed) {
             lastActed = r.started_at;
           }
           if (samples.length < 5 && r.output_summary && r.outcome !== 'no_op') {
-            samples.push(`[${r.outcome}] ${r.output_summary.slice(0, 140)}`);
+            samples.push({ outcome: r.outcome, text: String(r.output_summary).slice(0, 140) });
           }
         }
         recent_activity.by_outcome = byOutcome;
@@ -261,6 +266,7 @@ export async function buildAgentSop(
     domain_facts,
     recent_activity,
     owner_affirmations,
+    idle: recent_activity.total_ticks === 0,
   };
 
   // 8. Optional Sonnet narrative — only when explicitly requested
@@ -292,7 +298,7 @@ async function synthesizeNarrative(sop: AgentSop): Promise<string> {
     `  By outcome: ${Object.entries(sop.recent_activity.by_outcome).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`,
     `  Last action: ${sop.recent_activity.last_acted_at ?? 'no recent action'}`,
     sop.recent_activity.sample_outputs.length > 0
-      ? `  Sample outputs:\n    - ${sop.recent_activity.sample_outputs.join('\n    - ')}`
+      ? `  Sample outputs:\n    - ${sop.recent_activity.sample_outputs.map((s) => `[${s.outcome}] ${s.text}`).join('\n    - ')}`
       : '',
     '',
     `PROVEN TECHNIQUES (from skill formation):`,
@@ -364,7 +370,7 @@ export function renderSopForChat(sop: AgentSop): string {
     if (sop.recent_activity.sample_outputs.length > 0) {
       lines.push('   Recent:');
       for (const s of sop.recent_activity.sample_outputs.slice(0, 3)) {
-        lines.push(`     • ${s}`);
+        lines.push(`     • [${s.outcome}] ${s.text}`);
       }
     }
   }

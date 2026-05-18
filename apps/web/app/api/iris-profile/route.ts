@@ -67,6 +67,9 @@ interface AgentSopSummary {
   domain_facts: AgentSop['domain_facts'];
   /** Package 2 — per-agent owner praise summary. */
   owner_affirmations: AgentSop['owner_affirmations'];
+  /** True when the agent has no activity in the 14-day window — UI
+   *  renders the "idle" placeholder instead of an outcome breakdown. */
+  idle?: boolean;
 }
 
 interface IrisProfile {
@@ -158,12 +161,48 @@ export async function GET(request: Request) {
     if (!mostRecentRule || r.created_at > mostRecentRule) mostRecentRule = r.created_at;
   }
 
-  // ─── Agents: per-agent SOPs (structured mode only, no Sonnet narrative) ──
-  const agentsRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanRequested}&status=neq.removed&select=agent_name&order=created_at.asc`,
-    { headers: headers() },
-  );
+  // ─── Agents: per-agent SOPs ─────────────────────────────────────────
+  // Source set: union of agent_configs rows AND user.profile.team
+  // entries. The chat-side team profile sometimes has agents that
+  // were added before the 2026-05-15 fix that started writing
+  // add_agent_to_team into agent_configs — those agents would
+  // otherwise be invisible here. We backfill them as minimal SOPs
+  // so the owner sees the full team they think they have.
+  const [agentsRes, ctxRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanRequested}&status=neq.removed&select=agent_name&order=created_at.asc`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanRequested}&select=profile&limit=1`,
+      { headers: headers() },
+    ),
+  ]);
   const agentRows: Array<{ agent_name: string }> = agentsRes.ok ? await agentsRes.json() : [];
+  const knownNames = new Set(agentRows.map((a) => a.agent_name.toLowerCase()));
+
+  // Pull team-profile agents (including sub-team agents) that aren't
+  // already in agent_configs.
+  let extraTeamAgents: Array<{ name: string; role: string; description?: string }> = [];
+  if (ctxRes.ok) {
+    const ctxRows = await ctxRes.json();
+    const team = ctxRows?.[0]?.profile?.team ?? [];
+    const collect = (entry: any) => {
+      if (!entry?.name) return;
+      if (knownNames.has(String(entry.name).toLowerCase())) return;
+      extraTeamAgents.push({
+        name: entry.name,
+        role: entry.role ?? 'Team member',
+        description: entry.description,
+      });
+      knownNames.add(String(entry.name).toLowerCase());
+    };
+    for (const top of team) {
+      collect(top);
+      for (const sub of top.subTeam?.agents ?? []) collect(sub);
+    }
+  }
+
   // Parallelize SOP builds — each one runs ~3-5 DB queries.
   const sops = await Promise.all(
     agentRows.map(async (a) => {
@@ -180,11 +219,30 @@ export async function GET(request: Request) {
         guardrails: sop.guardrails,
         domain_facts: sop.domain_facts,
         owner_affirmations: sop.owner_affirmations,
+        idle: sop.idle,
       };
       return summary;
     }),
   );
   const agents = sops.filter((s): s is AgentSopSummary => s !== null);
+
+  // Append team-profile-only agents as minimal SOPs (no recent_activity
+  // — they don't have agent_configs/agent_instances rows yet so there's
+  // nothing to query). Marked idle so the UI can render the placeholder.
+  for (const t of extraTeamAgents) {
+    agents.push({
+      agent_name: t.name,
+      agent_role: t.role,
+      description: t.description ?? 'On the team — no operational rows yet (this agent was added before the agent_configs backfill landed; their behavior is captured in the chat profile but not yet promoted to a runtime instance).',
+      recent_activity: { total_ticks: 0, by_outcome: {}, sample_outputs: [], last_acted_at: null },
+      capabilities: [],
+      proven_techniques: [],
+      guardrails: [],
+      domain_facts: [],
+      owner_affirmations: { net_score: 0, last_affirmed_at: null, recent_affirmations: [], by_kind: {} },
+      idle: true,
+    });
+  }
 
   // ─── Skill totals across all agents (page-level counter) ──────────────
   let totalSkills = 0;
