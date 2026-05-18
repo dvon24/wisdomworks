@@ -1806,7 +1806,7 @@ const TOOL_GET_WEATHER: AnthropicTool = {
 const TOOL_RECALL_FROM_MEMORY: AnthropicTool = {
   name: 'recall_from_memory',
   description:
-    "Semantic recall across the tenant's BEHAVIORAL memory — knowledge atoms (durable facts from past chats), analyzed documents (PDF/email-attachment summaries), client visit history, business insights, and the rolling conversation summary. Use when the owner asks 'what did X say about Y', 'remind me what was in the lease', 'when did Maria last visit', 'what was that insight about Tuesdays'. Returns matched chunks with source type + similarity score. For STATIC org-knowledge queries (policy / role definitions / capabilities), use query_knowledge_base instead — that one searches the ontology layer.",
+    "Semantic recall across the tenant's BEHAVIORAL memory — knowledge atoms (durable facts from past chats), analyzed documents (PDF/email-attachment summaries), client visit history, business insights, the rolling conversation summary, and SENT emails (owner's own emails, PII-redacted before indexing). Use when the owner asks 'what did X say about Y', 'remind me what was in the lease', 'when did Maria last visit', 'what was that insight about Tuesdays', or 'what did I tell my attorney about the timeline'. Returns matched chunks with source type + similarity score. For STATIC org-knowledge queries (policy / role definitions / capabilities), use query_knowledge_base instead — that one searches the ontology layer.",
   input_schema: {
     type: 'object',
     properties: {
@@ -1814,8 +1814,8 @@ const TOOL_RECALL_FROM_MEMORY: AnthropicTool = {
       limit: { type: 'number', description: 'Default 5, max 20.' },
       kinds: {
         type: 'array',
-        items: { type: 'string', enum: ['atom', 'conversation', 'document', 'visit', 'insight'] },
-        description: 'Optional — restrict to specific source kinds. Empty/omitted = all behavioral kinds.',
+        items: { type: 'string', enum: ['atom', 'conversation', 'document', 'visit', 'insight', 'email'] },
+        description: 'Optional — restrict to specific source kinds. Empty/omitted = all behavioral kinds. Use [\"email\"] to specifically recall what the owner wrote in past sent emails.',
       },
     },
     required: ['question'],
@@ -2975,7 +2975,7 @@ export async function executeTool(
         const limit = typeof call.input.limit === 'number' ? Math.min(Math.max(call.input.limit, 1), 20) : 5;
         const requestedKinds = Array.isArray(call.input.kinds) && call.input.kinds.length > 0
           ? (call.input.kinds as string[])
-          : ['atom', 'document', 'insight', 'visit', 'conversation'];
+          : ['atom', 'document', 'insight', 'visit', 'conversation', 'email'];
         try {
           const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
           const { matches, embedTokens } = await queryKnowledge(cleanPhone, question, {

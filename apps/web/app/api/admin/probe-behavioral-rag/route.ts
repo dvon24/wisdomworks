@@ -23,7 +23,7 @@
  *   - Diagnosing why Iris's recall_from_memory returned nothing
  */
 
-import { ingestKnowledgeAtoms, ingestChatRuns, ingestBusinessInsights, queryKnowledge } from '../../_lib/knowledge-base';
+import { ingestKnowledgeAtoms, ingestChatRuns, ingestBusinessInsights, ingestSentEmails, queryKnowledge } from '../../_lib/knowledge-base';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -59,6 +59,7 @@ export async function POST(request: Request) {
     atoms: { ingested: 0, skipped: 0, chunks: 0, error: undefined as string | undefined },
     chat_runs: { ingested: 0, skipped: 0, chunks: 0, error: undefined as string | undefined },
     insights: { ingested: 0, skipped: 0, chunks: 0, error: undefined as string | undefined },
+    sent_emails: { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, error: undefined as string | undefined },
   };
   try {
     Object.assign(ingest.atoms, await ingestKnowledgeAtoms(cleanPhone, { maxRows }));
@@ -75,6 +76,12 @@ export async function POST(request: Request) {
   } catch (err: any) {
     ingest.insights.error = err?.message ?? String(err);
   }
+  try {
+    // Sent emails capped tighter (provider API + redaction is slower per row)
+    Object.assign(ingest.sent_emails, await ingestSentEmails(cleanPhone, { maxRows: Math.min(maxRows, 10) }));
+  } catch (err: any) {
+    ingest.sent_emails.error = err?.message ?? String(err);
+  }
 
   let matches: any[] = [];
   let embedTokens = 0;
@@ -83,7 +90,7 @@ export async function POST(request: Request) {
     const result = await queryKnowledge(cleanPhone, question, {
       limit: 8,
       minSimilarity: 0.15, // probe-only — lower than prod's 0.4 so partial matches surface
-      sourceKinds: ['atom', 'conversation', 'insight'],
+      sourceKinds: ['atom', 'conversation', 'insight', 'email'],
       audit: false,
       source: 'probe',
     });

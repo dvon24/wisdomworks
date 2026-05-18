@@ -11,7 +11,13 @@
  */
 
 import { NextResponse } from 'next/server';
-import { ingestOntology, ingestKnowledgeAtoms, ingestChatRuns, ingestBusinessInsights } from '../../_lib/knowledge-base';
+import {
+  ingestOntology,
+  ingestKnowledgeAtoms,
+  ingestChatRuns,
+  ingestBusinessInsights,
+  ingestSentEmails,
+} from '../../_lib/knowledge-base';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -58,12 +64,16 @@ export async function GET(request: Request) {
     const ATOMS_PER_RUN = 30;
     const CHAT_RUNS_PER_RUN = 30;
     const INSIGHTS_PER_RUN = 30;
+    // Sent emails are slower per row (provider API roundtrip + larger
+    // bodies + PII redaction) so we conservatively do 15 per run.
+    const SENT_EMAILS_PER_RUN = 15;
 
     const totals = {
       ontology: { ingested: 0, chunks: 0 },
       atoms: { ingested: 0, chunks: 0 },
       conversations: { ingested: 0, chunks: 0 },
       insights: { ingested: 0, chunks: 0 },
+      sent_emails: { ingested: 0, chunks: 0, redacted: 0 },
     };
     // Deadline guard — bail at 50s in case we underestimate per-row cost
     // and don't want a 504 on the last tenant. Each tenant gets equal
@@ -104,13 +114,22 @@ export async function GET(request: Request) {
       } catch (err) {
         console.warn(`[knowledge-refresh] insights ${t.phone_number} failed:`, err);
       }
+      try {
+        const s = await ingestSentEmails(t.phone_number, { maxRows: SENT_EMAILS_PER_RUN });
+        totals.sent_emails.ingested += s.ingested;
+        totals.sent_emails.chunks += s.chunks;
+        totals.sent_emails.redacted += s.redactedAny;
+      } catch (err) {
+        console.warn(`[knowledge-refresh] sent_emails ${t.phone_number} failed:`, err);
+      }
     }
     console.log(
       `[knowledge-refresh] tenants=${tenants.length} ` +
       `ontology=${totals.ontology.ingested}/${totals.ontology.chunks} ` +
       `atoms=${totals.atoms.ingested}/${totals.atoms.chunks} ` +
       `chats=${totals.conversations.ingested}/${totals.conversations.chunks} ` +
-      `insights=${totals.insights.ingested}/${totals.insights.chunks}`,
+      `insights=${totals.insights.ingested}/${totals.insights.chunks} ` +
+      `sent_emails=${totals.sent_emails.ingested}/${totals.sent_emails.chunks} (PII-redacted: ${totals.sent_emails.redacted})`,
     );
     return NextResponse.json({ ok: true, tenants: tenants.length, totals });
   } catch (err) {

@@ -28,6 +28,7 @@ export {
   fetchCloudDoc,
   listCalendarEvents,
   listCalendars,
+  listSentEmails,
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,

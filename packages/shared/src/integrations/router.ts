@@ -59,6 +59,21 @@ export async function listEmails(
   return { success: false, error: `Email not supported for provider: ${conn.provider}` };
 }
 
+/**
+ * List the owner's recent SENT messages — used by the behavioral RAG
+ * pipeline to index what the owner has actually written so semantic
+ * recall covers "what did I tell Ron about the timeline" queries.
+ * Gmail-only today; Outlook + Yahoo support can land later.
+ */
+export async function listSentEmails(
+  conn: OAuthConnection,
+  opts: { sinceDays?: number; limit?: number } = {},
+): Promise<IntegrationResult<EmailMessage[]>> {
+  const ctx = { accessToken: conn.access_token, refreshToken: conn.refresh_token, metadata: conn.metadata, onTokenRefreshed: conn.onTokenRefreshed };
+  if (conn.provider === 'google') return gmail.listSentMessages(ctx, opts);
+  return { success: false, error: `Sent-mail listing not yet supported for provider: ${conn.provider}` };
+}
+
 export async function sendEmail(
   conn: OAuthConnection,
   req: SendEmailRequest,

@@ -208,6 +208,46 @@ export async function searchMessages(
 }
 
 /**
+ * List the owner's recent SENT messages. Used by the behavioral RAG
+ * ingest pipeline so semantic recall covers what the owner has actually
+ * said in their own emails, not just what others have sent them. Pulled
+ * via Gmail's q=in:sent — chronological, paginated by sinceDays.
+ *
+ * Returns email shells (subject, recipient via `to` header in raw, date,
+ * body). Body is the largest text part, decoded.
+ */
+export async function listSentMessages(
+  ctx: IntegrationContext,
+  opts: { sinceDays?: number; limit?: number } = {},
+): Promise<IntegrationResult<EmailMessage[]>> {
+  try {
+    const sinceDays = opts.sinceDays ?? 90;
+    const limit = Math.min(opts.limit ?? 50, 100);
+    const q = `in:sent newer_than:${sinceDays}d`;
+    const listRes = await googleFetch(
+      ctx,
+      `${GMAIL_BASE}/messages?q=${encodeURIComponent(q)}&maxResults=${limit}`,
+    );
+    if (!listRes.ok) return { success: false, error: `Gmail sent-list failed: ${listRes.status}` };
+    const listData = await listRes.json();
+    const ids: string[] = (listData.messages ?? []).map((m: any) => m.id);
+    if (ids.length === 0) return { success: true, data: [] };
+
+    const messages = await Promise.all(
+      ids.map(async (id) => {
+        const msgRes = await googleFetch(ctx, `${GMAIL_BASE}/messages/${id}?format=full`);
+        if (!msgRes.ok) return null;
+        const raw = await msgRes.json();
+        return rawToEmail(raw);
+      }),
+    );
+    return { success: true, data: messages.filter((m): m is EmailMessage => m !== null) };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+/**
  * Send an email. Constructs a raw RFC 2822 message and submits to Gmail.
  * Bug fix 2026-05-14: builds multipart/mixed when attachments are present
  * so create_document → send_email chains actually deliver the doc.

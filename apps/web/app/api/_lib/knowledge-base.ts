@@ -12,7 +12,7 @@
  */
 
 import { embedBatch, embedText, estimateTokens } from './embeddings';
-import { redactPII } from '@wisdomworks/shared';
+import { redactPII, listSentEmails, type OAuthConnection } from '@wisdomworks/shared';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -581,13 +581,121 @@ export async function ingestOntology(tenantPhone: string): Promise<{ ingested: n
   return { ingested, skipped, chunks };
 }
 
+/**
+ * Ingest the owner's SENT emails — the canonical "what did I actually
+ * say" recall layer. Pulled from Gmail's in:sent folder, redacted via
+ * the shared PII helper (emails/phones/SSNs/CCs/addresses/IPs become
+ * type markers like [EMAIL]), then embedded.
+ *
+ * Privacy posture (important for the project_security_epic / compliance):
+ *   - Recipient addresses → [EMAIL] (the WHO is opaque, only the WHAT
+ *     remains; the recipient is still identifiable via the email row
+ *     in oauth_connections or the original Gmail thread if subpoenaed)
+ *   - Phone numbers, SSNs, credit cards, street addresses, IPs → markers
+ *   - Person names + company names + business content → preserved
+ *     (intentional — losing names would defeat semantic recall like
+ *     "what did I tell Ron about the timeline")
+ *
+ * This means a recovered chunk leaks names but NOT direct-contact
+ * identifiers. The original raw mail still lives in the provider's
+ * inbox — we're not the system of record. We're indexing for recall.
+ *
+ * Bounded to last 90 days. Watermarked + two-pass like other ingest
+ * functions so the cron stays within the 60s budget.
+ */
+export async function ingestSentEmails(
+  tenantPhone: string,
+  options: { maxRows?: number } = {},
+): Promise<{ ingested: number; skipped: number; chunks: number; redactedAny: number }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+  const maxRows = Math.max(2, Math.min(options.maxRows ?? 100, 100));
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+
+  // Find the tenant's active email connections (Gmail-only support today
+  // — see listSentEmails in shared router).
+  const connRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/oauth_connections?phone_number=eq.${cleanPhone}&service=eq.email&status=eq.active&provider=eq.google&select=phone_number,provider,service,account_email,access_token,refresh_token,expires_at,metadata`,
+    { headers: headers() },
+  );
+  if (!connRes.ok) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+  const conns: OAuthConnection[] = await connRes.json();
+  if (conns.length === 0) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+  const conn = conns[0]!;
+
+  // Watermark — already-ingested sent-email IDs.
+  const wmRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${cleanPhone}&source_kind=eq.email&select=source_row_id`,
+    { headers: headers() },
+  );
+  const seen = new Set<string>(
+    wmRes.ok ? ((await wmRes.json()) as Array<{ source_row_id: string }>).map((r) => r.source_row_id) : [],
+  );
+
+  // Pull recent sent emails (Gmail q=in:sent, 90 days, capped).
+  const overFetch = Math.min(100, Math.max(maxRows, seen.size + maxRows));
+  const listed = await listSentEmails(conn, { sinceDays: 90, limit: overFetch });
+  if (!listed.success || !listed.data) {
+    return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+  }
+  if (listed.data.length === 0) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+
+  let ingested = 0;
+  let skipped = 0;
+  let chunksTotal = 0;
+  let redactedAnyCount = 0;
+  for (const mail of listed.data) {
+    if (ingested >= maxRows) break;
+    if (seen.has(mail.id)) {
+      skipped++;
+      continue;
+    }
+    // Build the text we'll embed. Subject + recipients + body, all
+    // redacted. Note: rawToEmail's `from` is the OWNER's own address
+    // since these are sent items; the recipient lives in `to` / cc.
+    const rawRecipients = (mail.to ?? []).join(', ');
+    const rawText = [
+      `Subject: ${mail.subject ?? ''}`,
+      `To: ${rawRecipients}`,
+      `Sent: ${mail.date}`,
+      '',
+      mail.body ?? mail.bodyPreview ?? '',
+    ].join('\n');
+    const { redacted, redactedAny } = redactPII(rawText);
+    if (redactedAny) redactedAnyCount++;
+
+    const sentDate = new Date(mail.date).toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const written = await ingestBehavioral({
+      tenantPhone: cleanPhone,
+      sourceKind: 'email',
+      sourceRowId: mail.id,
+      sourceName: `Sent: ${(mail.subject ?? '(no subject)').slice(0, 80)} (${sentDate})`,
+      text: redacted,
+      metadata: {
+        kind: 'sent_email',
+        sent_at: mail.date,
+        provider: conn.provider,
+        pii_redacted: redactedAny,
+      },
+    });
+    if (written > 0) {
+      ingested++;
+      chunksTotal += written;
+    }
+  }
+  return { ingested, skipped, chunks: chunksTotal, redactedAny: redactedAnyCount };
+}
+
 export interface KnowledgeMatch {
   id: string;
   content: string;
   source_entity_id: string;
   source_entity_type: string;
   source_entity_name: string;
-  source_kind?: 'ontology' | 'atom' | 'conversation' | 'document' | 'visit' | 'insight';
+  source_kind?: 'ontology' | 'atom' | 'conversation' | 'document' | 'visit' | 'insight' | 'email';
   chunk_index: number;
   similarity: number;
 }
@@ -612,9 +720,9 @@ export async function queryKnowledge(
     audit?: boolean;
     source?: string;
     /** Filter by source kind. Defaults to all kinds. Pass ['atom',
-     *  'conversation', 'document', 'visit', 'insight'] for
+     *  'conversation', 'document', 'visit', 'insight', 'email'] for
      *  behavioral-only recall; ['ontology'] for ontology-only. */
-    sourceKinds?: Array<'ontology' | 'atom' | 'conversation' | 'document' | 'visit' | 'insight'>;
+    sourceKinds?: Array<'ontology' | 'atom' | 'conversation' | 'document' | 'visit' | 'insight' | 'email'>;
   } = {},
 ): Promise<{ matches: KnowledgeMatch[]; embedTokens: number }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { matches: [], embedTokens: 0 };
