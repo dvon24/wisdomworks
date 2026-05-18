@@ -1803,6 +1803,32 @@ const TOOL_GET_WEATHER: AnthropicTool = {
   },
 };
 
+// ─── Email indexing privacy controls (Story 2.9 Phase 2c) ─────────────
+
+const TOOL_SHOW_EMAIL_INDEXING_PREFS: AnthropicTool = {
+  name: 'show_email_indexing_prefs',
+  description:
+    "Show the owner the current privacy controls on sent-email indexing: whether sent-email RAG is enabled, and which recipients (specific addresses or whole domains) are excluded from indexing. Use when owner asks 'what emails are you indexing', 'show my privacy settings', 'who's on my deny list', 'is my attorney's mail indexed'.",
+  input_schema: { type: 'object', properties: {} },
+};
+
+const TOOL_UPDATE_EMAIL_INDEXING_PREFS: AnthropicTool = {
+  name: 'update_email_indexing_prefs',
+  description:
+    "Update the owner's privacy controls on sent-email indexing. Use when owner says 'don't index my attorney's emails', 'add doctor@kp.org to my email deny list', 'stop indexing anything to mybank.com', 'pause sent-email indexing', 'remove ron@law.com from the deny list', 'turn email indexing back on'. Pass `addAddresses` / `addDomains` to add to the deny list, `removeAddresses` / `removeDomains` to take them off, and `enable` to toggle the master switch. Adding a rule also retroactively deletes any previously-indexed chunks matching that recipient.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      enable: { type: 'boolean', description: 'Master switch — true to enable sent-email indexing, false to pause it entirely.' },
+      addAddresses: { type: 'array', items: { type: 'string' }, description: 'Email addresses to add to the deny list (case-insensitive).' },
+      removeAddresses: { type: 'array', items: { type: 'string' }, description: 'Email addresses to remove from the deny list.' },
+      addDomains: { type: 'array', items: { type: 'string' }, description: 'Email domains to add to the deny list (e.g. "kp.org" blocks all addresses ending in @kp.org and @*.kp.org).' },
+      removeDomains: { type: 'array', items: { type: 'string' }, description: 'Email domains to remove from the deny list.' },
+      notes: { type: 'string', description: 'Optional free-form note for the owner\'s reference (why this rule exists).' },
+    },
+  },
+};
+
 const TOOL_RECALL_FROM_MEMORY: AnthropicTool = {
   name: 'recall_from_memory',
   description:
@@ -2196,6 +2222,8 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_SHOW_DISPOSITION_PROFILE);
   tools.push(TOOL_FORGET_DISPOSITION_RULE);
   tools.push(TOOL_RECALL_FROM_MEMORY);
+  tools.push(TOOL_SHOW_EMAIL_INDEXING_PREFS);
+  tools.push(TOOL_UPDATE_EMAIL_INDEXING_PREFS);
   // Weather is always available — no connection or env var needed
   // (Open-Meteo is free + no key).
   tools.push(TOOL_GET_WEATHER);
@@ -2966,6 +2994,106 @@ export async function executeTool(
         } catch (err) {
           return { content: `Weather lookup error: ${err}`, success: false };
         }
+      }
+
+      case 'show_email_indexing_prefs': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const { getEmailIndexingPrefs } = await import('../../_lib/knowledge-base');
+        const prefs = await getEmailIndexingPrefs(cleanPhone);
+        // Default state when no row exists yet
+        const enabled = prefs?.sent_emails_enabled ?? true;
+        const denyAddrs = prefs?.deny_addresses ?? [];
+        const denyDomains = prefs?.deny_domains ?? [];
+        const lines: string[] = [`📧 Sent-email indexing privacy controls:`];
+        lines.push(`   Status: ${enabled ? '✓ enabled' : '✗ paused'}`);
+        if (denyAddrs.length === 0 && denyDomains.length === 0) {
+          lines.push('   Deny list: empty — all sent emails are indexed (with PII redaction).');
+        } else {
+          if (denyAddrs.length > 0) {
+            lines.push(`   Excluded addresses (${denyAddrs.length}):`);
+            for (const a of denyAddrs) lines.push(`      • ${a}`);
+          }
+          if (denyDomains.length > 0) {
+            lines.push(`   Excluded domains (${denyDomains.length}):`);
+            for (const d of denyDomains) lines.push(`      • @${d} (and subdomains)`);
+          }
+        }
+        if (prefs?.notes) lines.push(`   Notes: ${prefs.notes}`);
+        lines.push('', 'Adjust with update_email_indexing_prefs ("don\'t index emails to X", "remove X from deny list", "pause indexing").');
+        return { content: lines.join('\n'), success: true };
+      }
+
+      case 'update_email_indexing_prefs': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const { getEmailIndexingPrefs, setEmailIndexingPrefs, purgeSentEmailChunks } = await import('../../_lib/knowledge-base');
+        const current = await getEmailIndexingPrefs(cleanPhone);
+        const curAddrs = new Set((current?.deny_addresses ?? []).map((a) => a.toLowerCase()));
+        const curDomains = new Set((current?.deny_domains ?? []).map((d) => d.toLowerCase().replace(/^\./, '')));
+
+        const addAddresses = Array.isArray(call.input.addAddresses) ? call.input.addAddresses : [];
+        const removeAddresses = Array.isArray(call.input.removeAddresses) ? call.input.removeAddresses : [];
+        const addDomains = Array.isArray(call.input.addDomains) ? call.input.addDomains : [];
+        const removeDomains = Array.isArray(call.input.removeDomains) ? call.input.removeDomains : [];
+        const enable = typeof call.input.enable === 'boolean' ? call.input.enable : undefined;
+        const notes = typeof call.input.notes === 'string' ? call.input.notes : undefined;
+
+        const added: string[] = [];
+        const removed: string[] = [];
+        for (const a of addAddresses) {
+          const lower = String(a).toLowerCase().trim();
+          if (lower && !curAddrs.has(lower)) {
+            curAddrs.add(lower);
+            added.push(lower);
+          }
+        }
+        for (const a of removeAddresses) {
+          const lower = String(a).toLowerCase().trim();
+          if (curAddrs.delete(lower)) removed.push(lower);
+        }
+        for (const d of addDomains) {
+          const lower = String(d).toLowerCase().trim().replace(/^\./, '').replace(/^@/, '');
+          if (lower && !curDomains.has(lower)) {
+            curDomains.add(lower);
+            added.push(`@${lower}`);
+          }
+        }
+        for (const d of removeDomains) {
+          const lower = String(d).toLowerCase().trim().replace(/^\./, '').replace(/^@/, '');
+          if (curDomains.delete(lower)) removed.push(`@${lower}`);
+        }
+
+        const updated = await setEmailIndexingPrefs(cleanPhone, {
+          sent_emails_enabled: enable,
+          deny_addresses: Array.from(curAddrs),
+          deny_domains: Array.from(curDomains),
+          notes,
+        });
+        if (!updated) {
+          return { content: 'Could not save privacy prefs. Try again, and if it keeps failing, the migration `2026-05-18-email-indexing-prefs.sql` may not be applied yet.', success: false };
+        }
+
+        // Retroactive cleanup — purge already-indexed chunks matching
+        // any newly-added deny rule.
+        let purgedTotal = 0;
+        for (const a of addAddresses) {
+          const lower = String(a).toLowerCase().trim();
+          if (lower) purgedTotal += await purgeSentEmailChunks(cleanPhone, { address: lower });
+        }
+        for (const d of addDomains) {
+          const lower = String(d).toLowerCase().trim().replace(/^\./, '').replace(/^@/, '');
+          if (lower) purgedTotal += await purgeSentEmailChunks(cleanPhone, { domain: lower });
+        }
+
+        const parts: string[] = [];
+        if (enable === true) parts.push('Sent-email indexing ✓ enabled');
+        if (enable === false) parts.push('Sent-email indexing ✗ paused');
+        if (added.length > 0) parts.push(`Added to deny list: ${added.join(', ')}`);
+        if (removed.length > 0) parts.push(`Removed from deny list: ${removed.join(', ')}`);
+        if (purgedTotal > 0) parts.push(`Purged ${purgedTotal} previously-indexed chunk${purgedTotal === 1 ? '' : 's'} matching the new rules.`);
+        if (parts.length === 0) parts.push('No changes (settings already matched what you asked for).');
+        return { content: parts.join('\n'), success: true };
       }
 
       case 'recall_from_memory': {

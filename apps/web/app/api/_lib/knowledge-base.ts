@@ -603,13 +603,37 @@ export async function ingestOntology(tenantPhone: string): Promise<{ ingested: n
  * Bounded to last 90 days. Watermarked + two-pass like other ingest
  * functions so the cron stays within the 60s budget.
  */
+export interface SentEmailIngestResult {
+  ingested: number;
+  skipped: number;
+  chunks: number;
+  redactedAny: number;
+  /** Emails that matched the owner's deny list and were skipped before
+   *  embedding (privacy opt-out). Reported separately from skipped so
+   *  the owner can see the privacy filter is working. */
+  denied: number;
+  /** True if the tenant has the master switch off. */
+  disabled?: boolean;
+}
+
 export async function ingestSentEmails(
   tenantPhone: string,
   options: { maxRows?: number } = {},
-): Promise<{ ingested: number; skipped: number; chunks: number; redactedAny: number }> {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+): Promise<SentEmailIngestResult> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
   const maxRows = Math.max(2, Math.min(options.maxRows ?? 100, 100));
   const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+
+  // Check the tenant's privacy prefs first. If disabled or unreachable,
+  // skip cleanly — don't fail the cron.
+  const prefs = await getEmailIndexingPrefs(cleanPhone);
+  if (prefs && prefs.sent_emails_enabled === false) {
+    return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0, disabled: true };
+  }
+  const denyAddrs = new Set(
+    (prefs?.deny_addresses ?? []).map((a) => a.toLowerCase().trim()).filter(Boolean),
+  );
+  const denyDomains = (prefs?.deny_domains ?? []).map((d) => d.toLowerCase().trim().replace(/^\./, '')).filter(Boolean);
 
   // Find the tenant's active email connections (Gmail-only support today
   // — see listSentEmails in shared router).
@@ -617,9 +641,9 @@ export async function ingestSentEmails(
     `${SUPABASE_URL}/rest/v1/oauth_connections?phone_number=eq.${cleanPhone}&service=eq.email&status=eq.active&provider=eq.google&select=phone_number,provider,service,account_email,access_token,refresh_token,expires_at,metadata`,
     { headers: headers() },
   );
-  if (!connRes.ok) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+  if (!connRes.ok) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
   const conns: OAuthConnection[] = await connRes.json();
-  if (conns.length === 0) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+  if (conns.length === 0) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
   const conn = conns[0]!;
 
   // Watermark — already-ingested sent-email IDs.
@@ -635,18 +659,37 @@ export async function ingestSentEmails(
   const overFetch = Math.min(100, Math.max(maxRows, seen.size + maxRows));
   const listed = await listSentEmails(conn, { sinceDays: 90, limit: overFetch });
   if (!listed.success || !listed.data) {
-    return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+    return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
   }
-  if (listed.data.length === 0) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0 };
+  if (listed.data.length === 0) return { ingested: 0, skipped: 0, chunks: 0, redactedAny: 0, denied: 0 };
 
   let ingested = 0;
   let skipped = 0;
   let chunksTotal = 0;
   let redactedAnyCount = 0;
+  let denied = 0;
   for (const mail of listed.data) {
     if (ingested >= maxRows) break;
     if (seen.has(mail.id)) {
       skipped++;
+      continue;
+    }
+    // Privacy filter — if ANY recipient matches the owner's deny list,
+    // skip the entire email. Conservative: one denied recipient on a
+    // multi-recipient thread blocks the whole email rather than trying
+    // to redact just one address.
+    const recipients = (mail.to ?? []).concat(mail.cc ?? []);
+    const matchesDeny = recipients.some((addr) => {
+      const lower = addr.toLowerCase().trim();
+      // Strip "Name <email>" wrappers if present
+      const bare = lower.match(/<([^>]+)>/)?.[1] ?? lower;
+      if (denyAddrs.has(bare)) return true;
+      const domain = bare.split('@')[1];
+      if (!domain) return false;
+      return denyDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
+    });
+    if (matchesDeny) {
+      denied++;
       continue;
     }
     // Build the text we'll embed. Subject + recipients + body, all
@@ -686,7 +729,142 @@ export async function ingestSentEmails(
       chunksTotal += written;
     }
   }
-  return { ingested, skipped, chunks: chunksTotal, redactedAny: redactedAnyCount };
+  return { ingested, skipped, chunks: chunksTotal, redactedAny: redactedAnyCount, denied };
+}
+
+// ─── Email indexing preferences (privacy controls) ──────────────────────
+
+export interface EmailIndexingPrefs {
+  tenant_phone: string;
+  sent_emails_enabled: boolean;
+  deny_addresses: string[];
+  deny_domains: string[];
+  notes?: string;
+  updated_at: string;
+}
+
+/**
+ * Fetch the tenant's email indexing prefs. Returns null if the row
+ * doesn't exist (treat as defaults: enabled, empty deny lists).
+ */
+export async function getEmailIndexingPrefs(
+  tenantPhone: string,
+): Promise<EmailIndexingPrefs | null> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/tenant_email_indexing_prefs?tenant_phone=eq.${cleanPhone}&limit=1`,
+      { headers: headers() },
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return Array.isArray(rows) && rows.length > 0 ? (rows[0] as EmailIndexingPrefs) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Upsert the tenant's email indexing prefs. Caller passes only the
+ * fields they want to change — others are preserved.
+ */
+export async function setEmailIndexingPrefs(
+  tenantPhone: string,
+  patch: Partial<Pick<EmailIndexingPrefs, 'sent_emails_enabled' | 'deny_addresses' | 'deny_domains' | 'notes'>>,
+): Promise<EmailIndexingPrefs | null> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  const existing = await getEmailIndexingPrefs(cleanPhone);
+  const body = {
+    tenant_phone: cleanPhone,
+    sent_emails_enabled: patch.sent_emails_enabled ?? existing?.sent_emails_enabled ?? true,
+    deny_addresses: patch.deny_addresses ?? existing?.deny_addresses ?? [],
+    deny_domains: patch.deny_domains ?? existing?.deny_domains ?? [],
+    notes: patch.notes ?? existing?.notes ?? null,
+  };
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/tenant_email_indexing_prefs?on_conflict=tenant_phone`,
+      {
+        method: 'POST',
+        headers: {
+          ...headers(),
+          Prefer: 'resolution=merge-duplicates,return=representation',
+        },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!res.ok) {
+      console.warn('[email-indexing-prefs] upsert failed:', res.status, await res.text());
+      return null;
+    }
+    const rows = await res.json();
+    return Array.isArray(rows) && rows.length > 0 ? (rows[0] as EmailIndexingPrefs) : null;
+  } catch (err) {
+    console.warn('[email-indexing-prefs] upsert exception:', err);
+    return null;
+  }
+}
+
+/**
+ * Delete every indexed sent-email chunk for the tenant where the
+ * recipient matches the given pattern (exact address OR domain).
+ * Called after the owner adds a deny rule so previously-indexed mail
+ * to that recipient is retroactively removed from the vector store.
+ *
+ * Returns the count of chunks deleted.
+ */
+export async function purgeSentEmailChunks(
+  tenantPhone: string,
+  pattern: { address?: string; domain?: string },
+): Promise<number> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return 0;
+  if (!pattern.address && !pattern.domain) return 0;
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+
+  // Pull all email-source chunks for this tenant and filter client-side
+  // — content embedding strings have the form "Subject: ... | To: <addr>".
+  // Cheap enough at typical chunk counts (<1k per tenant).
+  const listRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_chunks?tenant_phone=eq.${cleanPhone}&source_kind=eq.email&select=id,content`,
+    { headers: headers() },
+  );
+  if (!listRes.ok) return 0;
+  const rows: Array<{ id: string; content: string }> = await listRes.json();
+  const toDelete = rows
+    .filter((r) => {
+      const c = r.content.toLowerCase();
+      if (pattern.address && c.includes(pattern.address.toLowerCase())) return true;
+      if (pattern.domain) {
+        const d = pattern.domain.toLowerCase().replace(/^\./, '');
+        // Match an @ prefix so we don't false-match the domain inside a body
+        if (c.includes(`@${d}`)) return true;
+      }
+      return false;
+    })
+    .map((r) => r.id);
+
+  if (toDelete.length === 0) return 0;
+
+  // Delete in chunks of 50 to keep URL length reasonable.
+  let deleted = 0;
+  for (let i = 0; i < toDelete.length; i += 50) {
+    const batch = toDelete.slice(i, i + 50);
+    const ids = batch.map((id) => `"${id}"`).join(',');
+    const delRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/knowledge_chunks?id=in.(${ids})`,
+      {
+        method: 'DELETE',
+        headers: { ...headers(), Prefer: 'return=representation' },
+      },
+    );
+    if (delRes.ok) {
+      const out = await delRes.json().catch(() => []);
+      deleted += Array.isArray(out) ? out.length : batch.length;
+    }
+  }
+  return deleted;
 }
 
 export interface KnowledgeMatch {
