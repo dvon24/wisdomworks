@@ -5547,6 +5547,32 @@ export async function executeTool(
         const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
         const persistAgent = async () => {
           if (!supaUrl || !supaKey) return;
+          // Defense against the "3 Mira's" bug (fixed 2026-05-18 via
+          // migration 2026-05-18d): before inserting, check if an
+          // ACTIVE row already exists for this (tenant, agent_name).
+          // Even with the new partial unique index, the merge-duplicates
+          // path is fragile across PostgREST versions and case-variants
+          // ("Mira" vs "mira"), so we explicitly look-then-write.
+          try {
+            const existing = await fetch(
+              `${supaUrl}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&agent_name=ilike.${encodeURIComponent(name)}&status=neq.removed&select=id&limit=1`,
+              {
+                headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` },
+              },
+            );
+            if (existing.ok) {
+              const rows = await existing.json();
+              if (Array.isArray(rows) && rows.length > 0) {
+                // Already exists — no-op. The chat-side team profile
+                // change still applies above. Caller will see this
+                // agent on the next deck fetch.
+                console.info(`[add_agent_to_team] ${name} already exists in agent_configs (id=${rows[0].id}) — skipping duplicate insert`);
+                return;
+              }
+            }
+          } catch (err) {
+            console.warn('[add_agent_to_team] dup-check failed (proceeding with insert anyway):', err);
+          }
           try {
             await fetch(`${supaUrl}/rest/v1/agent_configs`, {
               method: 'POST',
@@ -5554,7 +5580,7 @@ export async function executeTool(
                 apikey: supaKey,
                 Authorization: `Bearer ${supaKey}`,
                 'Content-Type': 'application/json',
-                Prefer: 'return=minimal,resolution=merge-duplicates',
+                Prefer: 'return=minimal',
               },
               body: JSON.stringify({
                 tenant_phone: cleanPhone,
