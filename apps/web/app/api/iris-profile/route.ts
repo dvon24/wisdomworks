@@ -65,6 +65,8 @@ interface AgentSopSummary {
   proven_techniques: AgentSop['proven_techniques'];
   guardrails: AgentSop['guardrails'];
   domain_facts: AgentSop['domain_facts'];
+  /** Package 2 — per-agent owner praise summary. */
+  owner_affirmations: AgentSop['owner_affirmations'];
 }
 
 interface IrisProfile {
@@ -177,6 +179,7 @@ export async function GET(request: Request) {
         proven_techniques: sop.proven_techniques,
         guardrails: sop.guardrails,
         domain_facts: sop.domain_facts,
+        owner_affirmations: sop.owner_affirmations,
       };
       return summary;
     }),

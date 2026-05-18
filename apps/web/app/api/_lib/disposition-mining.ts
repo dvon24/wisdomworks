@@ -54,6 +54,96 @@ export interface DispositionRule {
   applied_count: number;
   last_applied_at?: string | null;
   created_at: string;
+  /** Package 2 — owner-named agent at extraction time. NULL when the
+   *  rule is generic (no agent referenced by name). */
+  attributed_to_agent?: string | null;
+}
+
+// ─── Package 2 — per-agent affirmation helpers ─────────────────────────
+
+export interface AgentAffirmationSnapshot {
+  agent_name: string;
+  /** Count of rules attributed to this agent, by kind. Affirmations
+   *  (approval + positive preference) bump promotion candidacy;
+   *  corrections + frustration_triggers depress it. */
+  by_kind: Record<DispositionKind, number>;
+  /** Convenience roll-up: net positive signal. */
+  net_score: number;
+  /** Sample of the most recent praise rules for this agent, capped at 5. */
+  recent_affirmations: Array<{ rule_text: string; evidence?: string; created_at: string }>;
+  /** Most recent praise timestamp — useful for "praised X days ago" UX. */
+  last_affirmed_at?: string | null;
+}
+
+/**
+ * Per-agent affirmation snapshot. Used by:
+ *   - The SOP renderer (agent-sop.ts) to show an "Owner Affirmations"
+ *     section the owner can read.
+ *   - The promotion-candidate cron (Package 3) to score how often the
+ *     owner has explicitly praised this agent by name.
+ *
+ * `net_score = approval + preference_for_this_agent - correction - frustration`
+ * — intentionally simple. We can swap to a weighted ML score later if
+ * the heuristic proves too crude.
+ */
+export async function getAgentAffirmations(
+  tenantPhone: string,
+  agentName: string,
+  options: { windowDays?: number } = {},
+): Promise<AgentAffirmationSnapshot> {
+  const empty: AgentAffirmationSnapshot = {
+    agent_name: agentName,
+    by_kind: { correction: 0, approval: 0, preference: 0, frustration_trigger: 0, communication_style: 0 },
+    net_score: 0,
+    recent_affirmations: [],
+    last_affirmed_at: null,
+  };
+  if (!SUPABASE_URL || !SUPABASE_KEY) return empty;
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  const windowDays = options.windowDays ?? 90;
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+
+  try {
+    // Case-insensitive name match — owner may type "marcus" / "Marcus" /
+    // "MARCUS" interchangeably.
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/tenant_disposition_rules?tenant_phone=eq.${cleanPhone}&status=eq.active&attributed_to_agent=ilike.${encodeURIComponent(agentName)}&created_at=gte.${since}&order=created_at.desc&select=kind,rule_text,evidence,created_at`,
+      { headers: headers() },
+    );
+    if (!res.ok) return empty;
+    const rows: Array<{ kind: DispositionKind; rule_text: string; evidence?: string; created_at: string }> =
+      await res.json();
+    if (rows.length === 0) return empty;
+
+    const byKind: Record<DispositionKind, number> = {
+      correction: 0, approval: 0, preference: 0, frustration_trigger: 0, communication_style: 0,
+    };
+    const positive: typeof rows = [];
+    let lastAffirmed: string | null = null;
+    for (const r of rows) {
+      byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+      if (r.kind === 'approval' || r.kind === 'preference') {
+        positive.push(r);
+        if (!lastAffirmed || r.created_at > lastAffirmed) lastAffirmed = r.created_at;
+      }
+    }
+    const net = (byKind.approval + byKind.preference) - (byKind.correction + byKind.frustration_trigger);
+
+    return {
+      agent_name: agentName,
+      by_kind: byKind,
+      net_score: net,
+      recent_affirmations: positive.slice(0, 5).map((r) => ({
+        rule_text: r.rule_text,
+        evidence: r.evidence,
+        created_at: r.created_at,
+      })),
+      last_affirmed_at: lastAffirmed,
+    };
+  } catch (err) {
+    console.warn('[agent-affirmations] query failed:', err);
+    return empty;
+  }
 }
 
 interface ExtractedRule {
@@ -65,6 +155,9 @@ interface ExtractedRule {
   confidence?: number;
   /** When set, this rule supersedes a prior rule with this canonical id-substring match. */
   supersedes_keyword?: string;
+  /** Package 2 — name of the agent the owner explicitly referenced in
+   *  praise/approval/correction. NULL when the rule applies generically. */
+  attributed_to_agent?: string | null;
 }
 
 // ─── Extraction ───────────────────────────────────────────────────────────
@@ -114,10 +207,22 @@ Output STRICT JSON with the rules to persist. EMPTY ARRAY when there's no clear 
       "evidence": "Short quote of the owner's exact words (≤200 chars)",
       "scope": "everywhere" | "lane:scheduler" | "lane:finance" | "lane:marketing" | "tool:send_email" | etc,
       "confidence": 0.0-1.0,
-      "supersedes_keyword": "optional — short keyword to identify a prior rule this contradicts"
+      "supersedes_keyword": "optional — short keyword to identify a prior rule this contradicts",
+      "attributed_to_agent": "optional — name of the specific agent the owner referenced in praise/correction"
     }
   ]
 }
+
+AGENT ATTRIBUTION (Package 2 — positive reinforcement signal):
+
+When the owner mentions a specific agent BY NAME ("Marcus, great job", "Iris is killing it", "perfect work Riley", "Alex got that one wrong"), populate attributed_to_agent with that agent's name EXACTLY as written (case-preserving the first letter, otherwise as the owner spelled it).
+
+- "great work" with no name → leave attributed_to_agent NULL
+- "Marcus, that scheduling was perfect" → attributed_to_agent: "Marcus"
+- "Iris is killing it" → attributed_to_agent: "Iris"
+- "Riley needs to stop double-booking" → attributed_to_agent: "Riley" (kind: correction or frustration_trigger)
+
+The attribution does NOT change scope — scope still controls who reads the rule. Attribution is a separate signal that feeds per-agent affirmation tracking and promotion-candidate scoring.
 
 Disposition KINDS:
 
@@ -238,6 +343,18 @@ async function persistRule(args: {
     const ruleTextRedacted = redactPII(args.rule.rule_text.slice(0, 600));
     const whyRedacted = args.rule.why ? redactPII(args.rule.why.slice(0, 400)) : null;
 
+    // Package 2 — agent attribution. Trim + cap; null when the model
+    // didn't identify a specific named agent. Stored as raw text rather
+    // than FK to agent_configs because (a) it lets us capture references
+    // to agents that don't formally exist yet (typos, ghost agents),
+    // and (b) keeps the disposition log decoupled from the agent
+    // lifecycle (a removed agent's praise history shouldn't vanish).
+    const rawAgent = args.rule.attributed_to_agent;
+    const attributedAgent =
+      typeof rawAgent === 'string' && rawAgent.trim().length > 0
+        ? rawAgent.trim().slice(0, 80)
+        : null;
+
     const res = await fetch(`${SUPABASE_URL}/rest/v1/tenant_disposition_rules`, {
       method: 'POST',
       headers: { ...headers(), Prefer: 'return=representation' },
@@ -252,6 +369,7 @@ async function persistRule(args: {
           ? Math.max(0, Math.min(1, args.rule.confidence))
           : 0.7,
         source_message_id: args.sourceMessageId ?? null,
+        attributed_to_agent: attributedAgent,
         status: 'active',
       }),
     });

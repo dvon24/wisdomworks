@@ -60,6 +60,15 @@ export interface AgentSop {
     last_acted_at?: string | null;
     sample_outputs: string[];
   };
+  /** Package 2 — owner praise/affirmation summary for this agent.
+   *  Pulled from tenant_disposition_rules where attributed_to_agent =
+   *  this agent's name. Populated regardless of mode. */
+  owner_affirmations: {
+    net_score: number;
+    last_affirmed_at?: string | null;
+    recent_affirmations: Array<{ rule_text: string; evidence?: string; created_at: string }>;
+    by_kind: Record<string, number>;
+  };
   /** Free-text narrative — Sonnet's synthesis of "this is how Marcus
    *  has been operating." Generated only when the owner explicitly
    *  asks for a narrative (sopMode='narrative'); structured-only mode
@@ -219,6 +228,28 @@ export async function buildAgentSop(
     } catch {}
   }
 
+  // 8. Owner affirmations (Package 2) — praise + per-agent disposition
+  //    rules from the last 90 days. Fed into both the SOP doc and the
+  //    promotion-candidate scoring (Package 3).
+  let owner_affirmations: AgentSop['owner_affirmations'] = {
+    net_score: 0,
+    last_affirmed_at: null,
+    recent_affirmations: [],
+    by_kind: {},
+  };
+  try {
+    const { getAgentAffirmations } = await import('./disposition-mining');
+    const aff = await getAgentAffirmations(cleanPhone, config.agent_name, { windowDays: 90 });
+    owner_affirmations = {
+      net_score: aff.net_score,
+      last_affirmed_at: aff.last_affirmed_at,
+      recent_affirmations: aff.recent_affirmations,
+      by_kind: aff.by_kind as Record<string, number>,
+    };
+  } catch (err) {
+    console.warn('[agent-sop] affirmation lookup failed:', err);
+  }
+
   const sop: AgentSop = {
     agent_name: config.agent_name,
     agent_role: config.agent_role,
@@ -229,6 +260,7 @@ export async function buildAgentSop(
     guardrails,
     domain_facts,
     recent_activity,
+    owner_affirmations,
   };
 
   // 8. Optional Sonnet narrative — only when explicitly requested
@@ -280,6 +312,14 @@ async function synthesizeNarrative(sop: AgentSop): Promise<string> {
     sop.domain_facts.length === 0
       ? '  (none — owner has not taught lane-specific facts yet)'
       : sop.domain_facts.slice(0, 5).map((a) => `  - [${a.kind}] ${a.content}`).join('\n'),
+    '',
+    `OWNER AFFIRMATIONS (last 90 days) — net score ${sop.owner_affirmations.net_score}, ${sop.owner_affirmations.recent_affirmations.length} recent praises:`,
+    sop.owner_affirmations.recent_affirmations.length === 0
+      ? '  (no specific praise yet — agent has not been called out by name in positive feedback)'
+      : sop.owner_affirmations.recent_affirmations
+          .slice(0, 3)
+          .map((a) => `  - "${a.rule_text}"${a.evidence ? ` (owner said: ${a.evidence})` : ''}`)
+          .join('\n'),
   ].filter(Boolean).join('\n');
 
   const res = await fetch(ANTHROPIC_URL, {
@@ -345,6 +385,16 @@ export function renderSopForChat(sop: AgentSop): string {
     lines.push('', '**Domain knowledge:**');
     for (const a of sop.domain_facts.slice(0, 5)) {
       lines.push(`   • [${a.kind}] ${a.content.slice(0, 120)}`);
+    }
+  }
+  if (sop.owner_affirmations.recent_affirmations.length > 0 || sop.owner_affirmations.net_score !== 0) {
+    lines.push('', `**Owner affirmations** (net score: ${sop.owner_affirmations.net_score}${sop.owner_affirmations.last_affirmed_at ? `, last: ${new Date(sop.owner_affirmations.last_affirmed_at).toLocaleDateString()}` : ''}):`);
+    if (sop.owner_affirmations.recent_affirmations.length === 0) {
+      lines.push('   (no specific praise yet — but no negative signals either)');
+    } else {
+      for (const a of sop.owner_affirmations.recent_affirmations.slice(0, 3)) {
+        lines.push(`   ✓ ${a.rule_text.slice(0, 150)}`);
+      }
     }
   }
   return lines.join('\n');
