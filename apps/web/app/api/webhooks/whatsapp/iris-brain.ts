@@ -158,7 +158,7 @@ export async function generateIrisReply(
     };
   }
   console.log(`[iris-${surface}] Loaded ${connections.length} connection(s) for ${user.phoneNumber}: ${connections.map((c) => `${c.provider}/${c.service}`).join(', ') || 'none'}`);
-  const tools = buildToolList(connections);
+  const tools = buildToolList(connections, { ownerPhone: user.phoneNumber });
   const messages: any[] = buildContextMessages(user);
   // Build the system prompt then append the owner-disposition block —
   // the operating manual auto-mined from past interactions. Renders

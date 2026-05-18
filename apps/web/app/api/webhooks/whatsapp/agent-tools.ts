@@ -1681,6 +1681,31 @@ const TOOL_APPROVE_PROMOTION: AnthropicTool = {
   },
 };
 
+// ─── Tier 1 admin remediation (party-mode 2026-05-18) ──────────────────
+// Iris-as-Orchestrator can perform PLATFORM-LEVEL fixes when running
+// for the platform owner. Gated by env var PLATFORM_OWNER_PHONE — only
+// the owner's Iris sees these tools. Other tenants don't.
+//
+// Each admin tool wraps a server-side /api/admin/* endpoint, calling
+// it with the OWNER_API_TOKEN from env. Iris doesn't see the token.
+// The tool descriptions tell her what each remediation actually does
+// so she can decide whether to invoke it.
+
+const TOOL_ADMIN_DEDUPE_AGENTS: AnthropicTool = {
+  name: 'admin_dedupe_agents',
+  description:
+    "PLATFORM-OWNER ONLY. Dedupes duplicate agent_configs rows for a tenant — when the deck shows the same agent twice (e.g. '3 Mira's'), this runs the cleanup. Keeps the OLDEST active row for each name (preserves history), marks newer duplicates as status='removed'. Idempotent. Use this when the owner reports duplicate agents in the deck. Returns a summary: which names had duplicates, how many were cleaned, which row was kept.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      phone: {
+        type: 'string',
+        description: 'Tenant phone whose agent_configs to dedupe. Defaults to the current owner if omitted (which is the normal case).',
+      },
+    },
+  },
+};
+
 // ─── Per-agent SOP viewer (owner-disposition epic, follow-up) ──────────
 
 const TOOL_SHOW_AGENT_SOP: AnthropicTool = {
@@ -2135,7 +2160,10 @@ const TOOL_CONNECT_SERVICE: AnthropicTool = {
 
 // ─── Tool Selection — gate by what the user has connected ───
 
-export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
+export function buildToolList(
+  connections: OAuthConnection[],
+  options: { ownerPhone?: string } = {},
+): AnthropicTool[] {
   const tools: AnthropicTool[] = [];
 
   const hasEmail = connections.some((c) => c.service === 'email');
@@ -2288,6 +2316,16 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_SHOW_AGENT_SOP);
   tools.push(TOOL_LIST_PROMOTION_CANDIDATES);
   tools.push(TOOL_APPROVE_PROMOTION);
+
+  // Platform-owner-only admin remediation tools. Gated by env var so
+  // future tenants don't see them; only the platform owner's Iris does.
+  if (options.ownerPhone && process.env.PLATFORM_OWNER_PHONE) {
+    const cleanOwnerPhone = process.env.PLATFORM_OWNER_PHONE.replace(/[\s\-+()]/g, '');
+    const cleanUserPhone = options.ownerPhone.replace(/[\s\-+()]/g, '');
+    if (cleanOwnerPhone === cleanUserPhone) {
+      tools.push(TOOL_ADMIN_DEDUPE_AGENTS);
+    }
+  }
   tools.push(TOOL_CONNECT_SERVICE);
   tools.push(TOOL_LIST_SNAPSHOTS);
   tools.push(TOOL_ROLLBACK_STATE);
@@ -6092,6 +6130,50 @@ export async function executeTool(
           content: `✓ ${agentName} promoted to ${applied}. The new autonomy takes effect on their next tick (~15 min).`,
           success: true,
         };
+      }
+
+      case 'admin_dedupe_agents': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        // Defense-in-depth — even though the tool is only EXPOSED to
+        // the platform owner via the gate above, double-check at exec
+        // time so a stale tool reference can't be replayed by another
+        // tenant. Belt-and-suspenders.
+        const cleanUserPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const platformOwner = (process.env.PLATFORM_OWNER_PHONE ?? '').replace(/[\s\-+()]/g, '');
+        if (!platformOwner || cleanUserPhone !== platformOwner) {
+          return {
+            content: 'This is a platform-owner-only tool — not available for your tenant.',
+            success: false,
+          };
+        }
+        const ownerToken = process.env.OWNER_API_TOKEN;
+        const appUrl = process.env.NEXT_PUBLIC_APP_BASE_URL ?? '';
+        if (!ownerToken || !appUrl) {
+          return {
+            content: 'admin_dedupe_agents needs OWNER_API_TOKEN + NEXT_PUBLIC_APP_BASE_URL in env. Tell Devon to set them in Vercel.',
+            success: false,
+          };
+        }
+        const targetPhone = call.input.phone ? String(call.input.phone).trim() : user.phoneNumber;
+        try {
+          const res = await fetch(`${appUrl}/api/admin/dedupe-agents`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${ownerToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ phone: targetPhone }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            return { content: `Dedup endpoint failed: ${data.error ?? JSON.stringify(data).slice(0, 200)}`, success: false };
+          }
+          // The endpoint returns an `interpretation` field already
+          // formatted for owner-facing display. Use it as-is.
+          return { content: data.interpretation ?? `Deduped ${data.rows_marked_removed ?? 0} duplicate row(s).`, success: true };
+        } catch (err: any) {
+          return { content: `admin_dedupe_agents error: ${err?.message ?? String(err)}`, success: false };
+        }
       }
 
       case 'connect_service': {
