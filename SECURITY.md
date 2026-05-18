@@ -64,3 +64,49 @@ Security-relevant code paths:
 - Credential encryption + audit log —
   `apps/web/app/api/_lib/credential-security` + migration
   `2026-05-11-credential-security.sql` (Story 6.3)
+- Tenant snapshots (backup insurance layer) —
+  `apps/web/app/api/_lib/tenant-snapshots.ts` +
+  `apps/web/app/api/cron/snapshot-tenants/route.ts` (Story 2.10)
+- Backup recovery drill —
+  `apps/web/app/api/admin/restore-drill/route.ts` (Story 6.6)
+
+## Backup recovery drill cadence (Story 6.6)
+
+A backup that's never been restored from is theatre. Two-tier drill:
+
+**Monthly dry-run drill** — proves the snapshot pipeline is producing
+parseable, complete files. Non-destructive; safe to run anytime.
+
+```
+POST /api/admin/restore-drill
+  Authorization: Bearer $OWNER_API_TOKEN
+  Body: { "phone": "<tenant>", "dryRun": true }
+```
+
+Healthy result: ✓ snapshot is intact, row counts populated, no
+failures. Investigate if: snapshot age > 26h, 0 total rows, or
+download error.
+
+**Quarterly wet-run drill** — proves the restore path actually
+produces queryable rows. Writes a scratch tenant (prefixed `drill-`)
+that you inspect and then delete.
+
+```
+POST /api/admin/restore-drill
+  Authorization: Bearer $OWNER_API_TOKEN
+  Body: { "phone": "<tenant>", "dryRun": false }
+```
+
+After verifying the drill rows, clean up:
+
+```
+DELETE FROM tenant_configs WHERE tenant_phone LIKE 'drill-%';
+DELETE FROM agent_configs WHERE tenant_phone LIKE 'drill-%';
+DELETE FROM agent_instances WHERE tenant_phone LIKE 'drill-%';
+DELETE FROM whatsapp_contexts WHERE phone_number LIKE 'drill-%';
+DELETE FROM tenant_knowledge_atoms WHERE tenant_phone LIKE 'drill-%';
+DELETE FROM tenant_email_indexing_prefs WHERE tenant_phone LIKE 'drill-%';
+```
+
+Every drill is logged to the hash-chained audit ledger (Story 6.4) so
+the cadence itself is tamper-evident.
