@@ -1658,6 +1658,42 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Story 2.9 Phase 3 (Layer 2) — Orchestrator dispatch ────────────────
+// Iris-as-orchestrator: fan out a signal to multiple agents in parallel,
+// each gets their role-filtered recent context, returns synthesized
+// responses. MVP of the Signal Layer (Story 2.4) — bounded to sync
+// fan-out today; async NATS-style messaging waits for a real use case.
+
+const TOOL_DISPATCH_TO_AGENTS: AnthropicTool = {
+  name: 'dispatch_to_agents',
+  description:
+    "Fan out a signal (owner message, event, customer chat, anomaly) to multiple team agents IN PARALLEL and collect their recommendations. Use when an inbound signal is multi-domain and warrants more than one perspective — e.g. 'a client double-booked' → Riley (scheduler) + Marcus (apologetic-outreach), 'invoice came in for $5k' → Marcus (finance) + relevant project lead, 'customer asked about Au7o pricing' → Alex (Au7o) + Sales/Marketing. Each agent receives their own role-filtered slice of recent behavioral memory plus the trigger, then returns a short recommendation. Iris synthesizes the responses and surfaces a unified take to the owner. Prefer over consult_manager when ≥2 agents should weigh in. Skip for single-agent questions (use the agent's tool directly) or trivial chit-chat.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agents: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Names of agents to dispatch to (must already exist on the team). 2-5 is the sweet spot; fan-out beyond 5 is usually noise.',
+      },
+      trigger: {
+        type: 'string',
+        description: "Plain-English description of what just happened or what the owner asked — the SIGNAL each agent is reacting to. Be specific enough that an agent reading it cold understands the situation.",
+      },
+      urgency: {
+        type: 'string',
+        enum: ['low', 'medium', 'high'],
+        description: "How time-sensitive — biases each agent's response length + bias toward action vs. analysis. Default 'medium'.",
+      },
+      questionPerAgent: {
+        type: 'object',
+        description: "Optional — different prompts per agent. Keys are agent names, values are the question to ask THAT agent specifically. Omit to ask all agents the same `trigger`-derived question.",
+      },
+    },
+    required: ['agents', 'trigger'],
+  },
+};
+
 // ─── Story 2b.3 — Twilio SMS (urgent alerts only) ────────────────────────
 
 const TOOL_SEND_SMS: AnthropicTool = {
@@ -2209,6 +2245,7 @@ export function buildToolList(connections: OAuthConnection[]): AnthropicTool[] {
   tools.push(TOOL_MOVE_AGENT);
   tools.push(TOOL_REMOVE_AGENT);
   tools.push(TOOL_CONSULT_MANAGER);
+  tools.push(TOOL_DISPATCH_TO_AGENTS);
   tools.push(TOOL_CONNECT_SERVICE);
   tools.push(TOOL_LIST_SNAPSHOTS);
   tools.push(TOOL_ROLLBACK_STATE);
@@ -5796,6 +5833,118 @@ export async function executeTool(
         } catch (err) {
           return { content: `${manager.name} consultation error: ${err}`, success: false };
         }
+      }
+
+      case 'dispatch_to_agents': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const team = user.profile?.team ?? [];
+        const apiKey = process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) return { content: 'No API key — dispatch unavailable.', success: false };
+
+        const requested = Array.isArray(call.input.agents) ? call.input.agents.map((n: any) => String(n)) : [];
+        if (requested.length === 0) return { content: 'No agents specified to dispatch.', success: false };
+        if (requested.length > 5) return { content: 'Too many agents (max 5 per dispatch — beyond that is usually noise; pick the most relevant).', success: false };
+        const trigger = String(call.input.trigger ?? '').trim();
+        if (!trigger) return { content: 'Missing trigger description.', success: false };
+        const urgency = ['low', 'medium', 'high'].includes(call.input.urgency) ? call.input.urgency : 'medium';
+        const perAgentQuestions: Record<string, string> = (call.input.questionPerAgent && typeof call.input.questionPerAgent === 'object')
+          ? call.input.questionPerAgent
+          : {};
+
+        // Resolve agents by name. Walk team + sub-teams; case-insensitive.
+        type ResolvedAgent = { name: string; role: string; description?: string; tools?: string[] };
+        const resolved: ResolvedAgent[] = [];
+        const missing: string[] = [];
+        for (const name of requested) {
+          const lower = name.toLowerCase();
+          let found: any = team.find((a) => a.name?.toLowerCase() === lower || a.id?.toLowerCase() === lower);
+          if (!found) {
+            for (const top of team) {
+              const sub = top.subTeam?.agents?.find((s: any) => s.name?.toLowerCase() === lower || s.id?.toLowerCase() === lower);
+              if (sub) { found = sub; break; }
+            }
+          }
+          if (found) {
+            resolved.push({
+              name: found.name,
+              role: found.role,
+              description: found.description,
+              tools: found.tools,
+            });
+          } else {
+            missing.push(name);
+          }
+        }
+        if (resolved.length === 0) {
+          return { content: `None of those agents are on the team. Roster: ${team.map((a) => a.name).join(', ')}.`, success: false };
+        }
+
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const { loadRecentContextForAgent } = await import('../../_lib/agent-behavioral-rag');
+
+        // Fan out in parallel. Each agent: load their role-filtered
+        // recent context, build a tight persona prompt, ask Anthropic
+        // for a short recommendation. Bounded to 200 tokens out per
+        // agent so dispatching 5 agents stays under 1k output tokens.
+        const responses = await Promise.all(
+          resolved.map(async (a) => {
+            try {
+              const ctxBlock = await loadRecentContextForAgent({
+                tenantPhone: cleanPhone,
+                agentName: a.name,
+                agentRole: a.role,
+                agentDescription: a.description,
+                limit: 6,
+              });
+              const personaLines = [
+                `You are ${a.name}, ${a.role}.`,
+                a.description ? `Your remit: ${a.description}` : '',
+                a.tools?.length ? `Your tools: ${a.tools.join(', ')}.` : '',
+                `Business context: ${user.businessName ?? 'this business'}${user.businessType ? ` (${user.businessType})` : ''}.`,
+                '',
+                ctxBlock.text ? ctxBlock.text + '\n' : '',
+                `Urgency: ${urgency}. Iris has dispatched a signal to you and other teammates in parallel. Give your take in first person — be SHORT, SPECIFIC, and ACTIONABLE.`,
+                urgency === 'high' ? 'Lead with the action you would take, not analysis.' : 'Lead with what matters most.',
+                'Reply in ≤ 60 words. No throat-clearing. No "as <role>, I think" — just say it.',
+              ].filter(Boolean).join('\n');
+              const question = perAgentQuestions[a.name] ?? `Trigger: ${trigger}\n\nYour take?`;
+              const res = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                  'x-api-key': apiKey,
+                  'anthropic-version': '2023-06-01',
+                  'content-type': 'application/json',
+                },
+                body: JSON.stringify({
+                  model: 'claude-haiku-4-5-20251001',
+                  max_tokens: 200,
+                  system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
+                  messages: [{ role: 'user', content: question }],
+                }),
+              });
+              if (!res.ok) {
+                const err = await res.text().catch(() => '<no body>');
+                return { name: a.name, role: a.role, reply: `(${a.name} couldn't respond — ${res.status}: ${err.slice(0, 100)})`, ok: false };
+              }
+              const data = await res.json();
+              const reply = data.content?.find((b: any) => b.type === 'text')?.text?.trim() ?? '(no response)';
+              return { name: a.name, role: a.role, reply, ok: true };
+            } catch (err: any) {
+              return { name: a.name, role: a.role, reply: `(${a.name} hit an error — ${err?.message ?? String(err)})`, ok: false };
+            }
+          }),
+        );
+
+        const lines: string[] = [`🔀 Dispatched to ${resolved.length} agent${resolved.length === 1 ? '' : 's'} (urgency: ${urgency}):`];
+        for (const r of responses) {
+          lines.push('', `**${r.name}** (${r.role})${r.ok ? '' : ' ⚠'}:`);
+          lines.push(r.reply);
+        }
+        if (missing.length > 0) {
+          lines.push('', `Note: not on team — ${missing.join(', ')}`);
+        }
+        lines.push('', 'Synthesize these inputs for the owner — call out agreement vs. disagreement, surface the highest-leverage next step.');
+        return { content: lines.join('\n'), success: true };
       }
 
       case 'connect_service': {

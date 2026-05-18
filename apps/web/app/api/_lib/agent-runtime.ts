@@ -1009,7 +1009,21 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
       lane: config.config?.category,
       limit: 10,
     });
-    const systemPrompt = baseSystemPrompt + dispositionBlock;
+    // Story 2.9 Phase 3 (Layer 1) — per-agent active context injection.
+    // Pulls a TARGETED slice of recent owner behavioral memory using the
+    // agent's role+description as the semantic seed, so each agent ticks
+    // with a relevant just-in-time briefing instead of being blind to
+    // what's been happening with the owner.
+    const { loadRecentContextForAgent } = await import('./agent-behavioral-rag');
+    const recentContext = await loadRecentContextForAgent({
+      tenantPhone: instance.tenant_phone,
+      agentName: config.agent_name ?? 'Agent',
+      agentRole: config.agent_role ?? 'Specialist',
+      agentDescription: config.config?.description,
+      limit: 8,
+    });
+    const recentBlock = recentContext.text ? `\n\n${recentContext.text}\n` : '';
+    const systemPrompt = baseSystemPrompt + dispositionBlock + recentBlock;
     const { result, tokensIn, tokensOut, raw } = await callAnthropicForTick(primaryModel, systemPrompt);
 
     // Autonomy gate — at L1 we never claim 'acted', only 'proposed' or 'observed'
