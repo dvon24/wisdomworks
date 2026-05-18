@@ -280,6 +280,58 @@ export async function getEngagementBySender(
 }
 
 /**
+ * Lightweight sender → open-rate lookup. Used by Iris's live email tools
+ * (list_unread_emails, search_emails, list_pending_followups) to
+ * annotate each email with its sender's engagement signal — so when
+ * Iris fetches emails for the owner she naturally prioritizes the
+ * senders the owner actually opens.
+ *
+ * Returns a Map<sender_lower, { openRate, total }> for fast lookup.
+ * Bounded to senders with ≥minTotal emails in the last 90 days.
+ */
+export async function getSenderEngagementMap(
+  tenantPhone: string,
+  options: { minTotal?: number; windowDays?: number } = {},
+): Promise<Map<string, { openRate: number; total: number }>> {
+  const senders = await getEngagementBySender(tenantPhone, {
+    windowDays: options.windowDays ?? 90,
+    limit: 500,
+    minTotal: options.minTotal ?? 2,
+  });
+  const map = new Map<string, { openRate: number; total: number }>();
+  for (const s of senders) {
+    map.set(s.sender.toLowerCase(), { openRate: s.openRate, total: s.total });
+  }
+  return map;
+}
+
+/**
+ * Format a one-character engagement marker for a sender. Used in
+ * Iris's email-list tool responses so she sees the signal alongside
+ * each email and prioritizes accordingly.
+ *
+ *   ✓ = high-engagement (>=70% open) — keeper
+ *   • = medium-engagement (30-70% open) — neutral
+ *   ✗ = low-engagement (<=20% open) — likely spam/noise
+ *   ? = no data yet (under minTotal threshold)
+ */
+export function engagementMarkerForSender(
+  map: Map<string, { openRate: number; total: number }>,
+  fromAddress: string,
+): string {
+  const sender = (fromAddress ?? '').toLowerCase();
+  // Try exact match first, then domain match (for cases like
+  // 'noreply@ron.law' vs 'ron@law.com' that we want to treat the same)
+  const exact = map.get(sender);
+  if (exact) {
+    if (exact.total >= 5 && exact.openRate >= 0.7) return '✓';
+    if (exact.total >= 5 && exact.openRate <= 0.2) return '✗';
+    if (exact.total >= 3) return '•';
+  }
+  return '?';
+}
+
+/**
  * Render the top-engaged + top-ignored senders as a classifier-prompt
  * block. The classifier uses this to bias toward senders the owner
  * actually opens and away from senders they reliably ignore.

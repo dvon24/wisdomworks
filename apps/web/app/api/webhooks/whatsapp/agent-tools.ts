@@ -2359,11 +2359,28 @@ export async function executeTool(
         if (result.data.length === 0) {
           return { content: 'No unread emails in the last 24 hours.', success: true };
         }
-        const lines = result.data.map(
-          (e, i) =>
-            `${i + 1}. From: ${e.fromName ?? e.from} | Subject: ${e.subject} | Preview: ${e.bodyPreview.slice(0, 120)}`,
-        );
-        return { content: `Found ${result.data.length} unread emails:\n${lines.join('\n')}`, success: true };
+        // Story 2.16 Phase 2c — annotate each email with the sender's
+        // engagement marker so Iris naturally prioritizes high-engagement
+        // senders ('✓') and deprioritizes ignored ones ('✗') when
+        // summarizing for the owner.
+        let engagementMap = new Map<string, { openRate: number; total: number }>();
+        if (user) {
+          try {
+            const { getSenderEngagementMap } = await import('../../_lib/email-engagement');
+            engagementMap = await getSenderEngagementMap(user.phoneNumber.replace(/[\s\-+()]/g, ''));
+          } catch (err) {
+            console.warn('[list_unread_emails] engagement lookup failed:', err);
+          }
+        }
+        const { engagementMarkerForSender } = await import('../../_lib/email-engagement');
+        const lines = result.data.map((e, i) => {
+          const marker = engagementMarkerForSender(engagementMap, e.from);
+          return `${i + 1}. ${marker} From: ${e.fromName ?? e.from} | Subject: ${e.subject} | Preview: ${e.bodyPreview.slice(0, 120)}`;
+        });
+        return {
+          content: `Found ${result.data.length} unread emails (✓ owner reliably opens this sender · ✗ owner ignores · • neutral · ? insufficient data):\n${lines.join('\n')}`,
+          success: true,
+        };
       }
 
       case 'search_emails': {
@@ -2418,16 +2435,29 @@ export async function executeTool(
         if (result.data.length === 0) {
           return { content: `No emails matched your filters in the last ${sinceDays} days.`, success: true };
         }
+        // Phase 2c — engagement annotation per sender so Iris prioritizes
+        // high-engagement contacts when summarizing search results.
+        let engagementMap = new Map<string, { openRate: number; total: number }>();
+        if (user) {
+          try {
+            const { getSenderEngagementMap } = await import('../../_lib/email-engagement');
+            engagementMap = await getSenderEngagementMap(user.phoneNumber.replace(/[\s\-+()]/g, ''));
+          } catch (err) {
+            console.warn('[search_emails] engagement lookup failed:', err);
+          }
+        }
+        const { engagementMarkerForSender } = await import('../../_lib/email-engagement');
         // Return enough body to draft a reply. Cap each preview at ~500 chars
         // so total stays manageable; the model can ask for more if needed.
         const lines = result.data.map((e: any, i: number) => {
           const date = new Date(e.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
           const readMark = e.isUnread ? '🔵' : '⚪';
-          const senderLine = `${i + 1}. ${readMark} From: ${e.fromName ?? e.from} <${e.from}>`;
+          const engagementMark = engagementMarkerForSender(engagementMap, e.from);
+          const senderLine = `${i + 1}. ${readMark} ${engagementMark} From: ${e.fromName ?? e.from} <${e.from}>`;
           return `${senderLine}\n   Subject: ${e.subject}\n   Date: ${date}\n   ID (use for inReplyToMessageId): ${e.threadId}\n   Body: ${e.body.slice(0, 500)}${e.body.length > 500 ? '… [truncated]' : ''}`;
         });
         return {
-          content: `Found ${result.data.length} email${result.data.length === 1 ? '' : 's'} matching your filters:\n\n${lines.join('\n\n')}`,
+          content: `Found ${result.data.length} email${result.data.length === 1 ? '' : 's'} matching your filters (🔵 unread/⚪ read · ✓ high engagement/✗ ignored/• neutral/? insufficient data):\n\n${lines.join('\n\n')}`,
           success: true,
         };
       }
@@ -3168,12 +3198,23 @@ export async function executeTool(
         if (proposals.length === 0) {
           return { content: 'No follow-ups pending. The cron checks once a day at 2 PM UTC for stale sent emails.', success: true };
         }
+        // Phase 2c — engagement marker per recipient so high-engagement
+        // contacts (the ones the owner actually opens) bubble up.
+        let engagementMap = new Map<string, { openRate: number; total: number }>();
+        try {
+          const { getSenderEngagementMap } = await import('../../_lib/email-engagement');
+          engagementMap = await getSenderEngagementMap(cleanPhone);
+        } catch (err) {
+          console.warn('[list_pending_followups] engagement lookup failed:', err);
+        }
+        const { engagementMarkerForSender } = await import('../../_lib/email-engagement');
         const lines = proposals.map((p, i) => {
           const recipient = p.recipient_name ? `${p.recipient_name} <${p.recipient_address}>` : p.recipient_address;
-          return `${i + 1}. [${p.id.slice(0, 8)}] ${recipient} — "${p.original_subject}" (${p.days_since_sent}d ago)`;
+          const mark = engagementMarkerForSender(engagementMap, p.recipient_address);
+          return `${i + 1}. ${mark} [${p.id.slice(0, 8)}] ${recipient} — "${p.original_subject}" (${p.days_since_sent}d ago)`;
         });
         return {
-          content: `${proposals.length} pending follow-up${proposals.length > 1 ? 's' : ''}:\n${lines.join('\n')}\n\nReply 'send [id]' to send, 'skip [id]' to dismiss, or 'show [id]' to see the draft.`,
+          content: `${proposals.length} pending follow-up${proposals.length > 1 ? 's' : ''} (✓ high-engagement contact/✗ low/• neutral/? unknown):\n${lines.join('\n')}\n\nReply 'send [id]' to send, 'skip [id]' to dismiss, or 'show [id]' to see the draft.`,
           success: true,
         };
       }
