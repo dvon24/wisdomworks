@@ -6150,28 +6150,9 @@ export async function executeTool(
 
       case 'admin_dedupe_agents': {
         if (!user) return { content: 'Internal: user context required.', success: false };
-        const ownerToken = process.env.OWNER_API_TOKEN;
-        const appUrl = process.env.NEXT_PUBLIC_APP_BASE_URL ?? '';
-        if (!ownerToken || !appUrl) {
-          const missing: string[] = [];
-          if (!ownerToken) missing.push('OWNER_API_TOKEN');
-          if (!appUrl) missing.push('NEXT_PUBLIC_APP_BASE_URL (should be https://wisdomworks.vercel.app)');
-          return {
-            content:
-              `admin_dedupe_agents cannot run — missing env vars: ${missing.join(', ')}.\n\n` +
-              `RELAY THIS VERBATIM TO THE OWNER:\n` +
-              `"I tried to dedupe but the following Vercel env vars are not set: ${missing.join(', ')}. ` +
-              `Set them in Vercel → Settings → Environment Variables, redeploy, then ask me to retry."\n\n` +
-              `DO NOT propose any other remediation. DO NOT invoke another agent. DO NOT say 'the team will look at it'. ` +
-              `This is platform config that ONLY the owner can change.`,
-            success: false,
-          };
-        }
-        // Tier A tenant-scope enforcement: ALWAYS use the caller's
-        // own phone. Iris can't act on another tenant's data through
-        // this tool. The only override is the platform owner — when
-        // PLATFORM_OWNER_PHONE matches the caller, they can pass
-        // call.input.phone to operate on any tenant.
+        // Tier A tenant-scope enforcement: ALWAYS use the caller's own
+        // phone. The platform-owner override lets PLATFORM_OWNER_PHONE
+        // pass call.input.phone to operate on any tenant.
         const cleanUserPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
         const platformOwner = (process.env.PLATFORM_OWNER_PHONE ?? '').replace(/[\s\-+()]/g, '');
         const isPlatformOwner = platformOwner && cleanUserPhone === platformOwner;
@@ -6179,21 +6160,13 @@ export async function executeTool(
           ? String(call.input.phone).trim()
           : cleanUserPhone;
         try {
-          const res = await fetch(`${appUrl}/api/admin/dedupe-agents`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${ownerToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ phone: targetPhone }),
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            return { content: `Dedup endpoint failed: ${data.error ?? JSON.stringify(data).slice(0, 200)}`, success: false };
-          }
-          // The endpoint returns an `interpretation` field already
-          // formatted for owner-facing display. Use it as-is.
-          return { content: data.interpretation ?? `Deduped ${data.rows_marked_removed ?? 0} duplicate row(s).`, success: true };
+          // Direct call into the admin lib — no HTTP roundtrip. Refactor
+          // 2026-05-19: was previously fetching its own /api/admin/* over
+          // HTTP, which required a NEXT_PUBLIC_APP_BASE_URL env var. Same
+          // process, same code — no reason to go over the wire.
+          const { dedupeAgentsForTenant } = await import('../../_lib/admin-agents');
+          const result = await dedupeAgentsForTenant(targetPhone);
+          return { content: result.interpretation, success: result.ok };
         } catch (err: any) {
           return { content: `admin_dedupe_agents error: ${err?.message ?? String(err)}`, success: false };
         }
@@ -6201,43 +6174,20 @@ export async function executeTool(
 
       case 'admin_restore_agent': {
         if (!user) return { content: 'Internal: user context required.', success: false };
-        const ownerToken = process.env.OWNER_API_TOKEN;
-        const appUrl = process.env.NEXT_PUBLIC_APP_BASE_URL ?? '';
-        if (!ownerToken || !appUrl) {
-          const missing: string[] = [];
-          if (!ownerToken) missing.push('OWNER_API_TOKEN');
-          if (!appUrl) missing.push('NEXT_PUBLIC_APP_BASE_URL (should be https://wisdomworks.vercel.app)');
-          return {
-            content:
-              `admin_restore_agent cannot run — missing env vars: ${missing.join(', ')}.\n\n` +
-              `RELAY THIS VERBATIM TO THE OWNER:\n` +
-              `"I tried to restore the agent but the following Vercel env vars are not set: ${missing.join(', ')}. ` +
-              `Set them in Vercel → Settings → Environment Variables, redeploy, then ask me to retry."\n\n` +
-              `DO NOT propose any other remediation. DO NOT invoke another agent. ` +
-              `This is platform config that ONLY the owner can change.`,
-            success: false,
-          };
-        }
         const agentName = String(call.input.agentName ?? '').trim();
         if (!agentName) {
           return { content: 'Missing agentName — which agent should be restored?', success: false };
         }
-        const mostRecentOnly = call.input.mostRecentOnly !== false; // default true (recommended)
+        const mostRecentOnly = call.input.mostRecentOnly !== false; // default true
         const cleanUserPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
         try {
-          const res = await fetch(`${appUrl}/api/admin/restore-agent`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${ownerToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ phone: cleanUserPhone, agentName, mostRecentOnly }),
+          const { restoreAgentForTenant } = await import('../../_lib/admin-agents');
+          const result = await restoreAgentForTenant({
+            tenantPhone: cleanUserPhone,
+            agentName,
+            mostRecentOnly,
           });
-          const data = await res.json();
-          if (!res.ok) {
-            return { content: `Restore endpoint failed: ${data.error ?? JSON.stringify(data).slice(0, 200)}`, success: false };
-          }
-          return { content: data.interpretation ?? `Restored ${data.rows_restored ?? 0} row(s) for ${agentName}.`, success: true };
+          return { content: result.interpretation, success: result.ok };
         } catch (err: any) {
           return { content: `admin_restore_agent error: ${err?.message ?? String(err)}`, success: false };
         }
