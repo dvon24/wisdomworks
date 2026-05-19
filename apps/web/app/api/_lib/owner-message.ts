@@ -64,6 +64,21 @@ export interface SendOwnerMessageInput {
    * Default false — proactive sends append automatically.
    */
   skipHistoryAppend?: boolean;
+  /**
+   * Routing priority (added 2026-05-19 with the unified outbox).
+   *
+   *   'chat_reply' (default for source='iris') — synchronous send,
+   *     owner needs to see it now. Bypasses the queue.
+   *   'urgent' — synchronous send for critical alerts the cron path
+   *     can't defer (e.g. security incident notification).
+   *   'digest' (default for cron sources) — enqueued to outbound_messages;
+   *     drainer holds during active chat windows and may merge with
+   *     other pending digests for the same tenant.
+   *
+   * If unset, the priority is inferred from `source`: 'iris' →
+   * chat_reply, everything else → digest.
+   */
+  priority?: 'chat_reply' | 'urgent' | 'digest';
 }
 
 export interface SendOwnerMessageResult {
@@ -80,6 +95,31 @@ export async function sendOwnerMessage(input: SendOwnerMessageInput): Promise<Se
   }
 
   const cleanTo = input.tenantPhone.replace(/[\s\-+()]/g, '');
+
+  // Resolve effective priority. Explicit override wins; otherwise infer:
+  // iris's chat replies + media webhooks (which are reactive to inbound
+  // owner-side media) are chat_reply. Everything else defaults to digest,
+  // which routes through the queue.
+  const priority: 'chat_reply' | 'urgent' | 'digest' =
+    input.priority ??
+    (input.source === 'iris' || input.source === 'webhook-image' || input.source === 'webhook-video'
+      ? 'chat_reply'
+      : 'digest');
+
+  // Digest path — enqueue and return. The outbound-drainer cron will
+  // pick it up, hold during active chat windows, and merge with other
+  // pending digests for the same tenant.
+  if (priority === 'digest') {
+    return enqueueOutboundMessage({
+      tenantPhone: cleanTo,
+      body: input.body,
+      source: input.source,
+      media: input.media,
+      priority,
+    });
+  }
+
+  // Synchronous path — chat_reply + urgent both deliver now.
 
   // 1. Build the Graph API payload
   let payload: Record<string, unknown>;
@@ -123,6 +163,8 @@ export async function sendOwnerMessage(input: SendOwnerMessageInput): Promise<Se
   }
 
   // 3. Append to conversation_history (unless caller will do it themselves)
+  //    AND stamp last_assistant_message_at so the drainer can detect
+  //    active chat windows.
   if (!input.skipHistoryAppend) {
     void appendAssistantMessageToHistory({
       tenantPhone: cleanTo,
@@ -130,9 +172,139 @@ export async function sendOwnerMessage(input: SendOwnerMessageInput): Promise<Se
       source: input.source,
       mediaUrl: input.media?.url,
     });
+  } else {
+    // iris-brain owns history append but still needs the
+    // last_assistant_message_at stamp updated for the drainer.
+    void stampLastAssistantMessageAt(cleanTo);
   }
 
   return { ok: true, messageId };
+}
+
+// ─── Unified outbox (Story 2.4-ish — coordinator pattern) ─────────────
+
+/**
+ * Enqueue a message for the outbound-drainer cron to deliver. The
+ * drainer enforces "don't interrupt active chats" — if the owner has
+ * messaged Iris (or vice-versa) within 60s, the digest is held 5min.
+ * Multiple pending digests for the same tenant get merged into one.
+ */
+export async function enqueueOutboundMessage(input: {
+  tenantPhone: string;
+  body: string;
+  source: OwnerMessageSource;
+  media?: { type: 'video' | 'image'; url: string };
+  priority?: 'chat_reply' | 'urgent' | 'digest';
+}): Promise<SendOwnerMessageResult> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    return { ok: false, error: 'supabase not configured (outbox enqueue)' };
+  }
+  const cleanTo = input.tenantPhone.replace(/[\s\-+()]/g, '');
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/outbound_messages`, {
+      method: 'POST',
+      headers: { ...supaHeaders(), Prefer: 'return=minimal' },
+      body: JSON.stringify({
+        tenant_phone: cleanTo,
+        priority: input.priority ?? 'digest',
+        body: input.body,
+        source: input.source,
+        media: input.media ?? null,
+        status: 'pending',
+      }),
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.warn(`[outbox:${input.source}] enqueue failed:`, res.status, errBody);
+      return { ok: false, error: errBody };
+    }
+    return { ok: true, messageId: 'queued' };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * Drainer-side delivery. Bypasses the priority routing in
+ * sendOwnerMessage (since by the time the drainer calls this, the
+ * queue has already done the holding/merging). Stamps history +
+ * last_assistant_message_at on success. Returns the WhatsApp
+ * message id for the drainer to record.
+ */
+export async function deliverOutboundFromQueue(input: {
+  tenantPhone: string;
+  body: string;
+  source: OwnerMessageSource;
+  media?: { type: 'video' | 'image'; url: string };
+}): Promise<SendOwnerMessageResult> {
+  const phoneId = process.env.WHATSAPP_PHONE_ID;
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!phoneId || !accessToken) {
+    return { ok: false, error: 'WHATSAPP_PHONE_ID / WHATSAPP_ACCESS_TOKEN not configured' };
+  }
+  const cleanTo = input.tenantPhone.replace(/[\s\-+()]/g, '');
+
+  let payload: Record<string, unknown>;
+  if (input.media) {
+    payload = {
+      messaging_product: 'whatsapp',
+      to: cleanTo,
+      type: input.media.type,
+      [input.media.type]: {
+        link: input.media.url,
+        ...(input.body ? { caption: input.body.slice(0, 1024) } : {}),
+      },
+    };
+  } else {
+    payload = {
+      messaging_product: 'whatsapp',
+      to: cleanTo,
+      type: 'text',
+      text: { body: input.body.slice(0, 4096) },
+    };
+  }
+
+  try {
+    const res = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      return { ok: false, error: errBody };
+    }
+    const data = await res.json();
+    const messageId = data.messages?.[0]?.id;
+
+    void appendAssistantMessageToHistory({
+      tenantPhone: cleanTo,
+      body: input.body,
+      source: input.source,
+      mediaUrl: input.media?.url,
+    });
+    void stampLastAssistantMessageAt(cleanTo);
+
+    return { ok: true, messageId };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
+async function stampLastAssistantMessageAt(cleanPhone: string): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  try {
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`,
+      {
+        method: 'PATCH',
+        headers: { ...supaHeaders(), Prefer: 'return=minimal' },
+        body: JSON.stringify({ last_assistant_message_at: new Date().toISOString() }),
+      },
+    );
+  } catch {
+    // Non-fatal — the timestamp is a drainer hint, not load-bearing.
+  }
 }
 
 // ─── Conversation history append (proactive paths) ────────────────────────
