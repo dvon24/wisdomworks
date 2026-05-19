@@ -6153,8 +6153,17 @@ export async function executeTool(
         const ownerToken = process.env.OWNER_API_TOKEN;
         const appUrl = process.env.NEXT_PUBLIC_APP_BASE_URL ?? '';
         if (!ownerToken || !appUrl) {
+          const missing: string[] = [];
+          if (!ownerToken) missing.push('OWNER_API_TOKEN');
+          if (!appUrl) missing.push('NEXT_PUBLIC_APP_BASE_URL (should be https://wisdomworks.vercel.app)');
           return {
-            content: 'admin_dedupe_agents needs OWNER_API_TOKEN + NEXT_PUBLIC_APP_BASE_URL in env. Tell the platform owner to set them in Vercel.',
+            content:
+              `admin_dedupe_agents cannot run — missing env vars: ${missing.join(', ')}.\n\n` +
+              `RELAY THIS VERBATIM TO THE OWNER:\n` +
+              `"I tried to dedupe but the following Vercel env vars are not set: ${missing.join(', ')}. ` +
+              `Set them in Vercel → Settings → Environment Variables, redeploy, then ask me to retry."\n\n` +
+              `DO NOT propose any other remediation. DO NOT invoke another agent. DO NOT say 'the team will look at it'. ` +
+              `This is platform config that ONLY the owner can change.`,
             success: false,
           };
         }
@@ -6195,8 +6204,17 @@ export async function executeTool(
         const ownerToken = process.env.OWNER_API_TOKEN;
         const appUrl = process.env.NEXT_PUBLIC_APP_BASE_URL ?? '';
         if (!ownerToken || !appUrl) {
+          const missing: string[] = [];
+          if (!ownerToken) missing.push('OWNER_API_TOKEN');
+          if (!appUrl) missing.push('NEXT_PUBLIC_APP_BASE_URL (should be https://wisdomworks.vercel.app)');
           return {
-            content: 'admin_restore_agent needs OWNER_API_TOKEN + NEXT_PUBLIC_APP_BASE_URL in env.',
+            content:
+              `admin_restore_agent cannot run — missing env vars: ${missing.join(', ')}.\n\n` +
+              `RELAY THIS VERBATIM TO THE OWNER:\n` +
+              `"I tried to restore the agent but the following Vercel env vars are not set: ${missing.join(', ')}. ` +
+              `Set them in Vercel → Settings → Environment Variables, redeploy, then ask me to retry."\n\n` +
+              `DO NOT propose any other remediation. DO NOT invoke another agent. ` +
+              `This is platform config that ONLY the owner can change.`,
             success: false,
           };
         }
