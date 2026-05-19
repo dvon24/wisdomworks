@@ -83,12 +83,23 @@ export async function dedupeAgentsForTenant(tenantPhone: string): Promise<Dedupe
   }
 
   if (toRemove.length === 0) {
+    // agent_configs is already clean — but the CHAT-SIDE team profile
+    // can still have duplicates left over from before the migration.
+    // Run chat-team dedup before exiting so the deck Team view reflects
+    // reality. This is the bug Devon hit 2026-05-19: migration cleaned
+    // agent_configs, tool reported "no duplicates," but the deck still
+    // showed 5 Mira nodes because chat-team dedup was gated behind
+    // "agent_configs had duplicates."
+    const teamOnlyDedup = await dedupeChatTeamForTenant(cleanPhone);
     return {
       ok: true,
       tenant: cleanPhone,
-      action: 'no_duplicates_found',
+      action: teamOnlyDedup.team_duplicates_removed > 0 ? undefined : 'no_duplicates_found',
       active_agents: rows.length,
-      interpretation: `No duplicates. ${rows.length} active agent_configs for this tenant.`,
+      interpretation:
+        teamOnlyDedup.team_duplicates_removed > 0
+          ? `agent_configs was already clean (${rows.length} active rows). Cleaned ${teamOnlyDedup.team_duplicates_removed} duplicate entr${teamOnlyDedup.team_duplicates_removed === 1 ? 'y' : 'ies'} from the chat-side team profile (this is what the deck Team view renders — the count should drop on the next refresh).`
+          : `No duplicates anywhere. ${rows.length} active agent_configs for this tenant, and the chat-side team profile is also clean.`,
     };
   }
 
