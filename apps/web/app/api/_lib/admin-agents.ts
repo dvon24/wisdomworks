@@ -109,17 +109,100 @@ export async function dedupeAgentsForTenant(tenantPhone: string): Promise<Dedupe
     }
   }
 
+  // Also dedupe the chat-side team JSON in whatsapp_contexts.profile.team.
+  // BEFORE the 2026-05-15 fix, add_agent_to_team wrote ONLY to user.profile.team
+  // and didn't touch agent_configs. After that fix it writes to both, but
+  // historical bloat sits in the chat profile array and is what the deck
+  // Team view renders. Cleanup must hit both stores or the owner still sees
+  // duplicates in the tree visualization.
+  const teamDedupResult = await dedupeChatTeamForTenant(cleanPhone);
+
+  const interpretation = failures.length === 0
+    ? `✓ Cleaned up ${removed} duplicate agent_configs row${removed === 1 ? '' : 's'} across ${groupSummary.length} agent name${groupSummary.length === 1 ? '' : 's'} (kept the oldest of each). ${teamDedupResult.team_duplicates_removed > 0 ? `Also cleaned ${teamDedupResult.team_duplicates_removed} duplicate entr${teamDedupResult.team_duplicates_removed === 1 ? 'y' : 'ies'} from the chat-side team profile (this is what the deck Team view renders).` : 'Chat-side team profile was already clean.'}`
+    : `⚠ Partial — ${removed} rows removed, ${failures.length} patch failures. See failures[].`;
+
   return {
     ok: failures.length === 0,
     tenant: cleanPhone,
     groups_deduped: groupSummary,
     rows_marked_removed: removed,
     failures,
-    interpretation:
-      failures.length === 0
-        ? `✓ Cleaned up ${removed} duplicate row${removed === 1 ? '' : 's'} across ${groupSummary.length} agent name${groupSummary.length === 1 ? '' : 's'}. The oldest row was kept for each name (preserves history); newer duplicates marked status='removed'.`
-        : `⚠ Partial — ${removed} rows removed, ${failures.length} patch failures. See failures[].`,
+    interpretation,
   };
+}
+
+/**
+ * Dedupe the chat-side team JSON (whatsapp_contexts.profile.team). This
+ * array can hold duplicate entries from before the 2026-05-15 fix to
+ * add_agent_to_team. The deck Team-view tree visualization reads from
+ * this array, so even after agent_configs is clean the owner sees
+ * duplicates in the UI until we clean it too.
+ *
+ * Keeps the FIRST occurrence of each (case-insensitive) name in the
+ * top-level team. Also walks each agent's subTeam.agents and dedupes
+ * those by name. Returns counts so the caller can report.
+ */
+async function dedupeChatTeamForTenant(cleanPhone: string): Promise<{ team_duplicates_removed: number }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { team_duplicates_removed: 0 };
+  try {
+    const ctxRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile&limit=1`,
+      { headers: headers() },
+    );
+    if (!ctxRes.ok) return { team_duplicates_removed: 0 };
+    const rows = await ctxRes.json();
+    const ctx = rows?.[0];
+    if (!ctx?.profile) return { team_duplicates_removed: 0 };
+    const team = Array.isArray(ctx.profile.team) ? ctx.profile.team : [];
+    if (team.length === 0) return { team_duplicates_removed: 0 };
+
+    const seenTop = new Set<string>();
+    const dedupedTeam: any[] = [];
+    let removed = 0;
+    for (const member of team) {
+      const key = (member?.name ?? '').toLowerCase().trim();
+      if (!key) {
+        dedupedTeam.push(member);
+        continue;
+      }
+      if (seenTop.has(key)) {
+        removed++;
+        continue;
+      }
+      seenTop.add(key);
+      // Dedup subTeam.agents too if present.
+      if (Array.isArray(member.subTeam?.agents)) {
+        const seenSub = new Set<string>();
+        const dedupedSubAgents: any[] = [];
+        for (const sub of member.subTeam.agents) {
+          const subKey = (sub?.name ?? '').toLowerCase().trim();
+          if (!subKey || seenSub.has(subKey)) {
+            if (subKey) removed++;
+            continue;
+          }
+          seenSub.add(subKey);
+          dedupedSubAgents.push(sub);
+        }
+        member.subTeam.agents = dedupedSubAgents;
+        member.subTeam.count = dedupedSubAgents.length;
+      }
+      dedupedTeam.push(member);
+    }
+
+    if (removed === 0) return { team_duplicates_removed: 0 };
+
+    // Write back. Preserve all other profile fields.
+    const newProfile = { ...ctx.profile, team: dedupedTeam };
+    await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
+      method: 'PATCH',
+      headers: { ...headers(), Prefer: 'return=minimal' },
+      body: JSON.stringify({ profile: newProfile }),
+    });
+    return { team_duplicates_removed: removed };
+  } catch (err) {
+    console.warn('[admin-agents] chat-team dedup failed:', err);
+    return { team_duplicates_removed: 0 };
+  }
 }
 
 export interface RestoreResult {
