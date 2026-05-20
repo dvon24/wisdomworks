@@ -552,9 +552,12 @@ export interface BackfillResult {
   ok: boolean;
   tenant: string;
   rows_inserted: number;
+  rows_restored: number;
   rows_updated_parent: number;
   parent_links_resolved: number;
   parent_links_skipped: Array<{ child: string; missing_parent: string }>;
+  insert_failures: Array<{ name: string; reason: string }>;
+  final_active_count: number;
   interpretation: string;
 }
 
@@ -586,24 +589,33 @@ export async function backfillAgentConfigsFromProfileTeam(
       ok: false,
       tenant: tenantPhone,
       rows_inserted: 0,
+      rows_restored: 0,
       rows_updated_parent: 0,
       parent_links_resolved: 0,
       parent_links_skipped: [],
+      insert_failures: [],
+      final_active_count: 0,
       interpretation: 'Supabase not configured.',
     };
   }
   const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
 
-  // Pull the chat-side team and the current active agent_configs in parallel.
-  // NOTE: whatsapp_contexts has no `updated_at` column (only last_assistant_message_at
-  // was added later). Earlier draft used `order=updated_at.desc` which 400'd.
+  // Pull the chat-side team and BOTH active AND removed agent_configs.
+  // Removed rows matter because:
+  //   1. The original UNIQUE (tenant_phone, agent_name) constraint (now
+  //      dropped in 2026-05-20c) used to block inserts of names that already
+  //      had a removed row — backfill silently 409'd and reported "in sync."
+  //   2. Even with the constraint gone, the right behavior when the owner's
+  //      profile.team mentions an agent that was soft-removed is to RESTORE
+  //      the existing row (preserves history, runs, skills) rather than
+  //      insert a brand-new row.
   const [ctxRes, cfgRes] = await Promise.all([
     fetch(
       `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile&limit=1`,
       { headers: headers() },
     ),
     fetch(
-      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&status=eq.active&select=id,agent_name,parent_agent_id`,
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&select=id,agent_name,parent_agent_id,status`,
       { headers: headers() },
     ),
   ]);
@@ -613,9 +625,12 @@ export async function backfillAgentConfigsFromProfileTeam(
       ok: false,
       tenant: cleanPhone,
       rows_inserted: 0,
+      rows_restored: 0,
       rows_updated_parent: 0,
       parent_links_resolved: 0,
       parent_links_skipped: [],
+      insert_failures: [],
+      final_active_count: 0,
       interpretation: `Read failed: contexts ${ctxRes.status}, configs ${cfgRes.status}.`,
     };
   }
@@ -624,26 +639,70 @@ export async function backfillAgentConfigsFromProfileTeam(
   const profile = ctxRows?.[0]?.profile ?? {};
   const team = Array.isArray(profile.team) ? profile.team : [];
 
-  const existingByName = new Map<string, { id: string; parent_agent_id: string | null }>();
+  // Maps for two passes: active rows we treat as authoritative, removed rows
+  // we'll restore if profile.team references their name.
+  const existingActive = new Map<string, { id: string; parent_agent_id: string | null }>();
+  const existingRemoved = new Map<string, { id: string; parent_agent_id: string | null }>();
   for (const c of (await cfgRes.json()) as any[]) {
-    existingByName.set((c.agent_name ?? '').toLowerCase().trim(), {
-      id: c.id,
-      parent_agent_id: c.parent_agent_id ?? null,
-    });
+    const key = (c.agent_name ?? '').toLowerCase().trim();
+    if (!key) continue;
+    if (c.status === 'removed') {
+      // First removed row wins (oldest if multiple exist — but we don't need
+      // to be picky since restoration moves it to active).
+      if (!existingRemoved.has(key)) {
+        existingRemoved.set(key, { id: c.id, parent_agent_id: c.parent_agent_id ?? null });
+      }
+    } else {
+      existingActive.set(key, { id: c.id, parent_agent_id: c.parent_agent_id ?? null });
+    }
   }
+  // Convenience alias to keep the rest of the code readable.
+  const existingByName = existingActive;
 
   let inserted = 0;
+  let restored = 0;
   let parentUpdated = 0;
   let parentResolved = 0;
   const parentSkipped: Array<{ child: string; missing_parent: string }> = [];
+  const insertFailures: Array<{ name: string; reason: string }> = [];
 
-  // Pass 1: insert any missing top-level agents.
+  // Pass 1: for each top-level agent in profile.team — restore if a removed
+  // row exists, else insert. Failures get surfaced, not swallowed.
   for (const member of team) {
     const name = (member?.name ?? '').toString().trim();
     if (!name) continue;
     const key = name.toLowerCase();
     if (existingByName.has(key)) continue;
 
+    // RESTORE path — if a soft-removed row exists for this name, flip it
+    // back to active rather than inserting a fresh row. Preserves the row's
+    // id, history, and any FK relationships in agent_runs/agent_skills.
+    const removedMatch = existingRemoved.get(key);
+    if (removedMatch) {
+      const patchRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/agent_configs?id=eq.${removedMatch.id}`,
+        {
+          method: 'PATCH',
+          headers: { ...headers(), Prefer: 'return=representation' },
+          body: JSON.stringify({
+            status: 'active',
+            parent_agent_id: null,
+            updated_at: new Date().toISOString(),
+          }),
+        },
+      );
+      if (patchRes.ok) {
+        existingByName.set(key, { id: removedMatch.id, parent_agent_id: null });
+        existingRemoved.delete(key);
+        restored++;
+        continue;
+      }
+      const reason = `restore PATCH failed ${patchRes.status}: ${(await patchRes.text()).slice(0, 200)}`;
+      insertFailures.push({ name, reason });
+      continue;
+    }
+
+    // INSERT path — no removed row to restore, create fresh.
     const tier = member?.tier ?? 'Sonnet';
     const role = member?.role ?? 'Specialist';
     const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/agent_configs`, {
@@ -670,7 +729,14 @@ export async function backfillAgentConfigsFromProfileTeam(
       if (Array.isArray(rows) && rows[0]) {
         existingByName.set(key, { id: rows[0].id, parent_agent_id: null });
         inserted++;
+      } else {
+        // POST returned OK but no row in response — log it so we don't
+        // silently believe an insert that may not have landed.
+        insertFailures.push({ name, reason: 'POST returned OK but no row in response' });
       }
+    } else {
+      const reason = `${insertRes.status}: ${(await insertRes.text()).slice(0, 200)}`;
+      insertFailures.push({ name, reason });
     }
   }
 
@@ -746,17 +812,51 @@ export async function backfillAgentConfigsFromProfileTeam(
     }
   }
 
+  // Belt-and-suspenders: also dedupe profile.team in the same pass. The deck
+  // will read from agent_configs once the migration is applied, but until
+  // then (or if the dashboard route falls back for any reason), profile.team
+  // being clean prevents the ghost-duplicate render.
+  const teamDedupResult = await dedupeChatTeamForTenant(cleanPhone);
+
+  const dedupNote = teamDedupResult.team_duplicates_removed > 0
+    ? ` Also cleaned ${teamDedupResult.team_duplicates_removed} duplicate entr${teamDedupResult.team_duplicates_removed === 1 ? 'y' : 'ies'} from profile.team as belt-and-suspenders.`
+    : teamDedupResult.write_error
+      ? ` profile.team dedup attempted but the PATCH failed: ${teamDedupResult.write_error}.`
+      : ` profile.team was already clean.`;
+
+  // Final readback — count what's ACTUALLY active in agent_configs after the
+  // ops above. Trusting the insert/restore counters alone has bitten us
+  // (silent 409s, empty response bodies). This is the ground truth.
+  let finalActiveCount = 0;
+  let finalActiveNames: string[] = [];
+  try {
+    const verifyRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&status=neq.removed&select=agent_name&order=created_at.asc`,
+      { headers: headers() },
+    );
+    if (verifyRes.ok) {
+      const verified = (await verifyRes.json()) as Array<{ agent_name: string }>;
+      finalActiveCount = verified.length;
+      finalActiveNames = verified.map(r => r.agent_name);
+    }
+  } catch {}
+
+  const failureNote = insertFailures.length > 0
+    ? ` ⚠ ${insertFailures.length} write failure${insertFailures.length === 1 ? '' : 's'}: ${insertFailures.map(f => `${f.name} (${f.reason})`).join('; ')}.`
+    : '';
+
   return {
-    ok: true,
+    ok: insertFailures.length === 0,
     tenant: cleanPhone,
     rows_inserted: inserted,
+    rows_restored: restored,
     rows_updated_parent: parentUpdated,
     parent_links_resolved: parentResolved,
     parent_links_skipped: parentSkipped,
+    insert_failures: insertFailures,
+    final_active_count: finalActiveCount,
     interpretation:
-      inserted === 0 && parentUpdated === 0
-        ? `Backfill complete — agent_configs was already in sync with profile.team. No inserts, no parent fixes needed.`
-        : `Backfill complete — inserted ${inserted} missing agent_configs row${inserted === 1 ? '' : 's'} and fixed ${parentUpdated} parent_agent_id link${parentUpdated === 1 ? '' : 's'}. The deck can now safely read from agent_configs as the canonical source.`,
+      `Backfill complete — inserted ${inserted}, restored ${restored} from soft-removed, fixed ${parentUpdated} parent link${parentUpdated === 1 ? '' : 's'}. agent_configs now has ${finalActiveCount} active row${finalActiveCount === 1 ? '' : 's'}: ${finalActiveNames.join(', ') || '(empty)'}.${dedupNote}${failureNote}`,
   };
 }
 
