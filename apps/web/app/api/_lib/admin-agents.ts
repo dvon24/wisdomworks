@@ -277,11 +277,12 @@ export interface AuditResult {
   ok: boolean;
   tenant: string;
   total_mentions: number;
+  context_row_count: number;
   by_location: {
     agent_configs_active: Array<{ id: string; agent_name: string; created_at: string }>;
     agent_configs_removed: Array<{ id: string; agent_name: string; updated_at: string }>;
-    chat_team_top_level: Array<{ name: string; index: number }>;
-    chat_team_sub: Array<{ name: string; parent: string; index: number }>;
+    chat_team_top_level: Array<{ name: string; index: number; ctx_row: number }>;
+    chat_team_sub: Array<{ name: string; parent: string; index: number; ctx_row: number }>;
     agent_instances: Array<{ id: string; agent_config_id: string; status: string }>;
   };
   interpretation: string;
@@ -305,6 +306,7 @@ export async function auditTeamForTenant(args: {
       ok: false,
       tenant: args.tenantPhone,
       total_mentions: 0,
+      context_row_count: 0,
       by_location: {
         agent_configs_active: [], agent_configs_removed: [],
         chat_team_top_level: [], chat_team_sub: [], agent_instances: [],
@@ -326,8 +328,13 @@ export async function auditTeamForTenant(args: {
       `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&status=eq.removed&select=id,agent_name,updated_at&order=updated_at.desc`,
       { headers: headers() },
     ),
+    // Removed limit=1 — if multiple context rows exist for this phone (which
+    // would be a critical multi-row bug), we need to see ALL of them. The
+    // dedup PATCH operates on phone_number=eq.X which updates EVERY matching
+    // row; if the read+write are reading different rows due to no ORDER BY,
+    // dedup-failure-without-write-failure becomes invisible.
     fetch(
-      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile&limit=1`,
+      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=phone_number,profile,updated_at&order=updated_at.desc`,
       { headers: headers() },
     ),
     fetch(
@@ -338,7 +345,7 @@ export async function auditTeamForTenant(args: {
 
   const activeAll = activeRes.ok ? await activeRes.json() : [];
   const removedAll = removedRes.ok ? await removedRes.json() : [];
-  const ctxRows = ctxRes.ok ? await ctxRes.json() : [];
+  const ctxRows: any[] = ctxRes.ok ? await ctxRes.json() : [];
   const instancesAll = instancesRes.ok ? await instancesRes.json() : [];
 
   const agent_configs_active = (activeAll as any[]).filter(r => matches(r.agent_name));
@@ -352,16 +359,19 @@ export async function auditTeamForTenant(args: {
     matches(cfgIdToName.get(i.agent_config_id))
   );
 
-  // Walk profile.team for top-level + sub matches.
-  const profile = ctxRows?.[0]?.profile ?? {};
-  const team = Array.isArray(profile.team) ? profile.team : [];
-  const chat_team_top_level: Array<{ name: string; index: number }> = [];
-  const chat_team_sub: Array<{ name: string; parent: string; index: number }> = [];
-  team.forEach((m: any, i: number) => {
-    if (matches(m?.name)) chat_team_top_level.push({ name: m.name, index: i });
-    const subs = Array.isArray(m?.subTeam?.agents) ? m.subTeam.agents : [];
-    subs.forEach((s: any, j: number) => {
-      if (matches(s?.name)) chat_team_sub.push({ name: s.name, parent: m.name, index: j });
+  // Walk profile.team across EVERY context row. If multiple rows exist for
+  // this phone, this is where the smoking gun shows up.
+  const chat_team_top_level: Array<{ name: string; index: number; ctx_row: number }> = [];
+  const chat_team_sub: Array<{ name: string; parent: string; index: number; ctx_row: number }> = [];
+  ctxRows.forEach((ctxRow, rowIdx) => {
+    const profile = ctxRow?.profile ?? {};
+    const team = Array.isArray(profile.team) ? profile.team : [];
+    team.forEach((m: any, i: number) => {
+      if (matches(m?.name)) chat_team_top_level.push({ name: m.name, index: i, ctx_row: rowIdx });
+      const subs = Array.isArray(m?.subTeam?.agents) ? m.subTeam.agents : [];
+      subs.forEach((s: any, j: number) => {
+        if (matches(s?.name)) chat_team_sub.push({ name: s.name, parent: m.name, index: j, ctx_row: rowIdx });
+      });
     });
   });
 
@@ -373,16 +383,18 @@ export async function auditTeamForTenant(args: {
     agent_instances.length;
 
   const lines: string[] = [];
+  lines.push(`whatsapp_contexts rows for this phone: ${ctxRows.length}${ctxRows.length > 1 ? ' ⚠️ MULTIPLE ROWS — this is the source of dedup-write/read divergence' : ''}`);
   lines.push(`agent_configs (active): ${agent_configs_active.length}${agent_configs_active.length > 0 ? ` — ${agent_configs_active.map(r => r.agent_name).join(', ')}` : ''}`);
   lines.push(`agent_configs (removed/soft-deleted): ${agent_configs_removed.length}`);
-  lines.push(`chat profile.team (top-level): ${chat_team_top_level.length}${chat_team_top_level.length > 0 ? ` — ${chat_team_top_level.map(r => r.name).join(', ')}` : ''}`);
-  lines.push(`chat profile.team (sub-agents): ${chat_team_sub.length}${chat_team_sub.length > 0 ? ` — ${chat_team_sub.map(r => `${r.name} (under ${r.parent})`).join(', ')}` : ''}`);
+  lines.push(`chat profile.team (top-level): ${chat_team_top_level.length}${chat_team_top_level.length > 0 ? ` — ${chat_team_top_level.map(r => `${r.name}[row${r.ctx_row}]`).join(', ')}` : ''}`);
+  lines.push(`chat profile.team (sub-agents): ${chat_team_sub.length}${chat_team_sub.length > 0 ? ` — ${chat_team_sub.map(r => `${r.name} (under ${r.parent})[row${r.ctx_row}]`).join(', ')}` : ''}`);
   lines.push(`agent_instances: ${agent_instances.length}`);
 
   return {
     ok: true,
     tenant: cleanPhone,
     total_mentions: total,
+    context_row_count: ctxRows.length,
     by_location: {
       agent_configs_active,
       agent_configs_removed,
