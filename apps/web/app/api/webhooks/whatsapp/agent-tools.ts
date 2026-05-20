@@ -1785,7 +1785,7 @@ const TOOL_APPROVE_PROMOTION: AnthropicTool = {
 const TOOL_ADMIN_DEDUPE_AGENTS: AnthropicTool = {
   name: 'admin_dedupe_agents',
   description:
-    "Dedupes duplicate agent_configs rows in the owner's own tenant. Use when the owner reports the same agent appearing multiple times in the deck (e.g. '3 Mira's'). Keeps the OLDEST active row for each name (preserves history + skill records that reference its id); marks newer duplicates as status='removed' (REVERSIBLE — use admin_restore_agent within 30 days to undo). Tenant-scoped: always acts on the calling owner's data, never another tenant's. Before invoking at L1/L2 autonomy: propose the action to the owner first (\"I see 3 Mira rows — clean them up?\") and wait for explicit approval.",
+    "Dedupes duplicate agent rows across BOTH storage locations: (a) agent_configs in the database AND (b) whatsapp_contexts.profile.team JSON (the chat-side team store the deck Team view actually renders). Walks both stores in one call — keeps the OLDEST active row per agent_name in agent_configs and the FIRST occurrence per name globally in profile.team (treats top-level + every subTeam as one namespace). Use when the owner reports the same agent appearing multiple times in the deck (e.g. '6 Mira's'), REGARDLESS of which store you suspect — this tool fixes both. If audit_team reports duplicates in profile.team but zero in agent_configs, this tool STILL fixes it. agent_configs cleanup is reversible via admin_restore_agent within 30 days. Tenant-scoped: always acts on the calling owner's data. Before invoking at L1/L2 autonomy: propose the action and wait for explicit approval.",
   input_schema: { type: 'object', properties: {} },
 };
 
