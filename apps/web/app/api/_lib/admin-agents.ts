@@ -334,7 +334,7 @@ export async function auditTeamForTenant(args: {
     // row; if the read+write are reading different rows due to no ORDER BY,
     // dedup-failure-without-write-failure becomes invisible.
     fetch(
-      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=phone_number,profile,updated_at&order=updated_at.desc`,
+      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=phone_number,profile`,
       { headers: headers() },
     ),
     fetch(
@@ -595,9 +595,11 @@ export async function backfillAgentConfigsFromProfileTeam(
   const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
 
   // Pull the chat-side team and the current active agent_configs in parallel.
+  // NOTE: whatsapp_contexts has no `updated_at` column (only last_assistant_message_at
+  // was added later). Earlier draft used `order=updated_at.desc` which 400'd.
   const [ctxRes, cfgRes] = await Promise.all([
     fetch(
-      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile&order=updated_at.desc&limit=1`,
+      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile&limit=1`,
       { headers: headers() },
     ),
     fetch(
