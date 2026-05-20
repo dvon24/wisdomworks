@@ -409,6 +409,355 @@ export async function auditTeamForTenant(args: {
   };
 }
 
+export interface AgentHealth {
+  agent_name: string;
+  agent_role: string;
+  instance_status: string | null;        // ready / running / paused / stopped / error / null (no instance row)
+  runs_24h: number;
+  runs_acted_24h: number;
+  runs_failed_24h: number;
+  last_run_at: string | null;
+  last_run_outcome: string | null;
+  verdict: 'working' | 'idle' | 'failing' | 'never_ran';
+}
+
+export interface HealthCheckResult {
+  ok: boolean;
+  tenant: string;
+  generated_at: string;
+  agents: AgentHealth[];
+  interpretation: string;
+}
+
+/**
+ * Axis's primary runtime monitor — for every active agent in the tenant's
+ * agent_configs, report whether they're actually running successfully.
+ *
+ * Devon's frame 2026-05-20: "the consumer will want to see their agents at
+ * work occasionally. And if Iris can't determine that they're working then
+ * that's an issue." This tool closes that gap by joining agent_configs to
+ * agent_instances (status) and agent_runs (recent activity).
+ *
+ * Verdict per agent:
+ *   • working   — at least one acted/escalated run in last 24h, no errors
+ *   • idle      — instance is ready/running, no runs in last 24h
+ *   • failing   — instance status is error, OR failed runs > acted runs in 24h
+ *   • never_ran — no agent_instance row OR no agent_runs ever
+ */
+export async function checkAgentHealth(tenantPhone: string): Promise<HealthCheckResult> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    return {
+      ok: false,
+      tenant: tenantPhone,
+      generated_at: new Date().toISOString(),
+      agents: [],
+      interpretation: 'Supabase not configured.',
+    };
+  }
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  const [cfgRes, instRes, runsRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&status=neq.removed&select=id,agent_name,agent_role`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&select=id,agent_config_id,status`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&started_at=gte.${since}&select=agent_instance_id,outcome,started_at&order=started_at.desc`,
+      { headers: headers() },
+    ),
+  ]);
+  if (!cfgRes.ok) {
+    return {
+      ok: false,
+      tenant: cleanPhone,
+      generated_at: new Date().toISOString(),
+      agents: [],
+      interpretation: `Read failed: ${cfgRes.status}`,
+    };
+  }
+
+  const configs = (await cfgRes.json()) as Array<{ id: string; agent_name: string; agent_role: string }>;
+  const instances = instRes.ok ? ((await instRes.json()) as any[]) : [];
+  const runs = runsRes.ok ? ((await runsRes.json()) as any[]) : [];
+
+  const instByCfgId = new Map<string, any>();
+  for (const i of instances) instByCfgId.set(i.agent_config_id, i);
+
+  const runsByInstId = new Map<string, any[]>();
+  for (const r of runs) {
+    const list = runsByInstId.get(r.agent_instance_id) ?? [];
+    list.push(r);
+    runsByInstId.set(r.agent_instance_id, list);
+  }
+
+  const agentHealths: AgentHealth[] = configs.map(c => {
+    const inst = instByCfgId.get(c.id);
+    const instanceStatus = inst?.status ?? null;
+    const instRuns = inst ? (runsByInstId.get(inst.id) ?? []) : [];
+    const acted = instRuns.filter(r => r.outcome === 'acted' || r.outcome === 'escalated' || r.outcome === 'proposed').length;
+    const failed = instRuns.filter(r => r.outcome === 'failed').length;
+    const last = instRuns[0];
+    let verdict: AgentHealth['verdict'];
+    if (!inst || instRuns.length === 0) {
+      verdict = 'never_ran';
+    } else if (instanceStatus === 'error' || failed > acted) {
+      verdict = 'failing';
+    } else if (acted > 0) {
+      verdict = 'working';
+    } else {
+      verdict = 'idle';
+    }
+    return {
+      agent_name: c.agent_name,
+      agent_role: c.agent_role,
+      instance_status: instanceStatus,
+      runs_24h: instRuns.length,
+      runs_acted_24h: acted,
+      runs_failed_24h: failed,
+      last_run_at: last?.started_at ?? null,
+      last_run_outcome: last?.outcome ?? null,
+      verdict,
+    };
+  });
+
+  const working = agentHealths.filter(a => a.verdict === 'working').length;
+  const idle = agentHealths.filter(a => a.verdict === 'idle').length;
+  const failing = agentHealths.filter(a => a.verdict === 'failing').length;
+  const neverRan = agentHealths.filter(a => a.verdict === 'never_ran').length;
+
+  const lines = agentHealths.map(a => {
+    const badge = a.verdict === 'working' ? '✓ working'
+      : a.verdict === 'idle' ? '· idle'
+      : a.verdict === 'failing' ? '⚠ failing'
+      : '○ never ran';
+    return `  • ${a.agent_name} (${a.agent_role}) — ${badge}, ${a.runs_24h} run${a.runs_24h === 1 ? '' : 's'} in 24h${a.runs_failed_24h > 0 ? ` (${a.runs_failed_24h} failed)` : ''}${a.last_run_at ? `, last: ${new Date(a.last_run_at).toISOString().slice(11, 16)} UTC` : ''}`;
+  });
+
+  return {
+    ok: true,
+    tenant: cleanPhone,
+    generated_at: new Date().toISOString(),
+    agents: agentHealths,
+    interpretation:
+      `Team health (24h window): ${working} working · ${idle} idle · ${failing} failing · ${neverRan} never ran.\n${lines.join('\n')}`,
+  };
+}
+
+export interface BackfillResult {
+  ok: boolean;
+  tenant: string;
+  rows_inserted: number;
+  rows_updated_parent: number;
+  parent_links_resolved: number;
+  parent_links_skipped: Array<{ child: string; missing_parent: string }>;
+  interpretation: string;
+}
+
+/**
+ * Reconcile agent_configs to the deduped state of whatsapp_contexts.profile.team.
+ *
+ * The party-mode diagnosis 2026-05-20: profile.team has been the de-facto
+ * canonical store while agent_configs lagged behind (many writers to profile,
+ * not all of them mirrored to configs). Devon's tenant has 1 Mira in profile
+ * after dedup, 0 in agent_configs — switching the deck to read from configs
+ * directly would make Mira vanish. This helper closes the gap.
+ *
+ * What it does, idempotently:
+ *   1. Walk profile.team. For each top-level agent (by lowercased name) and
+ *      each sub-agent inside subTeam.agents, ensure a matching active row
+ *      exists in agent_configs.
+ *   2. For sub-agents, set parent_agent_id to the parent's UUID once both
+ *      rows exist.
+ *   3. Skip duplicates within profile (treat profile as already deduped — the
+ *      caller should run dedup first if needed).
+ *
+ * Pure additive — never removes existing agent_configs rows. Safe to re-run.
+ */
+export async function backfillAgentConfigsFromProfileTeam(
+  tenantPhone: string,
+): Promise<BackfillResult> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    return {
+      ok: false,
+      tenant: tenantPhone,
+      rows_inserted: 0,
+      rows_updated_parent: 0,
+      parent_links_resolved: 0,
+      parent_links_skipped: [],
+      interpretation: 'Supabase not configured.',
+    };
+  }
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+
+  // Pull the chat-side team and the current active agent_configs in parallel.
+  const [ctxRes, cfgRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile&order=updated_at.desc&limit=1`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&status=eq.active&select=id,agent_name,parent_agent_id`,
+      { headers: headers() },
+    ),
+  ]);
+
+  if (!ctxRes.ok || !cfgRes.ok) {
+    return {
+      ok: false,
+      tenant: cleanPhone,
+      rows_inserted: 0,
+      rows_updated_parent: 0,
+      parent_links_resolved: 0,
+      parent_links_skipped: [],
+      interpretation: `Read failed: contexts ${ctxRes.status}, configs ${cfgRes.status}.`,
+    };
+  }
+
+  const ctxRows = await ctxRes.json();
+  const profile = ctxRows?.[0]?.profile ?? {};
+  const team = Array.isArray(profile.team) ? profile.team : [];
+
+  const existingByName = new Map<string, { id: string; parent_agent_id: string | null }>();
+  for (const c of (await cfgRes.json()) as any[]) {
+    existingByName.set((c.agent_name ?? '').toLowerCase().trim(), {
+      id: c.id,
+      parent_agent_id: c.parent_agent_id ?? null,
+    });
+  }
+
+  let inserted = 0;
+  let parentUpdated = 0;
+  let parentResolved = 0;
+  const parentSkipped: Array<{ child: string; missing_parent: string }> = [];
+
+  // Pass 1: insert any missing top-level agents.
+  for (const member of team) {
+    const name = (member?.name ?? '').toString().trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (existingByName.has(key)) continue;
+
+    const tier = member?.tier ?? 'Sonnet';
+    const role = member?.role ?? 'Specialist';
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/agent_configs`, {
+      method: 'POST',
+      headers: { ...headers(), Prefer: 'return=representation' },
+      body: JSON.stringify({
+        tenant_phone: cleanPhone,
+        agent_name: name,
+        agent_role: role,
+        status: 'active',
+        output_channels: Array.isArray(member?.channels) ? member.channels : [],
+        model_routing: { primary: tier },
+        governance_rules: [],
+        config: {
+          description: member?.description,
+          tools: Array.isArray(member?.tools) ? member.tools : [],
+          source: 'backfill:profile_team',
+        },
+        parent_agent_id: null,
+      }),
+    });
+    if (insertRes.ok) {
+      const rows = await insertRes.json();
+      if (Array.isArray(rows) && rows[0]) {
+        existingByName.set(key, { id: rows[0].id, parent_agent_id: null });
+        inserted++;
+      }
+    }
+  }
+
+  // Pass 2: insert sub-agents under their parents, and patch parent_agent_id
+  // on any sub-agents that already exist as orphan rows.
+  for (const member of team) {
+    const parentName = (member?.name ?? '').toString().trim().toLowerCase();
+    if (!parentName) continue;
+    const parent = existingByName.get(parentName);
+    if (!parent) continue;
+    const subs = Array.isArray(member?.subTeam?.agents) ? member.subTeam.agents : [];
+    for (const sub of subs) {
+      const subName = (sub?.name ?? '').toString().trim();
+      if (!subName) continue;
+      const subKey = subName.toLowerCase();
+      const existing = existingByName.get(subKey);
+      if (existing) {
+        // Already in agent_configs — just make sure parent linkage is right.
+        if (existing.parent_agent_id !== parent.id) {
+          const patchRes = await fetch(
+            `${SUPABASE_URL}/rest/v1/agent_configs?id=eq.${existing.id}`,
+            {
+              method: 'PATCH',
+              headers: { ...headers(), Prefer: 'return=minimal' },
+              body: JSON.stringify({
+                parent_agent_id: parent.id,
+                updated_at: new Date().toISOString(),
+              }),
+            },
+          );
+          if (patchRes.ok) {
+            existing.parent_agent_id = parent.id;
+            parentUpdated++;
+            parentResolved++;
+          } else {
+            parentSkipped.push({ child: subName, missing_parent: `parent_id=${parent.id} (patch failed ${patchRes.status})` });
+          }
+        } else {
+          parentResolved++;
+        }
+        continue;
+      }
+      // Insert the sub-agent fresh, linked to parent.
+      const tier = sub?.tier ?? 'Sonnet';
+      const role = sub?.role ?? 'Specialist';
+      const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/agent_configs`, {
+        method: 'POST',
+        headers: { ...headers(), Prefer: 'return=representation' },
+        body: JSON.stringify({
+          tenant_phone: cleanPhone,
+          agent_name: subName,
+          agent_role: role,
+          status: 'active',
+          output_channels: [],
+          model_routing: { primary: tier },
+          governance_rules: [],
+          config: {
+            description: sub?.description,
+            tools: [],
+            source: 'backfill:profile_team_sub',
+          },
+          parent_agent_id: parent.id,
+        }),
+      });
+      if (insertRes.ok) {
+        const rows = await insertRes.json();
+        if (Array.isArray(rows) && rows[0]) {
+          existingByName.set(subKey, { id: rows[0].id, parent_agent_id: parent.id });
+          inserted++;
+          parentResolved++;
+        }
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    tenant: cleanPhone,
+    rows_inserted: inserted,
+    rows_updated_parent: parentUpdated,
+    parent_links_resolved: parentResolved,
+    parent_links_skipped: parentSkipped,
+    interpretation:
+      inserted === 0 && parentUpdated === 0
+        ? `Backfill complete — agent_configs was already in sync with profile.team. No inserts, no parent fixes needed.`
+        : `Backfill complete — inserted ${inserted} missing agent_configs row${inserted === 1 ? '' : 's'} and fixed ${parentUpdated} parent_agent_id link${parentUpdated === 1 ? '' : 's'}. The deck can now safely read from agent_configs as the canonical source.`,
+  };
+}
+
 export interface RestoreResult {
   ok: boolean;
   rows_restored: number;

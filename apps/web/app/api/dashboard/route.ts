@@ -63,7 +63,7 @@ export async function GET(request: Request) {
         { headers },
       ),
       fetch(
-        `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&select=id,agent_name,agent_role,status,output_channels,model_routing,config`,
+        `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&status=neq.removed&select=id,agent_name,agent_role,status,output_channels,model_routing,config,parent_agent_id&order=created_at.asc`,
         { headers },
       ),
       fetch(
@@ -244,8 +244,68 @@ export async function GET(request: Request) {
     // Sort by recency
     activity.sort((a, b) => b.ts - a.ts);
 
-    // Build agent team summary from saved AI structured data (if available)
-    const team = profile.team ?? null;
+    // CANONICAL TEAM RENDER — 2026-05-20 refactor.
+    //
+    // Previously this read from profile.team (chat-side JSON). That created
+    // the multi-writer / one-reader bug Devon hit with 6 Mira ghosts:
+    // add_agent_to_team, axis-discovery, regenerate-org-doc, dozens of
+    // saveUserContext call sites all wrote profile.team independently with
+    // no system-of-record reconciliation.
+    //
+    // The deck now derives team[] from agent_configs (the canonical store)
+    // joined to itself by parent_agent_id for hierarchy. profile.team is
+    // still WRITTEN by some paths for chat-context use, but no longer READ
+    // by the deck.
+    //
+    // Per-tenant prerequisite: run backfill_team once so existing
+    // profile.team-only agents land in agent_configs. After that, the deck
+    // self-heals on every read.
+    const activeConfigs = (agentConfigs as any[]).filter(c => c.status !== 'removed');
+    const byParent = new Map<string | null, any[]>();
+    for (const c of activeConfigs) {
+      const key = c.parent_agent_id ?? null;
+      const list = byParent.get(key) ?? [];
+      list.push(c);
+      byParent.set(key, list);
+    }
+    const tierFromConfig = (cfg: any): 'Opus' | 'Sonnet' | 'Haiku' => {
+      const primary = (cfg?.model_routing?.primary ?? '').toString().toLowerCase();
+      if (primary.includes('opus')) return 'Opus';
+      if (primary.includes('haiku')) return 'Haiku';
+      return 'Sonnet';
+    };
+    const buildAgent = (cfg: any) => {
+      const subs = byParent.get(cfg.id) ?? [];
+      const node: any = {
+        id: (cfg.agent_name || '').toLowerCase().replace(/\s+/g, '-'),
+        name: cfg.agent_name,
+        role: cfg.agent_role,
+        tier: tierFromConfig(cfg),
+        description: cfg.config?.description,
+        tools: Array.isArray(cfg.config?.tools) ? cfg.config.tools : [],
+        channels: Array.isArray(cfg.output_channels) ? cfg.output_channels : [],
+      };
+      if (subs.length > 0) {
+        node.subTeam = {
+          count: subs.length,
+          label: `${cfg.agent_name}'s team`,
+          agents: subs.map(s => ({
+            id: (s.agent_name || '').toLowerCase().replace(/\s+/g, '-'),
+            name: s.agent_name,
+            role: s.agent_role,
+            tier: tierFromConfig(s),
+          })),
+        };
+      }
+      return node;
+    };
+    const topLevelConfigs = byParent.get(null) ?? [];
+    const team = topLevelConfigs.length > 0
+      ? topLevelConfigs.map(buildAgent)
+      // Empty-state fallback: if agent_configs is empty (pre-backfill tenant),
+      // fall back to profile.team so the deck doesn't go blank. Once backfill
+      // runs, this branch never fires again.
+      : (profile.team ?? null);
 
     // Story 1.13/1.14 surfacing — documentation entity + per-agent operating
     // protocol from the new Epic 1 tables.

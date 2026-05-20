@@ -22,7 +22,7 @@ import { listImapUnread, sendImap, searchImap } from '../../_lib/imap-runtime';
 import { queryKnowledge } from '../../_lib/knowledge-base';
 import { logCorrection } from '../../_lib/classification-learning';
 import { setSenderRule, removeSenderRule, getSenderRules } from '../../_lib/sender-rules';
-import { auditTeamForTenant } from '../../_lib/admin-agents';
+import { auditTeamForTenant, backfillAgentConfigsFromProfileTeam, checkAgentHealth } from '../../_lib/admin-agents';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
 import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
 import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, type TopContact } from '../../_lib/email-intelligence';
@@ -467,6 +467,28 @@ const TOOL_LIST_SENDER_RULES: AnthropicTool = {
   name: 'list_sender_rules',
   description:
     "List all sender rules the owner has set. Use when the owner asks 'what rules do I have?', 'show me my email rules', 'who am I blocking?', or wants to audit before adding more rules.",
+  input_schema: {
+    type: 'object',
+    properties: {},
+    required: [],
+  },
+};
+
+const TOOL_CHECK_AGENT_HEALTH: AnthropicTool = {
+  name: 'check_agent_health',
+  description:
+    "Reports whether the owner's agents are actually working — joins agent_configs (defined agents) to agent_instances (runtime status) to agent_runs (last 24h activity). For each agent returns one of four verdicts: 'working' (recent acted/escalated runs, no errors), 'idle' (instance ready but no runs), 'failing' (instance status=error OR failed runs exceed successful), 'never_ran' (no instance row or zero runs ever). Use when the owner asks 'are my agents working?', 'is Marcus actually doing anything?', 'what's the team doing right now?', 'is anything broken?'. This is Axis's primary monitoring tool — surfaces gaps that need attention.",
+  input_schema: {
+    type: 'object',
+    properties: {},
+    required: [],
+  },
+};
+
+const TOOL_BACKFILL_TEAM: AnthropicTool = {
+  name: 'backfill_team',
+  description:
+    "One-shot reconciliation: ensures every agent currently in the chat-side profile.team also exists as an active row in agent_configs (the canonical store), with parent_agent_id correctly set for sub-agents. Purely additive — never removes agent_configs rows. Idempotent. Use when audit_team shows agents in profile.team but missing from agent_configs (e.g. 'Mira: 1 in profile, 0 in configs'), or after any major team restructure. Recommended sequence: audit_team → admin_dedupe_agents → backfill_team → verify with audit_team again.",
   input_schema: {
     type: 'object',
     properties: {},
@@ -2402,6 +2424,8 @@ export function buildToolList(
   tools.push(TOOL_LIST_SENDER_RULES);
   tools.push(TOOL_REMOVE_SENDER_RULE);
   tools.push(TOOL_AUDIT_TEAM);
+  tools.push(TOOL_BACKFILL_TEAM);
+  tools.push(TOOL_CHECK_AGENT_HEALTH);
   tools.push(TOOL_PROVISION_AXIS);
   tools.push(TOOL_LIST_PROCESSES);
   tools.push(TOOL_APPROVE_PROCESS);
@@ -3065,6 +3089,21 @@ export async function executeTool(
           tenantPhone: user.phoneNumber,
           agentName: call.input.agent_name ?? null,
         });
+        return { content: result.interpretation, success: result.ok };
+      }
+
+      case 'backfill_team': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const result = await backfillAgentConfigsFromProfileTeam(user.phoneNumber);
+        const skipped = result.parent_links_skipped.length
+          ? ` Parent-link issues: ${result.parent_links_skipped.map(s => `${s.child} (${s.missing_parent})`).join('; ')}.`
+          : '';
+        return { content: result.interpretation + skipped, success: result.ok };
+      }
+
+      case 'check_agent_health': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const result = await checkAgentHealth(user.phoneNumber);
         return { content: result.interpretation, success: result.ok };
       }
 
