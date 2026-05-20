@@ -15,6 +15,7 @@ import { NextResponse } from 'next/server';
 import { listEmails, decryptToken, redactPII, type EmailMessage, type OAuthConnection } from '@wisdomworks/shared';
 import { listImapUnread } from '../../_lib/imap-runtime';
 import { logSample, buildFewShotExamples, buildProfessionalContext } from '../../_lib/classification-learning';
+import { getSenderRules, matchSenderRule, classifyByRule } from '../../_lib/sender-rules';
 import { recordClassifiedForEngagement, buildEngagementContext } from '../../_lib/email-engagement';
 import { getTopContacts, renderTrustedContactsForClassifier } from '../../_lib/email-intelligence';
 
@@ -363,6 +364,51 @@ async function logEmailSignal(tenantPhone: string, provider: string, emails: Ema
 }
 
 async function classifyAndDraft(emails: EmailMessage[], tenantPhone?: string): Promise<EmailSummary[]> {
+  // Sender rules — owner-defined deterministic classification. Emails matching
+  // a rule (e.g. "block change.org", "personal joyce@example.com") skip the
+  // LLM entirely. This is the primary remediation for the 238-low-confidence
+  // problem: recurring ambiguous senders get a permanent verdict and stop
+  // wasting LLM cycles.
+  const rules = tenantPhone ? await getSenderRules(tenantPhone) : [];
+
+  const ruleResults = new Map<string, EmailSummary>();
+  const remaining: EmailMessage[] = [];
+  if (rules.length > 0) {
+    for (const e of emails) {
+      const fromHeader = e.fromName ? `${e.fromName} <${e.from}>` : e.from;
+      const matched = matchSenderRule(fromHeader, rules);
+      if (matched) {
+        const verdict = classifyByRule(matched);
+        const isPrivate = verdict.privacyClass === 'personal' || verdict.privacyClass === 'uncertain';
+        ruleResults.set(e.id, {
+          id: e.id,
+          from: fromHeader,
+          subject: isPrivate ? '(private — held for review)' : e.subject,
+          preview: isPrivate ? '' : (e.body || e.bodyPreview || '').slice(0, 100),
+          date: e.date,
+          classification: verdict.classification,
+          privacyClass: verdict.privacyClass,
+          privacyConfidence: verdict.privacyConfidence,
+          // verdict actions all imply "no auto-draft" — sender rules are
+          // owner-set classifications, not response prompts. If the owner
+          // wants a draft, they'll ask Iris directly.
+          draftReply: undefined,
+          lane: 'orchestrator',
+          extracted: isPrivate ? undefined : { people: [], projects: [], dates: [], actionItems: [] },
+        });
+      } else {
+        remaining.push(e);
+      }
+    }
+  } else {
+    remaining.push(...emails);
+  }
+
+  // Short-circuit: if every email matched a rule, no LLM call needed.
+  if (remaining.length === 0) {
+    return emails.map((e) => ruleResults.get(e.id)!);
+  }
+
   // Story 2.13 — pull recent corrections as few-shot examples so the
   // classifier learns from the user's corrections over time.
   const fewShot = tenantPhone ? await buildFewShotExamples(tenantPhone) : '';
@@ -379,7 +425,7 @@ async function classifyAndDraft(emails: EmailMessage[], tenantPhone?: string): P
   const trustBlock = renderTrustedContactsForClassifier(trustedContacts);
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return emails.map((e) => ({
+    return emails.map((e) => ruleResults.get(e.id) ?? ({
       id: e.id,
       from: e.from,
       subject: e.subject,
@@ -391,7 +437,9 @@ async function classifyAndDraft(emails: EmailMessage[], tenantPhone?: string): P
     }));
   }
 
-  const emailList = emails
+  // The LLM only sees `remaining` (emails without a matching sender rule);
+  // rule-matched ones get merged back in by id at the return step.
+  const emailList = remaining
     .map(
       (e, i) =>
         `Email ${i + 1}:\nFrom: ${e.fromName ? `${e.fromName} <${e.from}>` : e.from}\nSubject: ${e.subject}\nPreview: ${(e.body || e.bodyPreview).slice(0, 300)}\nDate: ${e.date}`,
@@ -488,7 +536,9 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
       extracted?: { people?: string[]; projects?: string[]; dates?: string[]; actionItems?: string[] } | null;
     }[] = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
 
-    return emails.map((e, i) => {
+    // Build LLM verdicts keyed by email id (LLM indexes were 1..remaining.length).
+    const llmVerdicts = new Map<string, EmailSummary>();
+    remaining.forEach((e, i) => {
       const result = results.find((r) => r.index === i + 1);
       const privacyClass = (result?.privacyClass ?? 'uncertain') as EmailSummary['privacyClass'];
       const privacyConfidence = result?.privacyConfidence ?? 0.5;
@@ -498,7 +548,7 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
       const validLanes = ['scheduler', 'customer_service', 'finance', 'marketing', 'operations', 'analytics', 'orchestrator', 'specialist'];
       const rawLane = result?.lane;
       const lane = (isPrivate ? 'orchestrator' : (validLanes.includes(rawLane ?? '') ? rawLane : 'orchestrator')) as EmailSummary['lane'];
-      return {
+      llmVerdicts.set(e.id, {
         id: e.id,
         from: e.fromName ? `${e.fromName} <${e.from}>` : e.from,
         subject: isPrivate ? '(private — held for review)' : e.subject,
@@ -516,11 +566,16 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
           dates: result?.extracted?.dates ?? [],
           actionItems: result?.extracted?.actionItems ?? [],
         },
-      };
+      });
     });
+
+    // Stitch rule-matched + LLM-classified back into original input order.
+    return emails.map((e) => ruleResults.get(e.id) ?? llmVerdicts.get(e.id)!);
   } catch (error) {
     console.error('[email-sift] Classification error:', error);
-    return emails.map((e) => ({
+    // Failure fallback: rule matches still honored; the rest fall through to
+    // 'uncertain' so the morning briefing surfaces them.
+    return emails.map((e) => ruleResults.get(e.id) ?? ({
       id: e.id,
       from: e.from,
       subject: e.subject,

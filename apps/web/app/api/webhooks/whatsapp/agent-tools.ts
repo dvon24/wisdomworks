@@ -21,6 +21,7 @@ import {
 import { listImapUnread, sendImap, searchImap } from '../../_lib/imap-runtime';
 import { queryKnowledge } from '../../_lib/knowledge-base';
 import { logCorrection } from '../../_lib/classification-learning';
+import { setSenderRule, removeSenderRule, getSenderRules } from '../../_lib/sender-rules';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
 import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
 import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, type TopContact } from '../../_lib/email-intelligence';
@@ -423,6 +424,58 @@ const TOOL_REPORT_MISCLASSIFICATION: AnthropicTool = {
       user_reason: { type: 'string', description: "Optional: why the user said it should be different (helps the model learn)." },
     },
     required: ['original_privacy_class', 'corrected_privacy_class'],
+  },
+};
+
+const TOOL_SET_SENDER_RULE: AnthropicTool = {
+  name: 'set_sender_rule',
+  description:
+    "Set a permanent classification rule for a sender so future emails skip the LLM and get classified deterministically. Use when the owner says things like 'block Change.org', 'mark anything from joyce@example.com as personal', 'AT&T billing is always personal', or 'allow newsletters from substack'. Patterns can be a full email ('user@domain.com') or a bare domain ('change.org'). Actions: 'block' (silently spam — owner sees nothing), 'personal' (private boundary — held for owner review, no draft, no extraction), 'allow' (business/informational, surface normally, no auto-draft). Idempotent — calling with an existing pattern updates the action. When the owner gives you several senders in one breath, call this tool multiple times in one response — one call per sender.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      sender_pattern: {
+        type: 'string',
+        description: "Either a full email address ('joyce@change.org') or a bare domain ('change.org'). Lowercased before save. Domain matches anything @domain.",
+      },
+      action: {
+        type: 'string',
+        enum: ['block', 'personal', 'allow'],
+        description: "'block' → spam, never surface. 'personal' → privacy boundary, body never shown to other agents. 'allow' → business/informational, surface normally.",
+      },
+      notes: {
+        type: 'string',
+        description: "Optional: a short note about why the rule exists (e.g. 'spammy petitions', 'spouse's bank').",
+      },
+    },
+    required: ['sender_pattern', 'action'],
+  },
+};
+
+const TOOL_LIST_SENDER_RULES: AnthropicTool = {
+  name: 'list_sender_rules',
+  description:
+    "List all sender rules the owner has set. Use when the owner asks 'what rules do I have?', 'show me my email rules', 'who am I blocking?', or wants to audit before adding more rules.",
+  input_schema: {
+    type: 'object',
+    properties: {},
+    required: [],
+  },
+};
+
+const TOOL_REMOVE_SENDER_RULE: AnthropicTool = {
+  name: 'remove_sender_rule',
+  description:
+    "Remove a sender rule by its pattern. Use when the owner says 'unblock change.org', 'stop filtering AT&T', or 'remove that rule'. Future emails from that sender will go back to LLM classification.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      sender_pattern: {
+        type: 'string',
+        description: "The exact pattern that was originally saved (full email or bare domain).",
+      },
+    },
+    required: ['sender_pattern'],
   },
 };
 
@@ -2307,6 +2360,9 @@ export function buildToolList(
   tools.push(TOOL_CREATE_DOCUMENT);
   tools.push(TOOL_RUN_WORKFLOW);
   tools.push(TOOL_REPORT_MISCLASSIFICATION);
+  tools.push(TOOL_SET_SENDER_RULE);
+  tools.push(TOOL_LIST_SENDER_RULES);
+  tools.push(TOOL_REMOVE_SENDER_RULE);
   tools.push(TOOL_LIST_PROCESSES);
   tools.push(TOOL_APPROVE_PROCESS);
   tools.push(TOOL_DECLINE_PROCESS);
@@ -2886,6 +2942,63 @@ export async function executeTool(
         } catch (err) {
           return { content: `Couldn't save correction: ${err}`, success: false };
         }
+      }
+
+      case 'set_sender_rule': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const senderPattern = (call.input.sender_pattern ?? '').trim();
+        const action = call.input.action;
+        if (!senderPattern) return { content: 'Missing sender_pattern.', success: false };
+        if (!['block', 'personal', 'allow'].includes(action)) {
+          return { content: `Invalid action "${action}". Use block, personal, or allow.`, success: false };
+        }
+        const res = await setSenderRule({
+          tenantPhone: user.phoneNumber,
+          senderPattern,
+          action,
+          notes: call.input.notes,
+        });
+        if (!res.ok) return { content: `Couldn't save rule: ${res.reason}`, success: false };
+        const scope = senderPattern.includes('@') ? 'just that address' : 'anything @' + senderPattern;
+        const effect =
+          action === 'block' ? `silently filtered as spam — you won't see them.`
+          : action === 'personal' ? `marked personal — private boundary holds, no draft, no extraction.`
+          : `surfaced as business/informational with no auto-draft.`;
+        return {
+          content: `Rule saved: ${senderPattern} → ${action} (${scope}). Future emails ${effect}`,
+          success: true,
+        };
+      }
+
+      case 'list_sender_rules': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const rules = await getSenderRules(user.phoneNumber);
+        if (rules.length === 0) {
+          return { content: 'No sender rules set. Tell me "block X" or "mark Y as personal" to add one.', success: true };
+        }
+        const byAction: Record<string, string[]> = { block: [], personal: [], allow: [] };
+        for (const r of rules) {
+          (byAction[r.action] ??= []).push(r.sender_pattern);
+        }
+        const lines: string[] = [];
+        if (byAction.block!.length) lines.push(`Blocked (${byAction.block!.length}): ${byAction.block!.join(', ')}`);
+        if (byAction.personal!.length) lines.push(`Personal (${byAction.personal!.length}): ${byAction.personal!.join(', ')}`);
+        if (byAction.allow!.length) lines.push(`Allowed (${byAction.allow!.length}): ${byAction.allow!.join(', ')}`);
+        return { content: lines.join('\n'), success: true };
+      }
+
+      case 'remove_sender_rule': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const pattern = (call.input.sender_pattern ?? '').trim();
+        if (!pattern) return { content: 'Missing sender_pattern.', success: false };
+        const res = await removeSenderRule({ tenantPhone: user.phoneNumber, senderPattern: pattern });
+        if (!res.ok) return { content: `Couldn't remove rule: ${res.reason}`, success: false };
+        return {
+          content: res.removed
+            ? `Removed rule for "${pattern}". Future emails from that sender go back to LLM classification.`
+            : `No rule found for "${pattern}" — nothing to remove.`,
+          success: true,
+        };
       }
 
       case 'create_document': {
