@@ -22,6 +22,7 @@ import { listImapUnread, sendImap, searchImap } from '../../_lib/imap-runtime';
 import { queryKnowledge } from '../../_lib/knowledge-base';
 import { logCorrection } from '../../_lib/classification-learning';
 import { setSenderRule, removeSenderRule, getSenderRules } from '../../_lib/sender-rules';
+import { auditTeamForTenant } from '../../_lib/admin-agents';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
 import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
 import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, type TopContact } from '../../_lib/email-intelligence';
@@ -427,28 +428,38 @@ const TOOL_REPORT_MISCLASSIFICATION: AnthropicTool = {
   },
 };
 
-const TOOL_SET_SENDER_RULE: AnthropicTool = {
-  name: 'set_sender_rule',
+const TOOL_SET_SENDER_RULES: AnthropicTool = {
+  name: 'set_sender_rules',
   description:
-    "Set a permanent classification rule for a sender so future emails skip the LLM and get classified deterministically. Use when the owner says things like 'block Change.org', 'mark anything from joyce@example.com as personal', 'AT&T billing is always personal', or 'allow newsletters from substack'. Patterns can be a full email ('user@domain.com') or a bare domain ('change.org'). Actions: 'block' (silently spam — owner sees nothing), 'personal' (private boundary — held for owner review, no draft, no extraction), 'allow' (business/informational, surface normally, no auto-draft). Idempotent — calling with an existing pattern updates the action. When the owner gives you several senders in one breath, call this tool multiple times in one response — one call per sender.",
+    "Set one or more permanent sender classification rules in a SINGLE batched call. Future emails matching any rule skip the LLM and get classified deterministically. Use when the owner names one or several senders in one breath — e.g. 'block Change.org, Vodafone, and Pulsio; file AT&T as personal; allow my accountant'. Pass ALL rules in the rules[] array; do NOT call this tool multiple times. Patterns can be a full email ('user@domain.com') or a bare domain ('change.org'). Actions: 'block' (silently spam — owner sees nothing), 'personal' (private boundary — held for owner review, no draft, no extraction), 'allow' (business/informational, surface normally, no auto-draft). Idempotent — re-calling with an existing pattern updates the action.",
   input_schema: {
     type: 'object',
     properties: {
-      sender_pattern: {
-        type: 'string',
-        description: "Either a full email address ('joyce@change.org') or a bare domain ('change.org'). Lowercased before save. Domain matches anything @domain.",
-      },
-      action: {
-        type: 'string',
-        enum: ['block', 'personal', 'allow'],
-        description: "'block' → spam, never surface. 'personal' → privacy boundary, body never shown to other agents. 'allow' → business/informational, surface normally.",
-      },
-      notes: {
-        type: 'string',
-        description: "Optional: a short note about why the rule exists (e.g. 'spammy petitions', 'spouse's bank').",
+      rules: {
+        type: 'array',
+        description: "Array of sender rules to upsert in this single call. ALL rules from one owner request belong in ONE array — never split across multiple tool calls.",
+        items: {
+          type: 'object',
+          properties: {
+            sender_pattern: {
+              type: 'string',
+              description: "Full email ('joyce@change.org') or bare domain ('change.org'). Lowercased before save.",
+            },
+            action: {
+              type: 'string',
+              enum: ['block', 'personal', 'allow'],
+              description: "'block' → spam. 'personal' → private boundary. 'allow' → business/informational.",
+            },
+            notes: {
+              type: 'string',
+              description: "Optional: short reason for the rule.",
+            },
+          },
+          required: ['sender_pattern', 'action'],
+        },
       },
     },
-    required: ['sender_pattern', 'action'],
+    required: ['rules'],
   },
 };
 
@@ -459,6 +470,33 @@ const TOOL_LIST_SENDER_RULES: AnthropicTool = {
   input_schema: {
     type: 'object',
     properties: {},
+    required: [],
+  },
+};
+
+const TOOL_PROVISION_AXIS: AnthropicTool = {
+  name: 'provision_axis',
+  description:
+    "One-time provisioning of the Axis agent — runtime audit/monitoring of the agent team. Per the PRD, Axis was designed to transition from build-phase (onboarding ontology mapping, already shipped) to runtime-monitor phase. This tool creates the monitor-phase agent: she runs the audit_team diagnostic, watches for stale rows/duplicate agents/instance-health drift, and surfaces findings through Iris. Idempotent — if Axis already exists, this is a no-op. Use when the owner says 'provision Axis', 'add Axis', 'set up the audit team', 'who's watching the agents', etc.",
+  input_schema: {
+    type: 'object',
+    properties: {},
+    required: [],
+  },
+};
+
+const TOOL_AUDIT_TEAM: AnthropicTool = {
+  name: 'audit_team',
+  description:
+    "Read-only diagnostic that lists every mention of an agent across ALL four storage locations (agent_configs active/removed, chat profile.team top-level, chat profile.team sub-agents, agent_instances). Use when the owner says 'something is wrong with X', 'still seeing duplicates of X', 'where is X', or before/after running dedup to confirm the data state. NEVER writes — always safe to call. Pass agent_name for a single-agent audit, or leave blank for the full team. This is Axis's primary runtime tool (PRD: Axis transitions from build → monitor).",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agent_name: {
+        type: 'string',
+        description: "Optional. Case-insensitive substring match. Leave blank to audit the full team.",
+      },
+    },
     required: [],
   },
 };
@@ -2360,9 +2398,11 @@ export function buildToolList(
   tools.push(TOOL_CREATE_DOCUMENT);
   tools.push(TOOL_RUN_WORKFLOW);
   tools.push(TOOL_REPORT_MISCLASSIFICATION);
-  tools.push(TOOL_SET_SENDER_RULE);
+  tools.push(TOOL_SET_SENDER_RULES);
   tools.push(TOOL_LIST_SENDER_RULES);
   tools.push(TOOL_REMOVE_SENDER_RULE);
+  tools.push(TOOL_AUDIT_TEAM);
+  tools.push(TOOL_PROVISION_AXIS);
   tools.push(TOOL_LIST_PROCESSES);
   tools.push(TOOL_APPROVE_PROCESS);
   tools.push(TOOL_DECLINE_PROCESS);
@@ -2944,29 +2984,47 @@ export async function executeTool(
         }
       }
 
-      case 'set_sender_rule': {
+      case 'set_sender_rules': {
         if (!user) return { content: 'Internal: user context required.', success: false };
-        const senderPattern = (call.input.sender_pattern ?? '').trim();
-        const action = call.input.action;
-        if (!senderPattern) return { content: 'Missing sender_pattern.', success: false };
-        if (!['block', 'personal', 'allow'].includes(action)) {
-          return { content: `Invalid action "${action}". Use block, personal, or allow.`, success: false };
+        const rawRules = Array.isArray(call.input.rules) ? call.input.rules : [];
+        if (rawRules.length === 0) return { content: 'No rules in the request — pass a rules[] array.', success: false };
+
+        const saved: Array<{ pattern: string; action: string }> = [];
+        const failed: Array<{ pattern: string; reason: string }> = [];
+        for (const r of rawRules) {
+          const pattern = (r?.sender_pattern ?? '').trim();
+          const action = r?.action;
+          if (!pattern) {
+            failed.push({ pattern: '(empty)', reason: 'missing sender_pattern' });
+            continue;
+          }
+          if (!['block', 'personal', 'allow'].includes(action)) {
+            failed.push({ pattern, reason: `invalid action "${action}"` });
+            continue;
+          }
+          const res = await setSenderRule({
+            tenantPhone: user.phoneNumber,
+            senderPattern: pattern,
+            action,
+            notes: r?.notes,
+          });
+          if (res.ok) saved.push({ pattern, action });
+          else failed.push({ pattern, reason: res.reason ?? 'unknown' });
         }
-        const res = await setSenderRule({
-          tenantPhone: user.phoneNumber,
-          senderPattern,
-          action,
-          notes: call.input.notes,
-        });
-        if (!res.ok) return { content: `Couldn't save rule: ${res.reason}`, success: false };
-        const scope = senderPattern.includes('@') ? 'just that address' : 'anything @' + senderPattern;
-        const effect =
-          action === 'block' ? `silently filtered as spam — you won't see them.`
-          : action === 'personal' ? `marked personal — private boundary holds, no draft, no extraction.`
-          : `surfaced as business/informational with no auto-draft.`;
+
+        const byAction: Record<string, string[]> = { block: [], personal: [], allow: [] };
+        for (const s of saved) (byAction[s.action] ??= []).push(s.pattern);
+        const lines: string[] = [];
+        if (byAction.block!.length) lines.push(`Blocked: ${byAction.block!.join(', ')}`);
+        if (byAction.personal!.length) lines.push(`Personal: ${byAction.personal!.join(', ')}`);
+        if (byAction.allow!.length) lines.push(`Allowed: ${byAction.allow!.join(', ')}`);
+        const summary = lines.length ? lines.join(' | ') : '(none saved)';
+        const tail = failed.length
+          ? ` Failed: ${failed.map(f => `${f.pattern} (${f.reason})`).join(', ')}.`
+          : '';
         return {
-          content: `Rule saved: ${senderPattern} → ${action} (${scope}). Future emails ${effect}`,
-          success: true,
+          content: `Saved ${saved.length} rule${saved.length === 1 ? '' : 's'}: ${summary}.${tail} Future emails matching any rule skip the LLM entirely.`,
+          success: failed.length === 0,
         };
       }
 
@@ -2997,6 +3055,105 @@ export async function executeTool(
           content: res.removed
             ? `Removed rule for "${pattern}". Future emails from that sender go back to LLM classification.`
             : `No rule found for "${pattern}" — nothing to remove.`,
+          success: true,
+        };
+      }
+
+      case 'audit_team': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const result = await auditTeamForTenant({
+          tenantPhone: user.phoneNumber,
+          agentName: call.input.agent_name ?? null,
+        });
+        return { content: result.interpretation, success: result.ok };
+      }
+
+      case 'provision_axis': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!supaUrl || !supaKey) return { content: 'Supabase not configured.', success: false };
+
+        // Idempotency: check for an existing active Axis in agent_configs first.
+        try {
+          const existing = await fetch(
+            `${supaUrl}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&agent_name=ilike.axis&status=neq.removed&select=id&limit=1`,
+            { headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` } },
+          );
+          if (existing.ok) {
+            const rows = await existing.json();
+            if (Array.isArray(rows) && rows.length > 0) {
+              return { content: 'Axis is already provisioned — no changes made. Ask "audit team" to see her run.', success: true };
+            }
+          }
+        } catch (err) {
+          console.warn('[provision_axis] existence check failed (proceeding):', err);
+        }
+
+        const axisConfig = {
+          name: 'Axis',
+          role: 'Runtime Auditor',
+          tier: 'Sonnet' as const,
+          description:
+            "Runtime monitor for the agent team. Watches for duplicate rows across agent_configs, drift between the deck and the database, stale agent_instances, and any divergence between what the team profile says and what's actually configured. Surfaces findings through Iris. Per the PRD, Axis evolved from onboarding-time ontology mapping into ongoing runtime monitoring — this is the second half of that role.",
+          tools: ['audit_team'],
+          channels: ['whatsapp'],
+        };
+
+        // Insert into agent_configs.
+        try {
+          await fetch(`${supaUrl}/rest/v1/agent_configs`, {
+            method: 'POST',
+            headers: {
+              apikey: supaKey,
+              Authorization: `Bearer ${supaKey}`,
+              'Content-Type': 'application/json',
+              Prefer: 'return=minimal',
+            },
+            body: JSON.stringify({
+              tenant_phone: cleanPhone,
+              agent_name: axisConfig.name,
+              agent_role: axisConfig.role,
+              status: 'active',
+              output_channels: axisConfig.channels,
+              model_routing: { primary: axisConfig.tier },
+              governance_rules: [],
+              config: {
+                description: axisConfig.description,
+                tools: axisConfig.tools,
+                source: 'whatsapp:provision_axis',
+              },
+            }),
+          });
+        } catch (err) {
+          return { content: `Couldn't insert Axis config: ${err}`, success: false };
+        }
+
+        // Add to chat-side team profile (top-level).
+        const team = user.profile?.team ?? [];
+        const alreadyOnTeam = team.some((a: any) => (a?.name ?? '').toLowerCase() === 'axis');
+        if (!alreadyOnTeam) {
+          team.push({
+            id: 'axis',
+            name: axisConfig.name,
+            role: axisConfig.role,
+            tier: axisConfig.tier,
+            description: axisConfig.description,
+            tools: axisConfig.tools,
+            channels: axisConfig.channels,
+          } as any);
+          user.profile.team = team;
+          await saveUserContext(user);
+        }
+
+        void regenerateOrgDoc(user.phoneNumber).catch((err) =>
+          console.warn('[provision_axis] regen failed:', err),
+        );
+
+        return {
+          content:
+            "Axis provisioned ✓ — Runtime Auditor on the team. She has the audit_team diagnostic. Ask 'audit team' or 'audit Mira' anytime and she'll report the live state across all storage locations.",
           success: true,
         };
       }

@@ -247,6 +247,130 @@ async function dedupeChatTeamForTenant(cleanPhone: string): Promise<{
   }
 }
 
+export interface AuditResult {
+  ok: boolean;
+  tenant: string;
+  total_mentions: number;
+  by_location: {
+    agent_configs_active: Array<{ id: string; agent_name: string; created_at: string }>;
+    agent_configs_removed: Array<{ id: string; agent_name: string; updated_at: string }>;
+    chat_team_top_level: Array<{ name: string; index: number }>;
+    chat_team_sub: Array<{ name: string; parent: string; index: number }>;
+    agent_instances: Array<{ id: string; agent_config_id: string; status: string }>;
+  };
+  interpretation: string;
+}
+
+/**
+ * Read-only diagnostic — finds every mention of an agent name across ALL
+ * known storage locations. Shipped 2026-05-20 because the dedup tool kept
+ * "fixing" things while the owner still saw stale duplicates; turns out
+ * agent_instances and agent_runs were holding their own copies.
+ *
+ * Use this BEFORE any dedup-style write to confirm the actual data state.
+ * Never writes. Pass a name (case-insensitive substring) or null for "all".
+ */
+export async function auditTeamForTenant(args: {
+  tenantPhone: string;
+  agentName?: string | null;
+}): Promise<AuditResult> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    return {
+      ok: false,
+      tenant: args.tenantPhone,
+      total_mentions: 0,
+      by_location: {
+        agent_configs_active: [], agent_configs_removed: [],
+        chat_team_top_level: [], chat_team_sub: [], agent_instances: [],
+      },
+      interpretation: 'Supabase not configured.',
+    };
+  }
+  const cleanPhone = args.tenantPhone.replace(/[\s\-+()]/g, '');
+  const needle = (args.agentName ?? '').toLowerCase().trim();
+  const matches = (n: string | undefined | null) =>
+    needle === '' || (n ?? '').toLowerCase().includes(needle);
+
+  const [activeRes, removedRes, ctxRes, instancesRes] = await Promise.all([
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&status=eq.active&select=id,agent_name,created_at&order=created_at.asc`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&status=eq.removed&select=id,agent_name,updated_at&order=updated_at.desc`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}&select=profile&limit=1`,
+      { headers: headers() },
+    ),
+    fetch(
+      `${SUPABASE_URL}/rest/v1/agent_instances?tenant_phone=eq.${cleanPhone}&select=id,agent_config_id,status`,
+      { headers: headers() },
+    ),
+  ]);
+
+  const activeAll = activeRes.ok ? await activeRes.json() : [];
+  const removedAll = removedRes.ok ? await removedRes.json() : [];
+  const ctxRows = ctxRes.ok ? await ctxRes.json() : [];
+  const instancesAll = instancesRes.ok ? await instancesRes.json() : [];
+
+  const agent_configs_active = (activeAll as any[]).filter(r => matches(r.agent_name));
+  const agent_configs_removed = (removedAll as any[]).filter(r => matches(r.agent_name));
+
+  // Build map of config_id → agent_name for filtering instances.
+  const cfgIdToName = new Map<string, string>();
+  for (const c of activeAll) cfgIdToName.set(c.id, c.agent_name);
+  for (const c of removedAll) cfgIdToName.set(c.id, c.agent_name);
+  const agent_instances = (instancesAll as any[]).filter(i =>
+    matches(cfgIdToName.get(i.agent_config_id))
+  );
+
+  // Walk profile.team for top-level + sub matches.
+  const profile = ctxRows?.[0]?.profile ?? {};
+  const team = Array.isArray(profile.team) ? profile.team : [];
+  const chat_team_top_level: Array<{ name: string; index: number }> = [];
+  const chat_team_sub: Array<{ name: string; parent: string; index: number }> = [];
+  team.forEach((m: any, i: number) => {
+    if (matches(m?.name)) chat_team_top_level.push({ name: m.name, index: i });
+    const subs = Array.isArray(m?.subTeam?.agents) ? m.subTeam.agents : [];
+    subs.forEach((s: any, j: number) => {
+      if (matches(s?.name)) chat_team_sub.push({ name: s.name, parent: m.name, index: j });
+    });
+  });
+
+  const total =
+    agent_configs_active.length +
+    agent_configs_removed.length +
+    chat_team_top_level.length +
+    chat_team_sub.length +
+    agent_instances.length;
+
+  const lines: string[] = [];
+  lines.push(`agent_configs (active): ${agent_configs_active.length}${agent_configs_active.length > 0 ? ` — ${agent_configs_active.map(r => r.agent_name).join(', ')}` : ''}`);
+  lines.push(`agent_configs (removed/soft-deleted): ${agent_configs_removed.length}`);
+  lines.push(`chat profile.team (top-level): ${chat_team_top_level.length}${chat_team_top_level.length > 0 ? ` — ${chat_team_top_level.map(r => r.name).join(', ')}` : ''}`);
+  lines.push(`chat profile.team (sub-agents): ${chat_team_sub.length}${chat_team_sub.length > 0 ? ` — ${chat_team_sub.map(r => `${r.name} (under ${r.parent})`).join(', ')}` : ''}`);
+  lines.push(`agent_instances: ${agent_instances.length}`);
+
+  return {
+    ok: true,
+    tenant: cleanPhone,
+    total_mentions: total,
+    by_location: {
+      agent_configs_active,
+      agent_configs_removed,
+      chat_team_top_level,
+      chat_team_sub,
+      agent_instances,
+    },
+    interpretation:
+      needle === ''
+        ? `Full team audit — ${total} total agent rows across all stores:\n${lines.join('\n')}`
+        : `Audit for "${args.agentName}" — ${total} mentions across all stores:\n${lines.join('\n')}`,
+  };
+}
+
 export interface RestoreResult {
   ok: boolean;
   rows_restored: number;
