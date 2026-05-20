@@ -267,6 +267,7 @@ FYI
 
 Rules:
 - Lead with a 1-line opener in your voice ("Quick update —" or similar). Keep it short.
+- The opener MUST NOT lie about quantity. Don't write "one thing needs your eyes" when multiple sections will follow. If there's truly one URGENT and nothing else, "one thing" is fine; otherwise use neutral framing ("A few things worth your attention" / "Quick rundown" / "Here's what's queued").
 - One bullet per item. Merge near-duplicates (e.g. "3 follow-ups stacked while you were away" instead of 3 separate bullets if they're all the same kind).
 - Each bullet: 1 line, concrete, names + addresses where relevant. No fluff.
 - Skip a section entirely if it has no items.

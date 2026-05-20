@@ -28,6 +28,7 @@ export interface DedupeResult {
   active_agents?: number;
   groups_deduped?: Array<{ name: string; kept_id: string; removed_count: number }>;
   rows_marked_removed?: number;
+  team_remaining?: Array<{ name: string; location: string }>;
   failures?: Array<{ id: string; reason: string }>;
   interpretation: string;
   reason?: string;
@@ -96,10 +97,11 @@ export async function dedupeAgentsForTenant(tenantPhone: string): Promise<Dedupe
       tenant: cleanPhone,
       action: teamOnlyDedup.team_duplicates_removed > 0 ? undefined : 'no_duplicates_found',
       active_agents: rows.length,
+      team_remaining: teamOnlyDedup.remaining_names,
       interpretation:
         teamOnlyDedup.team_duplicates_removed > 0
-          ? `agent_configs was already clean (${rows.length} active rows). Cleaned ${teamOnlyDedup.team_duplicates_removed} duplicate entr${teamOnlyDedup.team_duplicates_removed === 1 ? 'y' : 'ies'} from the chat-side team profile (this is what the deck Team view renders — the count should drop on the next refresh).`
-          : `No duplicates anywhere. ${rows.length} active agent_configs for this tenant, and the chat-side team profile is also clean.`,
+          ? `agent_configs was already clean (${rows.length} active rows). Cleaned ${teamOnlyDedup.team_duplicates_removed} duplicate entr${teamOnlyDedup.team_duplicates_removed === 1 ? 'y' : 'ies'} from the chat-side team profile (this is what the deck Team view renders — the count should drop on the next refresh). Remaining team: ${(teamOnlyDedup.remaining_names ?? []).map(n => n.location === 'top' ? n.name : `${n.name} (under ${n.location.slice(4)})`).join(', ') || '(empty)'}.`
+          : `No duplicates anywhere. ${rows.length} active agent_configs for this tenant, and the chat-side team profile is also clean. Team: ${(teamOnlyDedup.remaining_names ?? []).map(n => n.location === 'top' ? n.name : `${n.name} (under ${n.location.slice(4)})`).join(', ') || '(empty)'}.`,
     };
   }
 
@@ -128,8 +130,12 @@ export async function dedupeAgentsForTenant(tenantPhone: string): Promise<Dedupe
   // duplicates in the tree visualization.
   const teamDedupResult = await dedupeChatTeamForTenant(cleanPhone);
 
+  const remainingDesc = (teamDedupResult.remaining_names ?? [])
+    .map(n => n.location === 'top' ? n.name : `${n.name} (under ${n.location.slice(4)})`)
+    .join(', ') || '(empty)';
+
   const interpretation = failures.length === 0
-    ? `✓ Cleaned up ${removed} duplicate agent_configs row${removed === 1 ? '' : 's'} across ${groupSummary.length} agent name${groupSummary.length === 1 ? '' : 's'} (kept the oldest of each). ${teamDedupResult.team_duplicates_removed > 0 ? `Also cleaned ${teamDedupResult.team_duplicates_removed} duplicate entr${teamDedupResult.team_duplicates_removed === 1 ? 'y' : 'ies'} from the chat-side team profile (this is what the deck Team view renders).` : 'Chat-side team profile was already clean.'}`
+    ? `✓ Cleaned up ${removed} duplicate agent_configs row${removed === 1 ? '' : 's'} across ${groupSummary.length} agent name${groupSummary.length === 1 ? '' : 's'} (kept the oldest of each). ${teamDedupResult.team_duplicates_removed > 0 ? `Also cleaned ${teamDedupResult.team_duplicates_removed} duplicate entr${teamDedupResult.team_duplicates_removed === 1 ? 'y' : 'ies'} from the chat-side team profile (this is what the deck Team view renders).` : 'Chat-side team profile was already clean.'} Remaining team: ${remainingDesc}.`
     : `⚠ Partial — ${removed} rows removed, ${failures.length} patch failures. See failures[].`;
 
   return {
@@ -137,6 +143,7 @@ export async function dedupeAgentsForTenant(tenantPhone: string): Promise<Dedupe
     tenant: cleanPhone,
     groups_deduped: groupSummary,
     rows_marked_removed: removed,
+    team_remaining: teamDedupResult.remaining_names,
     failures,
     interpretation,
   };
@@ -149,11 +156,22 @@ export async function dedupeAgentsForTenant(tenantPhone: string): Promise<Dedupe
  * this array, so even after agent_configs is clean the owner sees
  * duplicates in the UI until we clean it too.
  *
- * Keeps the FIRST occurrence of each (case-insensitive) name in the
- * top-level team. Also walks each agent's subTeam.agents and dedupes
- * those by name. Returns counts so the caller can report.
+ * 2026-05-20 — extended to global-namespace dedup. Previously this only
+ * dedup'd within the top-level array and within each subTeam.agents
+ * array, but the deck renders BOTH levels — so a name appearing once at
+ * top-level AND inside three different subTeams shows as 4 nodes. The
+ * fix below treats top-level + every subTeam as ONE namespace. First
+ * occurrence wins (preferring top-level over sub-level since top-level
+ * is the canonical home).
+ *
+ * Returns the final flat list of names + locations so the caller can
+ * report exactly what remains. Helpful when the owner says "still see N
+ * of X" — we can show them the actual structure.
  */
-async function dedupeChatTeamForTenant(cleanPhone: string): Promise<{ team_duplicates_removed: number }> {
+async function dedupeChatTeamForTenant(cleanPhone: string): Promise<{
+  team_duplicates_removed: number;
+  remaining_names?: Array<{ name: string; location: string }>;
+}> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { team_duplicates_removed: 0 };
   try {
     const ctxRes = await fetch(
@@ -167,31 +185,42 @@ async function dedupeChatTeamForTenant(cleanPhone: string): Promise<{ team_dupli
     const team = Array.isArray(ctx.profile.team) ? ctx.profile.team : [];
     if (team.length === 0) return { team_duplicates_removed: 0 };
 
-    const seenTop = new Set<string>();
-    const dedupedTeam: any[] = [];
+    // Global namespace — every name (top-level OR in any subTeam) competes
+    // for the same slot. First seen wins; everything else is dropped.
+    const claimed = new Set<string>();
+    const remaining: Array<{ name: string; location: string }> = [];
     let removed = 0;
+
+    const dedupedTeam: any[] = [];
     for (const member of team) {
       const key = (member?.name ?? '').toLowerCase().trim();
+      // Unnamed entries: keep them but don't claim a slot.
       if (!key) {
         dedupedTeam.push(member);
         continue;
       }
-      if (seenTop.has(key)) {
+      if (claimed.has(key)) {
         removed++;
         continue;
       }
-      seenTop.add(key);
-      // Dedup subTeam.agents too if present.
+      claimed.add(key);
+      remaining.push({ name: member.name, location: 'top' });
+
+      // Now dedupe this member's subTeam.agents against the SAME global set.
       if (Array.isArray(member.subTeam?.agents)) {
-        const seenSub = new Set<string>();
         const dedupedSubAgents: any[] = [];
         for (const sub of member.subTeam.agents) {
           const subKey = (sub?.name ?? '').toLowerCase().trim();
-          if (!subKey || seenSub.has(subKey)) {
-            if (subKey) removed++;
+          if (!subKey) {
+            dedupedSubAgents.push(sub);
             continue;
           }
-          seenSub.add(subKey);
+          if (claimed.has(subKey)) {
+            removed++;
+            continue;
+          }
+          claimed.add(subKey);
+          remaining.push({ name: sub.name, location: `sub:${member.name}` });
           dedupedSubAgents.push(sub);
         }
         member.subTeam.agents = dedupedSubAgents;
@@ -200,7 +229,9 @@ async function dedupeChatTeamForTenant(cleanPhone: string): Promise<{ team_dupli
       dedupedTeam.push(member);
     }
 
-    if (removed === 0) return { team_duplicates_removed: 0 };
+    if (removed === 0) {
+      return { team_duplicates_removed: 0, remaining_names: remaining };
+    }
 
     // Write back. Preserve all other profile fields.
     const newProfile = { ...ctx.profile, team: dedupedTeam };
@@ -209,7 +240,7 @@ async function dedupeChatTeamForTenant(cleanPhone: string): Promise<{ team_dupli
       headers: { ...headers(), Prefer: 'return=minimal' },
       body: JSON.stringify({ profile: newProfile }),
     });
-    return { team_duplicates_removed: removed };
+    return { team_duplicates_removed: removed, remaining_names: remaining };
   } catch (err) {
     console.warn('[admin-agents] chat-team dedup failed:', err);
     return { team_duplicates_removed: 0 };
