@@ -92,6 +92,19 @@ export async function dedupeAgentsForTenant(tenantPhone: string): Promise<Dedupe
     // showed 5 Mira nodes because chat-team dedup was gated behind
     // "agent_configs had duplicates."
     const teamOnlyDedup = await dedupeChatTeamForTenant(cleanPhone);
+    const remainingDesc = (teamOnlyDedup.remaining_names ?? [])
+      .map(n => n.location === 'top' ? n.name : `${n.name} (under ${n.location.slice(4)})`)
+      .join(', ') || '(empty)';
+    if (teamOnlyDedup.write_error) {
+      return {
+        ok: false,
+        tenant: cleanPhone,
+        active_agents: rows.length,
+        team_remaining: teamOnlyDedup.remaining_names,
+        reason: `chat_team_write_failed`,
+        interpretation: `agent_configs was already clean (${rows.length} active rows). Identified duplicates in the chat-side team profile but the PATCH to whatsapp_contexts FAILED with: ${teamOnlyDedup.write_error}. The team JSON was NOT updated — duplicates remain in the database. This is a code-level fix needed (RLS policy, schema constraint, or column mismatch). Remaining team if write had succeeded: ${remainingDesc}.`,
+      };
+    }
     return {
       ok: true,
       tenant: cleanPhone,
@@ -100,8 +113,8 @@ export async function dedupeAgentsForTenant(tenantPhone: string): Promise<Dedupe
       team_remaining: teamOnlyDedup.remaining_names,
       interpretation:
         teamOnlyDedup.team_duplicates_removed > 0
-          ? `agent_configs was already clean (${rows.length} active rows). Cleaned ${teamOnlyDedup.team_duplicates_removed} duplicate entr${teamOnlyDedup.team_duplicates_removed === 1 ? 'y' : 'ies'} from the chat-side team profile (this is what the deck Team view renders — the count should drop on the next refresh). Remaining team: ${(teamOnlyDedup.remaining_names ?? []).map(n => n.location === 'top' ? n.name : `${n.name} (under ${n.location.slice(4)})`).join(', ') || '(empty)'}.`
-          : `No duplicates anywhere. ${rows.length} active agent_configs for this tenant, and the chat-side team profile is also clean. Team: ${(teamOnlyDedup.remaining_names ?? []).map(n => n.location === 'top' ? n.name : `${n.name} (under ${n.location.slice(4)})`).join(', ') || '(empty)'}.`,
+          ? `agent_configs was already clean (${rows.length} active rows). Cleaned ${teamOnlyDedup.team_duplicates_removed} duplicate entr${teamOnlyDedup.team_duplicates_removed === 1 ? 'y' : 'ies'} from the chat-side team profile (this is what the deck Team view renders — the count should drop on the next refresh). Remaining team: ${remainingDesc}.`
+          : `No duplicates anywhere. ${rows.length} active agent_configs for this tenant, and the chat-side team profile is also clean. Team: ${remainingDesc}.`,
     };
   }
 
@@ -171,6 +184,7 @@ export async function dedupeAgentsForTenant(tenantPhone: string): Promise<Dedupe
 async function dedupeChatTeamForTenant(cleanPhone: string): Promise<{
   team_duplicates_removed: number;
   remaining_names?: Array<{ name: string; location: string }>;
+  write_error?: string;
 }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { team_duplicates_removed: 0 };
   try {
@@ -233,13 +247,25 @@ async function dedupeChatTeamForTenant(cleanPhone: string): Promise<{
       return { team_duplicates_removed: 0, remaining_names: remaining };
     }
 
-    // Write back. Preserve all other profile fields.
+    // Write back. Preserve all other profile fields. Check the response —
+    // fire-and-forget hid a silent-failure path where the PATCH was rejected
+    // (RLS, schema constraint, type mismatch) but the tool still reported
+    // "5 cleaned" because we never looked at the status code.
     const newProfile = { ...ctx.profile, team: dedupedTeam };
-    await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
+    const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${cleanPhone}`, {
       method: 'PATCH',
       headers: { ...headers(), Prefer: 'return=minimal' },
       body: JSON.stringify({ profile: newProfile }),
     });
+    if (!patchRes.ok) {
+      const errText = await patchRes.text().catch(() => '');
+      console.error('[admin-agents] chat-team PATCH failed:', patchRes.status, errText.slice(0, 200));
+      return {
+        team_duplicates_removed: 0,
+        remaining_names: remaining,
+        write_error: `${patchRes.status}: ${errText.slice(0, 200)}`,
+      };
+    }
     return { team_duplicates_removed: removed, remaining_names: remaining };
   } catch (err) {
     console.warn('[admin-agents] chat-team dedup failed:', err);
