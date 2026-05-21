@@ -24,6 +24,7 @@
     { "path": "/api/cron/email-engagement-poll", "schedule": "0 */6 * * *" },
     { "path": "/api/cron/behavioral-rag-refresh", "schedule": "*/30 * * * *" },
     { "path": "/api/cron/connection-health", "schedule": "0 4 * * *" },
-    { "path": "/api/cron/outbound-drainer", "schedule": "* * * * *" }
+    { "path": "/api/cron/outbound-drainer", "schedule": "* * * * *" },
+    { "path": "/api/cron/workflow-dispatcher", "schedule": "* * * * *" }
   ]
 }

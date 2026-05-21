@@ -46,6 +46,7 @@ export type OwnerMessageSource =
   | 'marketing-loop'
   | 'webhook-image'
   | 'webhook-video'
+  | 'workflow'
   | 'manual';
 
 export interface SendOwnerMessageInput {

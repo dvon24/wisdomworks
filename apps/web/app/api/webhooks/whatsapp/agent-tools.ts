@@ -23,6 +23,13 @@ import { queryKnowledge } from '../../_lib/knowledge-base';
 import { logCorrection } from '../../_lib/classification-learning';
 import { setSenderRule, removeSenderRule, getSenderRules } from '../../_lib/sender-rules';
 import { auditTeamForTenant, backfillAgentConfigsFromProfileTeam, checkAgentHealth } from '../../_lib/admin-agents';
+import {
+  createUserWorkflow,
+  listUserWorkflows,
+  setWorkflowStatus,
+  getWorkflowByName,
+} from '../../_lib/user-workflows';
+import { executeWorkflow } from '../../_lib/workflow-executor';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
 import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
 import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, type TopContact } from '../../_lib/email-intelligence';
@@ -482,6 +489,87 @@ const TOOL_CHECK_AGENT_HEALTH: AnthropicTool = {
     type: 'object',
     properties: {},
     required: [],
+  },
+};
+
+const TOOL_CREATE_WORKFLOW: AnthropicTool = {
+  name: 'create_workflow',
+  description:
+    "Persist a recurring or on-demand workflow the owner described in plain English. Use when the owner asks for something to happen every day/week/Monday/morning, or asks you to 'save' / 'set up' a multi-step routine. Translate their request into a concrete steps[] array — each step is { agent, tool, args }. Steps run sequentially; output of step N is available to step N+1 as the {previous} or {previous.field} template. Workflows land in pending_approval — the dispatcher cron only fires after the owner explicitly approves. After calling this tool, surface the proposal_summary VERBATIM to the owner and ask them to reply 'approve <name>' to activate. CRON FORMAT: standard 5-field (minute hour dom month dow). Examples: '0 8 * * 1' = Monday 8am UTC, '0 9 * * *' = daily 9am UTC, '*/30 * * * *' = every 30 min. Pass null for on-demand-only workflows. Never invent a workflow store outside this tool — this IS the user-defined workflow surface.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: "Short kebab-case identifier ('monday-pnl-brief', 'weekly-client-checkin'). Used to reference the workflow later." },
+      description: { type: 'string', description: "Human-readable summary of what the workflow does. Echoes back to the owner." },
+      cron_expr: { type: 'string', description: "5-field cron string for recurring runs, OR null for on-demand. UTC only." },
+      steps: {
+        type: 'array',
+        description: "Ordered list of steps. Each step invokes ONE tool. The output of each step is fed to the next via {previous} or {previous.field} template substitution in args.",
+        items: {
+          type: 'object',
+          properties: {
+            agent: { type: 'string', description: "Optional agent name for attribution (e.g. 'Marcus'). Doesn't restrict tool access." },
+            tool: { type: 'string', description: "Iris tool name to invoke at this step (must exist in the tool catalog)." },
+            args: { type: 'object', description: "Tool arguments. String values may contain {previous} or {previous.field} which substitute from the prior step's output." },
+          },
+          required: ['tool'],
+        },
+      },
+    },
+    required: ['name', 'steps'],
+  },
+};
+
+const TOOL_LIST_WORKFLOWS: AnthropicTool = {
+  name: 'list_workflows',
+  description:
+    "Show all of the owner's saved workflows with their status (pending_approval / active / paused), schedule, and last-run outcome. Use when the owner asks 'what workflows do I have?', 'what's scheduled?', 'show my routines'.",
+  input_schema: { type: 'object', properties: {}, required: [] },
+};
+
+const TOOL_APPROVE_WORKFLOW: AnthropicTool = {
+  name: 'approve_workflow',
+  description:
+    "Flip a workflow from pending_approval to active so the dispatcher starts firing it on its schedule. Use when the owner says 'approve <name>', 'activate <name>', 'yes' as a follow-up to a workflow proposal you just created.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: "The workflow name (kebab-case identifier) the owner is approving." },
+    },
+    required: ['name'],
+  },
+};
+
+const TOOL_PAUSE_WORKFLOW: AnthropicTool = {
+  name: 'pause_workflow',
+  description:
+    "Temporarily stop a workflow from firing without deleting it. Sets status to 'paused'. Use when the owner says 'pause <name>', 'stop the daily brief for now', 'hold <name>'.",
+  input_schema: {
+    type: 'object',
+    properties: { name: { type: 'string', description: "The workflow name." } },
+    required: ['name'],
+  },
+};
+
+const TOOL_DELETE_WORKFLOW: AnthropicTool = {
+  name: 'delete_workflow',
+  description:
+    "Soft-delete a workflow (sets status to 'removed'). The row stays in the database for audit but the dispatcher ignores it. Use when the owner says 'delete <name>', 'remove the X workflow', 'I don't need that anymore'. Removed workflows can't be undone in MVP — confirm with the owner before firing.",
+  input_schema: {
+    type: 'object',
+    properties: { name: { type: 'string', description: "The workflow name." } },
+    required: ['name'],
+  },
+};
+
+const TOOL_RUN_WORKFLOW_NOW: AnthropicTool = {
+  name: 'run_workflow_now',
+  description:
+    "Fire a workflow ONCE immediately, ignoring its schedule. Useful for testing a newly-approved workflow or for owner ad-hoc requests ('run the daily brief right now'). Does NOT affect the next scheduled run.",
+  input_schema: {
+    type: 'object',
+    properties: { name: { type: 'string', description: "The workflow name." } },
+    required: ['name'],
   },
 };
 
@@ -2427,6 +2515,12 @@ export function buildToolList(
   tools.push(TOOL_BACKFILL_TEAM);
   tools.push(TOOL_CHECK_AGENT_HEALTH);
   tools.push(TOOL_PROVISION_AXIS);
+  tools.push(TOOL_CREATE_WORKFLOW);
+  tools.push(TOOL_LIST_WORKFLOWS);
+  tools.push(TOOL_APPROVE_WORKFLOW);
+  tools.push(TOOL_PAUSE_WORKFLOW);
+  tools.push(TOOL_DELETE_WORKFLOW);
+  tools.push(TOOL_RUN_WORKFLOW_NOW);
   tools.push(TOOL_LIST_PROCESSES);
   tools.push(TOOL_APPROVE_PROCESS);
   tools.push(TOOL_DECLINE_PROCESS);
@@ -3105,6 +3199,85 @@ export async function executeTool(
         if (!user) return { content: 'Internal: user context required.', success: false };
         const result = await checkAgentHealth(user.phoneNumber);
         return { content: result.interpretation, success: result.ok };
+      }
+
+      case 'create_workflow': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const result = await createUserWorkflow({
+          tenantPhone: user.phoneNumber,
+          name: call.input.name,
+          description: call.input.description,
+          cronExpr: call.input.cron_expr ?? null,
+          steps: Array.isArray(call.input.steps) ? call.input.steps : [],
+        });
+        if (!result.ok) return { content: `Couldn't create workflow: ${result.reason}`, success: false };
+        return { content: result.proposal_summary, success: true };
+      }
+
+      case 'list_workflows': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const workflows = await listUserWorkflows(user.phoneNumber);
+        if (workflows.length === 0) {
+          return { content: "No workflows saved yet. Ask me to set one up — 'every Monday at 8am have Marcus pull last week's P&L and email me a PDF' or similar.", success: true };
+        }
+        const lines = workflows.map(w => {
+          const sched = w.cron_expr ? `every "${w.cron_expr}"` : 'on-demand';
+          const lastRun = w.last_run_at
+            ? ` · last: ${new Date(w.last_run_at).toISOString().slice(0, 16).replace('T', ' ')} (${w.last_run_outcome})`
+            : ' · never run';
+          const next = w.next_run_at && w.status === 'active'
+            ? ` · next: ${new Date(w.next_run_at).toISOString().slice(0, 16).replace('T', ' ')} UTC`
+            : '';
+          return `  • ${w.name} [${w.status}] — ${w.description ?? '(no description)'} · ${sched}${next}${lastRun}`;
+        });
+        return { content: `Workflows (${workflows.length}):\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'approve_workflow': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const wf = await getWorkflowByName({ tenantPhone: user.phoneNumber, name: call.input.name });
+        if (!wf) return { content: `No workflow named "${call.input.name}" found.`, success: false };
+        if (wf.status === 'active') return { content: `"${wf.name}" is already active. Nothing to do.`, success: true };
+        const result = await setWorkflowStatus({ tenantPhone: user.phoneNumber, name: wf.name, status: 'active' });
+        if (!result.ok) return { content: `Couldn't activate: ${result.reason}`, success: false };
+        const next = result.workflow?.next_run_at
+          ? ` First run: ${new Date(result.workflow.next_run_at).toISOString().slice(0, 16).replace('T', ' ')} UTC.`
+          : ' On-demand only — invoke with run_workflow_now when ready.';
+        return { content: `Workflow "${wf.name}" activated.${next}`, success: true };
+      }
+
+      case 'pause_workflow': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const result = await setWorkflowStatus({ tenantPhone: user.phoneNumber, name: call.input.name, status: 'paused' });
+        if (!result.ok) return { content: `Couldn't pause: ${result.reason}`, success: false };
+        return { content: `Workflow "${call.input.name}" paused. Resume by saying "activate ${call.input.name}".`, success: true };
+      }
+
+      case 'delete_workflow': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const result = await setWorkflowStatus({ tenantPhone: user.phoneNumber, name: call.input.name, status: 'removed' });
+        if (!result.ok) return { content: `Couldn't delete: ${result.reason}`, success: false };
+        return { content: `Workflow "${call.input.name}" deleted (soft-removed, audit row retained).`, success: true };
+      }
+
+      case 'run_workflow_now': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const wf = await getWorkflowByName({ tenantPhone: user.phoneNumber, name: call.input.name });
+        if (!wf) return { content: `No workflow named "${call.input.name}" found.`, success: false };
+        if (wf.status === 'removed') return { content: `"${wf.name}" is deleted. Restore it first if you want to run it.`, success: false };
+        const result = await executeWorkflow({
+          workflowId: wf.id,
+          tenantPhone: user.phoneNumber,
+          steps: wf.steps,
+          workflowName: wf.name,
+        });
+        const summary = result.outcome === 'success'
+          ? `${result.steps_completed}/${result.steps_total} steps in ${Math.round(result.duration_ms / 100) / 10}s`
+          : result.outcome === 'partial'
+            ? `partial — ${result.steps_completed}/${result.steps_total} steps before failure: ${result.step_outcomes[result.steps_completed]?.error ?? 'unknown'}`
+            : `failed at step 1: ${result.step_outcomes[0]?.error ?? result.error ?? 'unknown'}`;
+        const badge = result.outcome === 'success' ? '✓' : result.outcome === 'partial' ? '⚠' : '✗';
+        return { content: `${badge} "${wf.name}" ran — ${summary}`, success: result.outcome === 'success' };
       }
 
       case 'provision_axis': {
