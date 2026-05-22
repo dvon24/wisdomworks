@@ -30,6 +30,7 @@ import {
   getWorkflowByName,
 } from '../../_lib/user-workflows';
 import { executeWorkflow } from '../../_lib/workflow-executor';
+import { seedRoleTemplatesForAgent } from '../../_lib/role-template-seeder';
 import { transitionProcess, proposeWorkflowFor } from '../../_lib/process-capture';
 import { listAllSkills, retireSkill } from '../../_lib/skill-formation';
 import { getVoiceProfile, getTopContacts, renderVoiceForDraft, searchContacts, type TopContact } from '../../_lib/email-intelligence';
@@ -559,6 +560,19 @@ const TOOL_DELETE_WORKFLOW: AnthropicTool = {
     type: 'object',
     properties: { name: { type: 'string', description: "The workflow name." } },
     required: ['name'],
+  },
+};
+
+const TOOL_SEED_AGENT_ROUTINES: AnthropicTool = {
+  name: 'seed_agent_routines',
+  description:
+    "Retroactively seed a role's starter workflow templates for an agent that's ALREADY on the team. New agents auto-seed at provisioning, but existing agents (Marcus, Mira, Riley, Alex provisioned before role-templates shipped) need this called once to bring them up to par. Uses the agent's role to look up canonical templates (daily-pnl-brief, weekly-cash-summary, morning-schedule-brief, etc.) and creates them as pending_approval workflows the owner can then approve. Idempotent — re-running skips workflows that already exist. Use when the owner says 'set up Marcus's routines', 'give Riley day-1 workflows', 'add starter workflows for Alex'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agent_name: { type: 'string', description: "The exact name of the agent already on the team (e.g. 'Marcus', 'Mira', 'Riley')." },
+    },
+    required: ['agent_name'],
   },
 };
 
@@ -2521,6 +2535,7 @@ export function buildToolList(
   tools.push(TOOL_PAUSE_WORKFLOW);
   tools.push(TOOL_DELETE_WORKFLOW);
   tools.push(TOOL_RUN_WORKFLOW_NOW);
+  tools.push(TOOL_SEED_AGENT_ROUTINES);
   tools.push(TOOL_LIST_PROCESSES);
   tools.push(TOOL_APPROVE_PROCESS);
   tools.push(TOOL_DECLINE_PROCESS);
@@ -3267,6 +3282,24 @@ export async function executeTool(
         const result = await setWorkflowStatus({ tenantPhone: user.phoneNumber, name: call.input.name, status: 'removed' });
         if (!result.ok) return { content: `Couldn't delete: ${result.reason}`, success: false };
         return { content: `Workflow "${call.input.name}" deleted (soft-removed, audit row retained).`, success: true };
+      }
+
+      case 'seed_agent_routines': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const agentName = (call.input.agent_name ?? '').toString().trim();
+        if (!agentName) return { content: 'Missing agent_name.', success: false };
+        // Look up the agent's role from the chat-side team or fall back to a sensible default.
+        const team = user.profile?.team ?? [];
+        const member = team.find((a: any) => (a?.name ?? '').toLowerCase() === agentName.toLowerCase());
+        if (!member) {
+          return { content: `No agent named "${agentName}" on your team. List your team with list_my_team first.`, success: false };
+        }
+        const result = await seedRoleTemplatesForAgent({
+          tenantPhone: user.phoneNumber,
+          agentName: member.name,
+          agentRole: member.role ?? 'Specialist',
+        });
+        return { content: result.interpretation, success: result.ok };
       }
 
       case 'run_workflow_now': {
@@ -6178,7 +6211,17 @@ export async function executeTool(
           void regenerateOrgDoc(user.phoneNumber).catch((err) =>
             console.warn('[add_agent_to_team] regen failed:', err),
           );
-          return { content: `Added ${name} (${role}) under ${manager.name}. ${manager.name}'s team is now ${sub.count}.`, success: true };
+          // Auto-seed role-scoped workflow templates so the new agent has
+          // day-1 routines ready for owner approval.
+          const seed = await seedRoleTemplatesForAgent({
+            tenantPhone: user.phoneNumber,
+            agentName: name,
+            agentRole: role,
+          });
+          const seedSuffix = seed.workflows_created > 0
+            ? ` ${seed.interpretation}`
+            : '';
+          return { content: `Added ${name} (${role}) under ${manager.name}. ${manager.name}'s team is now ${sub.count}.${seedSuffix}`, success: true };
         }
 
         team.push(newAgent as any);
@@ -6188,7 +6231,17 @@ export async function executeTool(
         void regenerateOrgDoc(user.phoneNumber).catch((err) =>
           console.warn('[add_agent_to_team] regen failed:', err),
         );
-        return { content: `Added ${name} (${role}) as a top-level agent on the team.`, success: true };
+        // Auto-seed role-scoped workflow templates so the new agent has
+        // day-1 routines ready for owner approval.
+        const seed = await seedRoleTemplatesForAgent({
+          tenantPhone: user.phoneNumber,
+          agentName: name,
+          agentRole: role,
+        });
+        const seedSuffix = seed.workflows_created > 0
+          ? ` ${seed.interpretation}`
+          : '';
+        return { content: `Added ${name} (${role}) as a top-level agent on the team.${seedSuffix}`, success: true };
       }
 
       case 'add_tool_to_agent': {
