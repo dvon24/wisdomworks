@@ -2617,10 +2617,19 @@ export interface ToolCall {
 }
 
 export interface ToolResult {
-  /** Text fed back to the AI as the result */
+  /** Text fed back to the AI as the result (human-readable, used by Iris). */
   content: string;
   /** Was the tool successful? */
   success: boolean;
+  /**
+   * Optional structured payload — used by the workflow executor for
+   * template substitution between steps ({previous.storage_url}, etc).
+   * Tools that don't produce structured output can omit this; the
+   * executor falls back to JSON-parsing content. Chainable tools
+   * (create_document, pull_pnl, list_unread_emails, etc.) should
+   * populate it explicitly.
+   */
+  data?: Record<string, any>;
 }
 
 // Story 2.10 — destructive tools that fire a pre_action snapshot before
@@ -3477,6 +3486,14 @@ export async function executeTool(
               return {
                 content: `Created ${safeName} in your Google Drive (${(sizeKb).toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s).\n  drive_url: ${upload.webUrl}${attachableNote}`,
                 success: true,
+                data: {
+                  storage_url: attachable?.publicUrl ?? null,
+                  drive_url: upload.webUrl ?? null,
+                  safeName,
+                  filename: safeName,
+                  mime,
+                  size_kb: sizeKb,
+                },
               };
             }
           }
@@ -3488,6 +3505,14 @@ export async function executeTool(
               return {
                 content: `Created ${safeName} in your OneDrive (${(sizeKb).toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s).\n  onedrive_url: ${upload.webUrl}${attachableNote}`,
                 success: true,
+                data: {
+                  storage_url: attachable?.publicUrl ?? null,
+                  onedrive_url: upload.webUrl ?? null,
+                  safeName,
+                  filename: safeName,
+                  mime,
+                  size_kb: sizeKb,
+                },
               };
             }
           }
@@ -3517,12 +3542,14 @@ export async function executeTool(
             return {
               content: `Generated ${safeName} (${sizeKb.toFixed(1)}KB) and stored at ${stored.publicUrl}, but WhatsApp delivery failed: ${sent.error}`,
               success: true,
+              data: { storage_url: stored.publicUrl, safeName, filename: safeName, mime, size_kb: sizeKb },
             };
           }
           await auditDelivery('whatsapp', stored.publicUrl, totalMs, true);
           return {
             content: `✓ Sent ${safeName} (${sizeKb.toFixed(1)}KB, ${(totalMs / 1000).toFixed(1)}s) to your WhatsApp as a file attachment. No Drive/OneDrive connected — connect one in the deck and future docs go there directly.`,
             success: true,
+            data: { storage_url: stored.publicUrl, safeName, filename: safeName, mime, size_kb: sizeKb },
           };
         } catch (err) {
           const totalMs = Date.now() - startedAt;

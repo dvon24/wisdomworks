@@ -64,26 +64,56 @@ export interface WorkflowExecutionResult {
 /**
  * Recursively walk args and replace template references.
  * Supports:
- *   "{previous}"          → entire prior step's output string
- *   "{previous.field}"    → JSON-parsed prior output's named field, or
- *                          empty string if not parseable / field missing
+ *   "{previous}"          → entire prior step's content string
+ *   "{previous.field}"    → field from prior step's structured `data`
+ *                          (preferred), with JSON-parse-of-content fallback
  *   "literal {previous} more" → string substitution within larger strings
+ *
+ * Resolution priority for "{previous.field}":
+ *   1. priorData[field]                       — preferred, fed by tool's
+ *                                               explicit ToolResult.data
+ *   2. JSON.parse(priorContent)[field]        — legacy fallback for tools
+ *                                               that returned JSON in content
+ *   3. ''                                      — empty string (logged)
+ *
+ * The data path was added 2026-05-22 after the first real workflow test
+ * (Marcus → Mira → email PDF) failed because create_document's content
+ * was human-readable prose, not JSON, so {previous.storage_url} resolved
+ * to empty string and the email had no attachment.
  */
-function substituteTemplates(args: any, priorOutput: string | null): any {
+function substituteTemplates(
+  args: any,
+  priorContent: string | null,
+  priorData: Record<string, any> | undefined,
+): any {
   if (args === null || args === undefined) return args;
   if (typeof args === 'string') {
-    if (priorOutput === null) return args.replace(/\{previous(\.[^}]+)?\}/g, '');
-    // Try JSON-parsing prior output once; fall back to string substitution.
+    if (priorContent === null && !priorData) {
+      return args.replace(/\{previous(\.[^}]+)?\}/g, '');
+    }
+    // Resolve field lookup against data first, JSON-parsed content second.
     let priorJson: any = null;
-    try {
-      priorJson = JSON.parse(priorOutput);
-    } catch {
-      priorJson = null;
+    if (priorContent) {
+      try {
+        priorJson = JSON.parse(priorContent);
+      } catch {
+        priorJson = null;
+      }
     }
     return args.replace(/\{previous(\.[^}]+)?\}/g, (_match, fieldPath) => {
-      if (!fieldPath) return priorOutput;
+      if (!fieldPath) return priorContent ?? '';
       const path = fieldPath.slice(1).split('.');
-      let cursor = priorJson;
+      // Try data first.
+      let cursor: any = priorData;
+      for (const p of path) {
+        if (cursor == null) { cursor = undefined; break; }
+        cursor = cursor[p];
+      }
+      if (cursor != null) {
+        return typeof cursor === 'string' ? cursor : JSON.stringify(cursor);
+      }
+      // Fall back to JSON-parsed content.
+      cursor = priorJson;
       for (const p of path) {
         if (cursor == null) return '';
         cursor = cursor[p];
@@ -92,12 +122,12 @@ function substituteTemplates(args: any, priorOutput: string | null): any {
     });
   }
   if (Array.isArray(args)) {
-    return args.map(a => substituteTemplates(a, priorOutput));
+    return args.map(a => substituteTemplates(a, priorContent, priorData));
   }
   if (typeof args === 'object') {
     const out: Record<string, any> = {};
     for (const [k, v] of Object.entries(args)) {
-      out[k] = substituteTemplates(v, priorOutput);
+      out[k] = substituteTemplates(v, priorContent, priorData);
     }
     return out;
   }
@@ -169,7 +199,8 @@ export async function executeWorkflow(args: {
 
   const connections = await loadOAuthConnections(cleanPhone);
 
-  let priorOutput: string | null = null;
+  let priorContent: string | null = null;
+  let priorData: Record<string, any> | undefined = undefined;
   let stepsCompleted = 0;
 
   for (let i = 0; i < args.steps.length; i++) {
@@ -186,7 +217,7 @@ export async function executeWorkflow(args: {
       break;
     }
 
-    const resolvedArgs = substituteTemplates(step.args ?? {}, priorOutput);
+    const resolvedArgs = substituteTemplates(step.args ?? {}, priorContent, priorData);
     const call: ToolCall = { name: step.tool, input: resolvedArgs };
 
     let result: ToolResult;
@@ -215,7 +246,8 @@ export async function executeWorkflow(args: {
 
     if (!result.success) break;
     stepsCompleted++;
-    priorOutput = result.content;
+    priorContent = result.content;
+    priorData = result.data;
   }
 
   const outcome: WorkflowExecutionResult['outcome'] =
