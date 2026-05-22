@@ -233,8 +233,80 @@ export async function generateIrisReply(
       accumulate(response.usage);
     }
 
-    const textBlock = response.content.find((b: any) => b.type === 'text');
-    const assistantMessage = textBlock?.text ?? "I couldn't process that. Try again?";
+    let textBlock = response.content.find((b: any) => b.type === 'text');
+    let assistantMessage = textBlock?.text ?? "I couldn't process that. Try again?";
+
+    // ───────────────────────────────────────────────────────────────────────
+    // CODE-SIDE FABRICATION GUARD
+    //
+    // Three prompt-only patches failed to stop Iris from saying "going forward
+    // every morning brief will include..." without calling create_workflow.
+    // Last-line-of-defense check: scan the final text for forbidden phrases
+    // and verify that a persisting tool was called THIS TURN. If not, inject
+    // a corrective system message and force ONE retry.
+    //
+    // Persisting tools are the ones that actually make a "going forward"
+    // claim true. Anything else (list_X, get_X, audit_X) doesn't establish
+    // future behavior.
+    // ───────────────────────────────────────────────────────────────────────
+    const PERSISTING_TOOLS = new Set([
+      'create_workflow',
+      'approve_workflow',
+      'set_sender_rules',
+      'enable_mcp_server',
+      'set_canonical_role',
+      'remember_this',
+      'add_agent_to_team',
+      'update_agent',
+      'move_agent_under_manager',
+      'set_marketing_autonomy',
+      'connect_automation_webhook',
+    ]);
+    const FABRICATION_PATTERNS: RegExp[] = [
+      /(going forward|from here on|starting tomorrow|starting today|from now on).{0,80}(brief|morning|every|include|all future|now include)/i,
+      /(every morning brief|every daily brief|each morning brief).{0,80}(will|now|include|contain)/i,
+      /(locked in|saved).{0,40}(brief|morning|going forward|will|every)/i,
+      /(will now include|now include).{0,60}(brief|workout|recommendation|section)/i,
+      /(baked into|built into|added to).{0,40}(brief|morning|digest|cron)/i,
+      /tomorrow'?s brief will include/i,
+    ];
+    const detectFabrication = (text: string): string[] => {
+      const hits: string[] = [];
+      for (const pat of FABRICATION_PATTERNS) {
+        const m = text.match(pat);
+        if (m) hits.push(m[0]);
+      }
+      return hits;
+    };
+    const hasPersistingTool = toolsUsed.some(t => PERSISTING_TOOLS.has(t));
+
+    const fabricationHits = detectFabrication(assistantMessage);
+    if (fabricationHits.length > 0 && !hasPersistingTool) {
+      console.warn(
+        `[iris-${surface}] Fabrication guard triggered. Phrases: ${JSON.stringify(fabricationHits)} | tools this turn: ${JSON.stringify(toolsUsed)}`,
+      );
+      // Inject a corrective system-style message and force a retry without
+      // tools so the model produces an honest final reply.
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({
+        role: 'user',
+        content: `SYSTEM CORRECTION — your previous response claimed an ongoing/recurring behavior would happen "going forward" without calling a tool that persists it. Specifically these phrases triggered the fabrication guard: ${JSON.stringify(fabricationHits)}. The tools you called this turn (${JSON.stringify(toolsUsed)}) do NOT make any future behavior happen.\n\nRewrite your response. If the owner asked for a recurring action, you have exactly two honest options:\n1. Call create_workflow NOW (in this turn) to actually schedule the recurring action, then describe what you persisted (referencing the user_workflows row).\n2. Explain honestly that you can't modify the hardcoded morning brief, and offer to create a SEPARATE workflow that fires at a similar time. Phrase it as a proposal ("Want me to set up a daily 'X' workflow?"), NOT as a done deal.\n\nDo NOT use phrases like "going forward," "every morning brief will," "locked in," "from here on," "starting tomorrow your brief will include," "baked into," or "now include" unless you can point to a tool call you made this turn that creates the row that makes it true. Retry the response.`,
+      });
+      const retryResp = await callAnthropic(apiKey, systemPrompt, messages, [], effort);
+      accumulate(retryResp.usage);
+      const retryTextBlock = retryResp.content.find((b: any) => b.type === 'text');
+      if (retryTextBlock?.text) {
+        assistantMessage = retryTextBlock.text;
+        textBlock = retryTextBlock;
+        const retryHits = detectFabrication(assistantMessage);
+        if (retryHits.length > 0) {
+          // Retry also fabricated — log but let through. Don't infinite-loop.
+          console.error(
+            `[iris-${surface}] Fabrication guard RETRY ALSO FABRICATED. Phrases: ${JSON.stringify(retryHits)}. Letting through but flagging.`,
+          );
+        }
+      }
+    }
 
     // NOTE: we don't push the assistant message to conversationHistory here.
     // The caller (webhook → sendWhatsAppReply → sendOwnerMessage) appends to
