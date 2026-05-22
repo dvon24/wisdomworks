@@ -589,6 +589,48 @@ const TOOL_AUDIT_AGENT_CONNECTIONS: AnthropicTool = {
   },
 };
 
+const TOOL_LIST_AVAILABLE_MCP_SERVERS: AnthropicTool = {
+  name: 'list_available_mcp_servers',
+  description:
+    "Show the catalog of MCP (Model Context Protocol) servers the platform supports — community-built integrations that expand agent capability beyond first-party OAuth (GitHub, Vercel, Linear, Sentry, Stripe, Apple Health, Notion, Claude Code). Use when the owner asks 'what MCPs are available?', 'how do I connect GitHub for my web developer?', or 'how do I give Coach access to Apple Health?'. The catalog shows what each server does, which canonical capability it provides, and what auth setup is needed.",
+  input_schema: { type: 'object', properties: {}, required: [] },
+};
+
+const TOOL_ENABLE_MCP_SERVER: AnthropicTool = {
+  name: 'enable_mcp_server',
+  description:
+    "Enable an MCP server for the current tenant. Records the owner's auth credentials and flips the server to enabled status. After this, the capability the server provides flips from 'mcp-pending' to 'ready' in role audits — so a web-developer agent's version-control capability lights up once github MCP is enabled. CURRENT STATE (2026-05-22): this records intent + creds, but actual tool DISCOVERY + EXECUTION via the MCP client lands in the next session. Use when the owner says 'enable github MCP with this PAT [token]', 'connect vercel MCP', etc. Always pass server_slug from the catalog (call list_available_mcp_servers first if unsure) and the credential payload appropriate to that server's auth_kind.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      server_slug: { type: 'string', description: "Catalog slug for the MCP server (e.g. 'github', 'vercel', 'apple-health')." },
+      auth_token: { type: 'string', description: "For api-token / personal-access-token / oauth servers: the credential the owner provided. Leave blank for servers with auth_kind='none'." },
+      auth_extra: { type: 'object', description: "Optional extra auth fields (refresh_token, expires_at, etc) for OAuth flows." },
+    },
+    required: ['server_slug'],
+  },
+};
+
+const TOOL_LIST_MY_MCP_SERVERS: AnthropicTool = {
+  name: 'list_my_mcp_servers',
+  description:
+    "List which MCP servers are currently enabled for this tenant + their status. Use when the owner asks 'which MCPs are connected?', 'what extra integrations does my team have?', 'is github MCP working?'.",
+  input_schema: { type: 'object', properties: {}, required: [] },
+};
+
+const TOOL_DISABLE_MCP_SERVER: AnthropicTool = {
+  name: 'disable_mcp_server',
+  description:
+    "Disable an MCP server for the current tenant. The catalog row stays — only the tenant_mcp_servers row flips to 'disabled'. Useful if the credentials expire or the owner wants to revoke access. Re-enable via enable_mcp_server with fresh credentials.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      server_slug: { type: 'string', description: "Catalog slug for the MCP server to disable." },
+    },
+    required: ['server_slug'],
+  },
+};
+
 const TOOL_LIST_AVAILABLE_ROLES: AnthropicTool = {
   name: 'list_available_roles',
   description:
@@ -2591,6 +2633,10 @@ export function buildToolList(
   tools.push(TOOL_SET_CANONICAL_ROLE);
   tools.push(TOOL_SHOW_ROLE_CAPABILITIES);
   tools.push(TOOL_AUDIT_AGENT_CONNECTIONS);
+  tools.push(TOOL_LIST_AVAILABLE_MCP_SERVERS);
+  tools.push(TOOL_ENABLE_MCP_SERVER);
+  tools.push(TOOL_LIST_MY_MCP_SERVERS);
+  tools.push(TOOL_DISABLE_MCP_SERVER);
   tools.push(TOOL_LIST_PROCESSES);
   tools.push(TOOL_APPROVE_PROCESS);
   tools.push(TOOL_DECLINE_PROCESS);
@@ -3337,6 +3383,79 @@ export async function executeTool(
         const result = await setWorkflowStatus({ tenantPhone: user.phoneNumber, name: call.input.name, status: 'removed' });
         if (!result.ok) return { content: `Couldn't delete: ${result.reason}`, success: false };
         return { content: `Workflow "${call.input.name}" deleted (soft-removed, audit row retained).`, success: true };
+      }
+
+      case 'list_available_mcp_servers': {
+        const { listMcpServerCatalog: listMcp, formatCatalogForChat: fmtMcp } = await import('../../_lib/mcp-catalog');
+        const servers = await listMcp();
+        if (servers.length === 0) {
+          return { content: 'MCP catalog is empty — admin needs to seed mcp_server_catalog.', success: false };
+        }
+        return {
+          content: `Available MCP servers (${servers.length}):\n\n${fmtMcp(servers)}\n\nEnable one with enable_mcp_server passing the server_slug + your auth token.`,
+          success: true,
+        };
+      }
+
+      case 'enable_mcp_server': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const serverSlug = (call.input.server_slug ?? '').toString().trim().toLowerCase();
+        const authToken = call.input.auth_token?.toString();
+        const authExtra = call.input.auth_extra ?? null;
+        if (!serverSlug) return { content: 'Missing server_slug.', success: false };
+        const { enableMcpServer } = await import('../../_lib/mcp-catalog');
+        const authConfig = authToken
+          ? { token: authToken, ...(authExtra && typeof authExtra === 'object' ? authExtra : {}) }
+          : undefined;
+        const result = await enableMcpServer({
+          tenantPhone: user.phoneNumber,
+          serverSlug,
+          authConfig,
+        });
+        if (!result.ok) {
+          if (result.reason?.startsWith('auth_required:') && result.catalogEntry) {
+            return {
+              content: `${result.catalogEntry.display_name} MCP needs ${result.catalogEntry.auth_kind} auth. Setup: ${result.catalogEntry.auth_setup_hint}\n\nOnce you have the token, retry: enable_mcp_server with server_slug='${serverSlug}' and auth_token='<your-token>'.`,
+              success: false,
+            };
+          }
+          return { content: `Couldn't enable ${serverSlug}: ${result.reason}`, success: false };
+        }
+        const caps = result.catalogEntry?.capability_slugs ?? [];
+        const capsNote = caps.length > 0
+          ? ` Capabilities lit up: ${caps.join(', ')}. Roles needing these will now audit as ready instead of mcp-pending.`
+          : '';
+        return {
+          content: `✓ ${result.catalogEntry?.display_name} MCP enabled.${capsNote}\n\nNOTE (2026-05-22): MCP tool execution lands in the next session. For now, the audit + capability reflection works; agent tools that call MCP servers are stubbed.`,
+          success: true,
+        };
+      }
+
+      case 'list_my_mcp_servers': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const { listTenantMcpServers, getMcpServerCatalogEntry } = await import('../../_lib/mcp-catalog');
+        const enabled = await listTenantMcpServers(user.phoneNumber);
+        if (enabled.length === 0) {
+          return { content: 'No MCP servers enabled yet. See list_available_mcp_servers for the catalog.', success: true };
+        }
+        const lines: string[] = [];
+        for (const t of enabled) {
+          const entry = await getMcpServerCatalogEntry(t.server_slug);
+          const name = entry?.display_name ?? t.server_slug;
+          const caps = entry?.capability_slugs?.join(', ') ?? '';
+          lines.push(`  • ${name} (${t.server_slug}) — ${t.status}${caps ? ` · provides: ${caps}` : ''}`);
+        }
+        return { content: `Your enabled MCP servers (${enabled.length}):\n${lines.join('\n')}`, success: true };
+      }
+
+      case 'disable_mcp_server': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const serverSlug = (call.input.server_slug ?? '').toString().trim().toLowerCase();
+        if (!serverSlug) return { content: 'Missing server_slug.', success: false };
+        const { disableMcpServer } = await import('../../_lib/mcp-catalog');
+        const result = await disableMcpServer({ tenantPhone: user.phoneNumber, serverSlug });
+        if (!result.ok) return { content: `Couldn't disable: ${result.reason}`, success: false };
+        return { content: `${serverSlug} MCP disabled. Re-enable any time with enable_mcp_server.`, success: true };
       }
 
       case 'list_available_roles': {

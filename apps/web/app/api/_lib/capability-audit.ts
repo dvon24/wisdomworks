@@ -141,7 +141,24 @@ export interface RoleAuditResult {
   interpretation: string;
 }
 
-function runCapabilityCheck(slug: string, conns: OAuthConnRow[]): CapabilityCheck {
+function runCapabilityCheck(
+  slug: string,
+  conns: OAuthConnRow[],
+  mcpCapabilities: Map<string, string>,
+): CapabilityCheck {
+  // MCP-enabled capabilities win — if the tenant has an MCP server that
+  // provides this capability, mark it ready regardless of the static
+  // resolver's verdict. Lets owners enable e.g. github MCP and have
+  // version-control flip from "mcp-pending" to "ready" instantly.
+  const mcpSatisfier = mcpCapabilities.get(slug);
+  if (mcpSatisfier) {
+    return {
+      capability: slug,
+      status: 'ready',
+      satisfied_by: mcpSatisfier,
+    };
+  }
+
   const resolver = RESOLVERS[slug];
   if (!resolver) {
     return { capability: slug, status: 'mcp_pending', connect_hint: `Unknown capability "${slug}" — admin needs to register a resolver.` };
@@ -162,10 +179,16 @@ export async function auditRoleCapabilities(args: {
   roleSlug?: string;
 }): Promise<RoleAuditResult> {
   const cleanPhone = args.tenantPhone.replace(/[\s\-+()]/g, '');
-  const conns = await loadConnections(cleanPhone);
+  // Parallel-load OAuth connections + MCP capabilities so the audit reflects
+  // both first-party and community-MCP-enabled paths.
+  const { tenantCapabilitiesFromMcp } = await import('./mcp-catalog');
+  const [conns, mcpCapabilities] = await Promise.all([
+    loadConnections(cleanPhone),
+    tenantCapabilitiesFromMcp(cleanPhone),
+  ]);
 
-  const required = (args.required ?? []).map(s => runCapabilityCheck(s, conns));
-  const optional = (args.optional ?? []).map(s => runCapabilityCheck(s, conns));
+  const required = (args.required ?? []).map(s => runCapabilityCheck(s, conns, mcpCapabilities));
+  const optional = (args.optional ?? []).map(s => runCapabilityCheck(s, conns, mcpCapabilities));
 
   const readyRequired = required.filter(c => c.status === 'ready').length;
   const totalRequired = required.length;
