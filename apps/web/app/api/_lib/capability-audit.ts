@@ -113,6 +113,7 @@ const RESOLVERS: Record<string, Resolver> = {
   'error-tracking': MCP_PENDING('error-tracking', 'Requires Sentry MCP (ships with MCP ingestion).'),
   'project-mgmt': MCP_PENDING('project-mgmt', 'Requires Linear / Jira MCP (ships with MCP ingestion).'),
   'claude-code': MCP_PENDING('claude-code', 'Requires Claude Code MCP (ships with MCP ingestion).'),
+  'fitness-tracker': MCP_PENDING('fitness-tracker', 'Requires Apple Health / Fitbit / Strava MCP (ships with MCP ingestion). Until then, the agent works from owner check-ins.'),
 };
 
 async function loadConnections(cleanPhone: string): Promise<OAuthConnRow[]> {

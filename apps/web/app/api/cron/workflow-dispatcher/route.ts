@@ -94,13 +94,22 @@ async function enqueueResult(
   workflowName: string,
   outcome: 'success' | 'partial' | 'failed',
   summary: string,
+  lastStepOutput?: string,
 ): Promise<void> {
   try {
     const { enqueueOutboundMessage } = await import('../../_lib/owner-message');
     const badge = outcome === 'success' ? '✓' : outcome === 'partial' ? '⚠' : '✗';
+    // 2026-05-22 — include the final step's output in the message body so
+    // status/coaching workflows (list_calendar_events, list_open_tasks,
+    // get_project_status) actually show their content. Previously the
+    // owner only saw "✓ ran in 2.3s" which is useless for any non-PDF
+    // workflow.
+    const contentBlock = lastStepOutput && lastStepOutput.trim().length > 0
+      ? `\n\n${lastStepOutput}`
+      : '';
     await enqueueOutboundMessage({
       tenantPhone,
-      body: `${badge} *${workflowName}* — ${summary}`,
+      body: `${badge} *${workflowName}* — ${summary}${contentBlock}`,
       source: 'workflow',
       priority: 'digest',
     });
@@ -144,8 +153,20 @@ export async function GET(request: Request) {
 
       await recordRun(wf.id, execResult.outcome, execResult.error, next);
 
+      // Coaching workflows (workout suggestions, briefings, check-in prompts)
+      // need the actual content delivered, not just "✓ workflow ran." Pull
+      // the LAST successful step's output_preview and use IT as the owner-
+      // facing body when it's substantive. Falls back to terse status for
+      // workflows whose final step just does a side-effect (send_email
+      // already delivered; nothing useful to repeat).
+      const lastOk = execResult.step_outcomes
+        .slice()
+        .reverse()
+        .find(o => o.success && (o.output_preview ?? '').length > 30);
       const summary = execResult.outcome === 'success'
-        ? `${execResult.steps_completed}/${execResult.steps_total} steps in ${Math.round(execResult.duration_ms / 100) / 10}s`
+        ? (lastOk?.output_preview && execResult.steps_total === 1
+            ? lastOk.output_preview
+            : `${execResult.steps_completed}/${execResult.steps_total} steps in ${Math.round(execResult.duration_ms / 100) / 10}s${lastOk?.output_preview && lastOk.output_preview.length > 50 ? `\n\n${lastOk.output_preview}` : ''}`)
         : execResult.outcome === 'partial'
           ? `partial — ${execResult.steps_completed}/${execResult.steps_total} steps before failure: ${execResult.step_outcomes[execResult.steps_completed]?.error ?? 'unknown'}`
           : `failed at step 1: ${execResult.step_outcomes[0]?.error ?? execResult.error ?? 'unknown'}`;
