@@ -77,12 +77,29 @@ const MCP_PENDING = (capability: string, hint: string): Resolver =>
     connect_hint: hint,
   });
 
+// "spreadsheet" satisfied by EITHER Google Sheets OR Microsoft OneDrive
+// Drive (which exposes Excel files). Owners running their finances out of
+// Excel get credit for it even though they don't have QuickBooks. Devon's
+// 2026-05-22 framing: "most just use a spreadsheet."
+const RESOLVE_SPREADSHEET: Resolver = (conns) => {
+  const sheets = conns.find(c => c.service === 'sheets' && c.status === 'active');
+  if (sheets) return { capability: '', status: 'ready', satisfied_by: 'Google Sheets' };
+  const oneDrive = conns.find(c => c.provider === 'microsoft' && c.service === 'drive' && c.status === 'active');
+  if (oneDrive) return { capability: '', status: 'ready', satisfied_by: 'Microsoft OneDrive (Excel)' };
+  return {
+    capability: '',
+    status: 'missing',
+    connect_hint: 'Connect Google Sheets OR Microsoft OneDrive in the Command Deck — either gives spreadsheet access.',
+  };
+};
+
 const RESOLVERS: Record<string, Resolver> = {
   // First-party OAuth-backed capabilities
   email: FIRST_PARTY_BY_SERVICE('email', { google: 'Google', microsoft: 'Microsoft', yahoo: 'Yahoo', apple: 'Apple', imap: 'IMAP' }),
   calendar: FIRST_PARTY_BY_SERVICE('calendar', { google: 'Google', microsoft: 'Microsoft', apple: 'Apple' }),
   drive: FIRST_PARTY_BY_SERVICE('drive', { google: 'Google', microsoft: 'OneDrive' }),
   sheets: FIRST_PARTY_BY_SERVICE('sheets', { google: 'Google' }),
+  spreadsheet: RESOLVE_SPREADSHEET,
   accounting: FIRST_PARTY_BY_SERVICE('accounting', { google: 'QuickBooks', microsoft: 'QuickBooks' }), // QBO connects via various; provider lookup forgiving
   payments: FIRST_PARTY_BY_SERVICE('payments', { google: 'Stripe', microsoft: 'Stripe' }),
   instagram: FIRST_PARTY_BY_SERVICE('instagram', { meta: 'Meta/Instagram' }),
