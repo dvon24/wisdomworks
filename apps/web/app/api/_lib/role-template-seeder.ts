@@ -24,6 +24,7 @@
  */
 
 import { nextRunAfter } from './cron-next';
+import { getAgentCanonicalRole } from './role-catalog';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -52,12 +53,38 @@ interface RoleTemplate {
 export function inferRoleSlug(agentRole: string | undefined | null): string | null {
   if (!agentRole) return null;
   const r = agentRole.toLowerCase().trim();
-  if (r.includes('financial advisor') || (r.includes('financ') && r.includes('advis'))) return 'financial-advisor';
-  if (r.includes('bookkeep') || r.includes('personal finance') || r === 'finance') return 'finance';
-  if (r.includes('schedul') || r.includes('coordinator') || r.includes('executive assistant')) return 'scheduler';
-  if (r.includes('au7o') || r.includes('project lead') || r.includes('engineer')) return 'au7o-dev';
-  if (r.includes('personal assistant') || r.includes('orchestrator')) return 'personal-assistant';
+
+  // Order matters — more specific matches first.
   if (r.includes('auditor') || r.includes('runtime monitor')) return 'runtime-auditor';
+  if (r.includes('personal assistant') || r.includes('orchestrator')) return 'personal-assistant';
+
+  // Au7o / project / engineering work
+  if (r.includes('au7o') || r.includes('project lead') || r.includes('engineer') || r.includes('developer') || r.includes('devops')) return 'au7o-dev';
+
+  // Scheduling / executive coordination
+  if (r.includes('schedul') || r.includes('coordinator') || r.includes('executive assistant')) return 'scheduler';
+
+  // Finance / bookkeeping (Mira-style)
+  if (r.includes('bookkeep') || r.includes('personal finance') || r === 'finance') return 'finance';
+
+  // Financial advisor / operations / finance manager — broadest financial bucket.
+  // Operations Manager + Financial Advisor + Finance Lead all share the same
+  // canonical routines (P&L, AR scan, monthly burn) so they share templates.
+  // Specialise later if real differences emerge.
+  if (
+    r.includes('financial advisor') ||
+    (r.includes('financ') && r.includes('advis')) ||
+    r.includes('operations manager') ||
+    r.includes('ops manager') ||
+    r === 'operations' ||
+    r === 'ops' ||
+    r.includes('finance manager') ||
+    r.includes('cfo') ||
+    r.includes('controller')
+  ) {
+    return 'financial-advisor';
+  }
+
   return null;
 }
 
@@ -81,8 +108,25 @@ export async function seedRoleTemplatesForAgent(args: {
   tenantPhone: string;
   agentName: string;
   agentRole: string;
+  /** If known at call time (e.g. fresh provisioning), skip the lookup. */
+  canonicalRoleSlug?: string | null;
 }): Promise<SeedResult> {
-  const roleSlug = inferRoleSlug(args.agentRole);
+  // Prefer the canonical_role_slug stored on the agent_configs row (set
+  // explicitly at provisioning or backfill). Fall back to legacy free-text
+  // inference for agents that predate the catalog migration. Once all
+  // tenants are backfilled, the inference fallback can be deleted.
+  let roleSlug: string | null = args.canonicalRoleSlug ?? null;
+  if (!roleSlug) {
+    const cfg = await getAgentCanonicalRole({
+      tenantPhone: args.tenantPhone,
+      agentName: args.agentName,
+    });
+    roleSlug = cfg?.canonical_role_slug ?? null;
+  }
+  if (!roleSlug) {
+    // Legacy path — infer from the free-text role string.
+    roleSlug = inferRoleSlug(args.agentRole);
+  }
   if (!SUPABASE_URL || !SUPABASE_KEY) {
     return {
       ok: false,

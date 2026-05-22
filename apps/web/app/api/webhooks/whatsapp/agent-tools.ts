@@ -563,6 +563,27 @@ const TOOL_DELETE_WORKFLOW: AnthropicTool = {
   },
 };
 
+const TOOL_LIST_AVAILABLE_ROLES: AnthropicTool = {
+  name: 'list_available_roles',
+  description:
+    "Show the platform's canonical agent role catalog — the standardized roles owners can pick from when adding a new agent. Each entry has a role_slug (e.g. 'financial-advisor'), a suggested display name (e.g. 'Mira'), a category, and a short description. Use BEFORE calling add_agent_to_team when the owner describes a need ('I need someone to handle scheduling') so you pick the right canonical_role. Also use when the owner asks 'what kind of agents can I add?' or 'show me the agent catalog'.",
+  input_schema: { type: 'object', properties: {}, required: [] },
+};
+
+const TOOL_SET_CANONICAL_ROLE: AnthropicTool = {
+  name: 'set_canonical_role',
+  description:
+    "Set or change an existing agent's canonical_role_slug. Use when (a) backfilling agents that pre-date the role catalog (Marcus, Mira, Riley, Alex, Sophia, Axis on Devon's tenant) or (b) the owner corrects a previously-set role ('Marcus should be operations-manager, not financial-advisor'). The agent's display name and free-text role stay as-is — only the canonical mapping changes. Always validate that the slug exists in the catalog (call list_available_roles first if uncertain).",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agent_name: { type: 'string', description: "The agent's display name (e.g. 'Marcus')." },
+      canonical_role: { type: 'string', description: "The canonical role slug to set (e.g. 'operations-manager')." },
+    },
+    required: ['agent_name', 'canonical_role'],
+  },
+};
+
 const TOOL_SEED_AGENT_ROUTINES: AnthropicTool = {
   name: 'seed_agent_routines',
   description:
@@ -1810,22 +1831,26 @@ const TOOL_UPDATE_AGENT: AnthropicTool = {
 const TOOL_ADD_AGENT: AnthropicTool = {
   name: 'add_agent_to_team',
   description:
-    "Add a brand-new agent to the user's team. Before calling, think about hierarchy fit: does this role belong under an existing manager (e.g. a recruiter under an Ops/People manager) or is it independent? If it fits under someone, pass parentAgentName so it goes into that person's sub-team. If not, leave parentAgentName blank for a top-level slot. Always pick a sensible tier (Haiku for routine, Sonnet for general work, Opus for critical reasoning).",
+    "Add a brand-new agent to the user's team. CRITICAL: every agent must map to a canonical_role from the platform catalog — don't invent role types. Call list_available_roles first if you don't know which canonical_role fits. The `name` parameter is the owner-facing display name (Marcus, Mira, Riley — can be anything the owner wants). The `canonical_role` parameter is the LOCKED platform shape that drives templates, default tools, and behavioral hints. Examples: owner wants 'a finance person named Marcus' → name='Marcus', canonical_role='financial-advisor'. Owner wants 'a developer for Au7o called Alex' → name='Alex', canonical_role='web-developer'. Before calling, think about hierarchy fit: pass parentAgentName if this agent reports to an existing manager. Tier defaults sensibly per role (Haiku for routine, Sonnet for general, Opus for orchestrators).",
   input_schema: {
     type: 'object',
     properties: {
-      name: { type: 'string', description: 'A friendly first-name for the agent (e.g. Riley, Atlas).' },
-      role: { type: 'string', description: 'Their role/title (e.g. Recruiter, Bookkeeper).' },
-      description: { type: 'string', description: 'One-sentence description of what they do.' },
+      name: { type: 'string', description: 'Display name the owner chose (e.g. Marcus, Mira, Riley). Free-text — does NOT have to match the canonical role.' },
+      canonical_role: {
+        type: 'string',
+        description: "Required. Canonical role slug from agent_role_catalog — drives templates and default tools. Examples: 'financial-advisor', 'operations-manager', 'scheduler', 'web-developer', 'personal-assistant', 'runtime-auditor', 'marketing-manager', 'customer-service', 'recruiter', 'ux-designer'. Call list_available_roles if uncertain.",
+      },
+      role: { type: 'string', description: 'Optional free-text title for display flavor (e.g. "WisdomWorks Operations Manager"). Falls back to the canonical role description if omitted.' },
+      description: { type: 'string', description: 'Optional one-sentence description. Defaults to the catalog entry.' },
       parentAgentName: {
         type: 'string',
         description: 'Optional. Name of the existing top-level agent this new agent should report to. Leave blank for top-level.',
       },
       tier: { type: 'string', enum: ['Haiku', 'Sonnet', 'Opus'] },
-      tools: { type: 'array', items: { type: 'string' } },
+      tools: { type: 'array', items: { type: 'string' }, description: 'Optional. Falls back to the canonical role default_tools if omitted.' },
       channels: { type: 'array', items: { type: 'string' } },
     },
-    required: ['name', 'role'],
+    required: ['name', 'canonical_role'],
   },
 };
 
@@ -2536,6 +2561,8 @@ export function buildToolList(
   tools.push(TOOL_DELETE_WORKFLOW);
   tools.push(TOOL_RUN_WORKFLOW_NOW);
   tools.push(TOOL_SEED_AGENT_ROUTINES);
+  tools.push(TOOL_LIST_AVAILABLE_ROLES);
+  tools.push(TOOL_SET_CANONICAL_ROLE);
   tools.push(TOOL_LIST_PROCESSES);
   tools.push(TOOL_APPROVE_PROCESS);
   tools.push(TOOL_DECLINE_PROCESS);
@@ -3282,6 +3309,47 @@ export async function executeTool(
         const result = await setWorkflowStatus({ tenantPhone: user.phoneNumber, name: call.input.name, status: 'removed' });
         if (!result.ok) return { content: `Couldn't delete: ${result.reason}`, success: false };
         return { content: `Workflow "${call.input.name}" deleted (soft-removed, audit row retained).`, success: true };
+      }
+
+      case 'list_available_roles': {
+        const { listRoleCatalog, formatCatalogForChat } = await import('../../_lib/role-catalog');
+        const roles = await listRoleCatalog();
+        if (roles.length === 0) {
+          return { content: 'Role catalog is empty — admin needs to seed agent_role_catalog.', success: false };
+        }
+        return {
+          content: `Available canonical agent roles (${roles.length}):\n\n${formatCatalogForChat(roles)}\n\nUse the role_slug when adding an agent (e.g. add_agent_to_team with canonical_role='financial-advisor').`,
+          success: true,
+        };
+      }
+
+      case 'set_canonical_role': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const agentName = (call.input.agent_name ?? '').toString().trim();
+        const canonicalRoleSlug = (call.input.canonical_role ?? '').toString().trim().toLowerCase();
+        if (!agentName || !canonicalRoleSlug) {
+          return { content: 'Missing agent_name or canonical_role.', success: false };
+        }
+        const { setAgentCanonicalRole, getRoleCatalogEntry } = await import('../../_lib/role-catalog');
+        const entry = await getRoleCatalogEntry(canonicalRoleSlug);
+        if (!entry) {
+          return {
+            content: `Unknown canonical_role "${canonicalRoleSlug}". Call list_available_roles for valid options.`,
+            success: false,
+          };
+        }
+        const result = await setAgentCanonicalRole({
+          tenantPhone: user.phoneNumber,
+          agentName,
+          canonicalRoleSlug,
+        });
+        if (!result.ok) {
+          return { content: `Couldn't set canonical role: ${result.reason}`, success: false };
+        }
+        return {
+          content: `${agentName} is now mapped to canonical role "${canonicalRoleSlug}" (${entry.description}). Workflow templates for this role can be seeded with seed_agent_routines.`,
+          success: true,
+        };
       }
 
       case 'seed_agent_routines': {
@@ -6122,14 +6190,31 @@ export async function executeTool(
         if (!user) return { content: 'Internal: user context required.', success: false };
         const team = user.profile?.team ?? [];
         const name = call.input.name?.toString().trim();
-        const role = call.input.role?.toString().trim();
-        if (!name || !role) return { content: 'Missing name or role.', success: false };
+        const canonicalRoleSlug = call.input.canonical_role?.toString().trim().toLowerCase();
+        if (!name) return { content: 'Missing name.', success: false };
+        if (!canonicalRoleSlug) {
+          return { content: 'Missing canonical_role. Call list_available_roles first to see valid options (financial-advisor, scheduler, web-developer, etc.).', success: false };
+        }
+
+        // Look up the catalog entry — gives us defaults for any field the
+        // owner didn't specify. Reject unknown role slugs.
+        const { getRoleCatalogEntry } = await import('../../_lib/role-catalog');
+        const catalogEntry = await getRoleCatalogEntry(canonicalRoleSlug);
+        if (!catalogEntry) {
+          return {
+            content: `Unknown canonical_role "${canonicalRoleSlug}". Call list_available_roles to see valid options.`,
+            success: false,
+          };
+        }
 
         const id = name.toLowerCase().replace(/\s+/g, '-');
         const tier = (['Haiku', 'Sonnet', 'Opus'].includes(call.input.tier) ? call.input.tier : 'Sonnet') as string;
-        const description = call.input.description?.toString();
-        const tools = Array.isArray(call.input.tools) ? call.input.tools : [];
-        const channels = Array.isArray(call.input.channels) ? call.input.channels : [];
+        const role = call.input.role?.toString().trim() || catalogEntry.description.split('.')[0];
+        const description = call.input.description?.toString() || catalogEntry.description;
+        const tools = Array.isArray(call.input.tools) && call.input.tools.length > 0
+          ? call.input.tools
+          : catalogEntry.default_tools;
+        const channels = Array.isArray(call.input.channels) ? call.input.channels : ['whatsapp'];
         const newAgent = { id, name, role, tier, description, tools, channels };
 
         // Bug fix 2026-05-15: add_agent_to_team previously ONLY wrote to
@@ -6182,6 +6267,8 @@ export async function executeTool(
                 tenant_phone: cleanPhone,
                 agent_name: name,
                 agent_role: role,
+                canonical_role_slug: canonicalRoleSlug,
+                display_name: name,
                 status: 'active',
                 output_channels: channels,
                 model_routing: { primary: tier },
@@ -6217,6 +6304,7 @@ export async function executeTool(
             tenantPhone: user.phoneNumber,
             agentName: name,
             agentRole: role,
+            canonicalRoleSlug,
           });
           const seedSuffix = seed.workflows_created > 0
             ? ` ${seed.interpretation}`
