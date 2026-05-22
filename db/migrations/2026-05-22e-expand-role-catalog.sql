@@ -183,4 +183,6 @@ INSERT INTO agent_role_catalog (role_slug, display_default, category, descriptio
   'Daily activity logger — captures workouts, steps, recovery state from owner reports, weekly summaries trends + suggestions.',
   '["remember_this", "recall_atoms", "create_document"]'::jsonb,
   '["email"]'::jsonb,
-  '["fitness-tracker", "spreadsheet"]'::jsonb);
+  '["fitness-tracker", "spreadsheet"]'::jsonb)
+
+ON CONFLICT (role_slug) DO NOTHING;

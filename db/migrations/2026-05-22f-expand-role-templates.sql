@@ -35,7 +35,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "recall_atoms", "args": { "query": "workout adherence and feedback last 7 days" } }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── NUTRITIONIST (Nico) ───────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -53,7 +54,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "recall_atoms", "args": { "query": "meals logged today" } }
   ]'::jsonb,
-  'monitoring');
+  'monitoring')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── SLEEP-COACH (Nox) ─────────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -70,7 +72,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "recall_atoms", "args": { "query": "sleep checkin yesterday" } }
   ]'::jsonb,
-  'monitoring');
+  'monitoring')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── LIFE-COACH (Quinn) ────────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -87,7 +90,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "recall_atoms", "args": { "query": "long-running personal goals and last week reflection" } }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── TRAVEL-PLANNER (Atlas) ────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -97,7 +101,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "list_calendar_events", "args": {} }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── MEAL-PLANNER (Hazel) ──────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -108,7 +113,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
     { "agent": "{{agent_name}}", "tool": "create_document", "args": { "format": "pdf", "filename": "grocery-list", "title": "Weekly Grocery List", "content": "Build a grocery list from the upcoming week''s meal plan, organized by store section." } },
     { "tool": "send_email", "args": { "subject": "This week''s grocery list", "body": "Grocery list attached.", "attachments": [{ "url": "{previous.storage_url}", "filename": "{previous.safeName}" }] } }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── HOUSEHOLD-MANAGER (Hearth) ────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -125,7 +131,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "list_calendar_events", "args": {} }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── GROCERY-PLANNER (Basil) ───────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -136,7 +143,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
     { "agent": "{{agent_name}}", "tool": "create_document", "args": { "format": "pdf", "filename": "shopping-list", "title": "Weekly Shopping List", "content": "Build a categorized shopping list based on owner pantry state and known meal preferences." } },
     { "tool": "send_email", "args": { "subject": "This week''s shopping list", "body": "Shopping list attached.", "attachments": [{ "url": "{previous.storage_url}", "filename": "{previous.safeName}" }] } }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── TUTOR (Quill) ─────────────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -146,7 +154,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "recall_atoms", "args": { "query": "current subject, level, and recent areas of struggle" } }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── LANGUAGE-COACH (Lex) ──────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -156,7 +165,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "recall_atoms", "args": { "query": "target language, current level, recent vocabulary" } }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── WRITER (Pen) ──────────────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -166,7 +176,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "recall_atoms", "args": { "query": "active writing projects and recent drafts" } }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── CONTENT-CREATOR (Reel) ────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -183,7 +194,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "instagram_recent_activity", "args": {} }
   ]'::jsonb,
-  'monitoring');
+  'monitoring')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── EDITOR (Vera) ─────────────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -193,7 +205,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "list_marketing_drafts", "args": {} }
   ]'::jsonb,
-  'monitoring');
+  'monitoring')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── REAL-ESTATE-AGENT (Casey) ─────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -210,7 +223,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "list_unread_emails", "args": {} }
   ]'::jsonb,
-  'monitoring');
+  'monitoring')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── FREELANCER-PM (Jules) ─────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -227,7 +241,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "list_all_projects", "args": {} }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── CONSULTANT (Drake) ────────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -237,7 +252,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "list_calendar_events", "args": {} }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── BOOKKEEPER (Penny) ────────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -247,7 +263,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "search_emails", "args": { "query": "receipt OR invoice OR purchase confirmation" } }
   ]'::jsonb,
-  'monitoring');
+  'monitoring')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── PROJECT-MANAGER (Pace) ────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -264,7 +281,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "list_open_tasks", "args": {} }
   ]'::jsonb,
-  'monitoring');
+  'monitoring')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── MEDICATION-TRACKER (Felix) ────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -281,7 +299,8 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "recall_atoms", "args": { "query": "medications scheduled today" } }
   ]'::jsonb,
-  'monitoring');
+  'monitoring')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
 
 -- ─── FITNESS-LOGGER (Sol) ──────────────────────────────────────────────────
 INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr, steps, category) VALUES
@@ -298,4 +317,5 @@ INSERT INTO agent_role_templates (role_slug, name_suffix, description, cron_expr
   '[
     { "agent": "{{agent_name}}", "tool": "recall_atoms", "args": { "query": "activity logged last 7 days" } }
   ]'::jsonb,
-  'briefing');
+  'briefing')
+ON CONFLICT (role_slug, name_suffix) DO NOTHING;
