@@ -563,6 +563,32 @@ const TOOL_DELETE_WORKFLOW: AnthropicTool = {
   },
 };
 
+const TOOL_SHOW_ROLE_CAPABILITIES: AnthropicTool = {
+  name: 'show_role_capabilities',
+  description:
+    "Preview what a canonical role requires to function — required + optional service connections, plus the templates it ships with. Use BEFORE calling add_agent_to_team when the owner is considering a new agent ('what does a financial-advisor need?', 'show me what a web-developer brings'). Iris should call this so the owner sees the gap before committing — connect the missing services first, then add the agent. Avoids the 'I added Alex but he can't do anything' frustration.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      canonical_role: { type: 'string', description: "The canonical role slug to preview (e.g. 'financial-advisor', 'web-developer')." },
+    },
+    required: ['canonical_role'],
+  },
+};
+
+const TOOL_AUDIT_AGENT_CONNECTIONS: AnthropicTool = {
+  name: 'audit_agent_connections',
+  description:
+    "Check whether an EXISTING agent has all the connections their canonical role requires. Returns ready / missing / mcp_pending per capability. Use when the owner asks 'is Marcus ready to work?', 'what does Alex still need?', 'why isn't this workflow firing?'. Cross-references the agent's canonical_role_slug against oauth_connections.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agent_name: { type: 'string', description: "The agent's display name (e.g. 'Marcus')." },
+    },
+    required: ['agent_name'],
+  },
+};
+
 const TOOL_LIST_AVAILABLE_ROLES: AnthropicTool = {
   name: 'list_available_roles',
   description:
@@ -2563,6 +2589,8 @@ export function buildToolList(
   tools.push(TOOL_SEED_AGENT_ROUTINES);
   tools.push(TOOL_LIST_AVAILABLE_ROLES);
   tools.push(TOOL_SET_CANONICAL_ROLE);
+  tools.push(TOOL_SHOW_ROLE_CAPABILITIES);
+  tools.push(TOOL_AUDIT_AGENT_CONNECTIONS);
   tools.push(TOOL_LIST_PROCESSES);
   tools.push(TOOL_APPROVE_PROCESS);
   tools.push(TOOL_DECLINE_PROCESS);
@@ -3319,6 +3347,60 @@ export async function executeTool(
         }
         return {
           content: `Available canonical agent roles (${roles.length}):\n\n${formatCatalogForChat(roles)}\n\nUse the role_slug when adding an agent (e.g. add_agent_to_team with canonical_role='financial-advisor').`,
+          success: true,
+        };
+      }
+
+      case 'show_role_capabilities': {
+        const canonicalRoleSlug = (call.input.canonical_role ?? '').toString().trim().toLowerCase();
+        if (!canonicalRoleSlug) return { content: 'Missing canonical_role.', success: false };
+        const { getRoleCatalogEntry: getEntry } = await import('../../_lib/role-catalog');
+        const entry = await getEntry(canonicalRoleSlug);
+        if (!entry) {
+          return { content: `Unknown canonical_role "${canonicalRoleSlug}". Call list_available_roles for valid options.`, success: false };
+        }
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const { auditRoleCapabilities: audit } = await import('../../_lib/capability-audit');
+        const result = await audit({
+          tenantPhone: user.phoneNumber,
+          roleSlug: canonicalRoleSlug,
+          required: entry.required_capabilities ?? [],
+          optional: entry.optional_capabilities ?? [],
+        });
+        return {
+          content: `${entry.display_default} (${canonicalRoleSlug}) — ${entry.description}\n\n${result.interpretation}`,
+          success: true,
+        };
+      }
+
+      case 'audit_agent_connections': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const agentName = (call.input.agent_name ?? '').toString().trim();
+        if (!agentName) return { content: 'Missing agent_name.', success: false };
+        const { getAgentCanonicalRole: getAgentRole, getRoleCatalogEntry: getEntryForAudit } = await import('../../_lib/role-catalog');
+        const cfg = await getAgentRole({ tenantPhone: user.phoneNumber, agentName });
+        if (!cfg) {
+          return { content: `No agent named "${agentName}" found in agent_configs.`, success: false };
+        }
+        if (!cfg.canonical_role_slug) {
+          return {
+            content: `${agentName} has no canonical_role_slug set yet. Use set_canonical_role to map them to a catalog role first, then re-audit.`,
+            success: false,
+          };
+        }
+        const entry = await getEntryForAudit(cfg.canonical_role_slug);
+        if (!entry) {
+          return { content: `${agentName}'s canonical_role "${cfg.canonical_role_slug}" isn't in the catalog (orphaned reference). Reset it with set_canonical_role.`, success: false };
+        }
+        const { auditRoleCapabilities: audit2 } = await import('../../_lib/capability-audit');
+        const result = await audit2({
+          tenantPhone: user.phoneNumber,
+          roleSlug: cfg.canonical_role_slug,
+          required: entry.required_capabilities ?? [],
+          optional: entry.optional_capabilities ?? [],
+        });
+        return {
+          content: `${agentName} (${cfg.canonical_role_slug}):\n\n${result.interpretation}`,
           success: true,
         };
       }
@@ -6309,7 +6391,18 @@ export async function executeTool(
           const seedSuffix = seed.workflows_created > 0
             ? ` ${seed.interpretation}`
             : '';
-          return { content: `Added ${name} (${role}) under ${manager.name}. ${manager.name}'s team is now ${sub.count}.${seedSuffix}`, success: true };
+          // Connection audit so the owner sees what's ready vs blocked.
+          const { auditRoleCapabilities } = await import('../../_lib/capability-audit');
+          const audit = await auditRoleCapabilities({
+            tenantPhone: user.phoneNumber,
+            roleSlug: canonicalRoleSlug,
+            required: catalogEntry.required_capabilities ?? [],
+            optional: catalogEntry.optional_capabilities ?? [],
+          });
+          return {
+            content: `Added ${name} (${role}) under ${manager.name}. ${manager.name}'s team is now ${sub.count}.${seedSuffix}\n\n${audit.interpretation}`,
+            success: true,
+          };
         }
 
         team.push(newAgent as any);
@@ -6325,11 +6418,23 @@ export async function executeTool(
           tenantPhone: user.phoneNumber,
           agentName: name,
           agentRole: role,
+          canonicalRoleSlug,
         });
         const seedSuffix = seed.workflows_created > 0
           ? ` ${seed.interpretation}`
           : '';
-        return { content: `Added ${name} (${role}) as a top-level agent on the team.${seedSuffix}`, success: true };
+        // Connection audit so the owner sees what's ready vs blocked.
+        const { auditRoleCapabilities: auditTopRole } = await import('../../_lib/capability-audit');
+        const auditTop = await auditTopRole({
+          tenantPhone: user.phoneNumber,
+          roleSlug: canonicalRoleSlug,
+          required: catalogEntry.required_capabilities ?? [],
+          optional: catalogEntry.optional_capabilities ?? [],
+        });
+        return {
+          content: `Added ${name} (${role}) as a top-level agent on the team.${seedSuffix}\n\n${auditTop.interpretation}`,
+          success: true,
+        };
       }
 
       case 'add_tool_to_agent': {

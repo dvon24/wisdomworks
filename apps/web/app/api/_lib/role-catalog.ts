@@ -26,6 +26,8 @@ export interface RoleCatalogEntry {
   category: string;
   description: string;
   default_tools: string[];
+  required_capabilities: string[];
+  optional_capabilities: string[];
   system_prompt_fragment?: string | null;
 }
 
