@@ -237,6 +237,60 @@ export async function generateIrisReply(
     let assistantMessage = textBlock?.text ?? "I couldn't process that. Try again?";
 
     // ───────────────────────────────────────────────────────────────────────
+    // CODE-SIDE PERFORMATIVE-COMPLIANCE STRIPPER
+    //
+    // Devon's 2026-05-23 frustration: Iris kept opening replies with
+    // "About Mia — that was a mistake" / "I'm Iris, always have been" /
+    // "Sorry about the Mia hallucination" even when the owner asked about
+    // PDF tables or coach workouts. The disposition silent-guidance footer
+    // failed. The prompt's no-recital rule failed. Three patches couldn't
+    // stop the recital because Iris's own apologetic preambles in
+    // conversation_history became context for the NEXT reply — self-
+    // reinforcing loop.
+    //
+    // Code-side fix: strip apologetic-recital paragraphs from the START of
+    // Iris's response when the OWNER's current message doesn't reference
+    // the topic being apologized for. Same shape as fabrication guard but
+    // for meta-behavior (talking about being good vs. just being good).
+    //
+    // Patterns are conservative — we only strip from the OPENING of the
+    // response, not mid-text, so legitimate Mia-related answers still flow
+    // through. Trailing apologies in long replies also pass through.
+    //
+    // ───────────────────────────────────────────────────────────────────────
+    const ownerMsgLower = (text ?? '').toLowerCase();
+    const RECITAL_OPENER_PATTERNS: Array<{ pattern: RegExp; topic: RegExp }> = [
+      // "About Mia — that was a mistake..." / "On Mia: that was..." / "Mia was a hallucination"
+      { pattern: /^(\s*[*\-•]?\s*)(about|on|re|sorry about|sorry for the)?\s*"?mia"?\b[^.\n]{0,200}[.!\n]/i, topic: /\bmia\b/i },
+      // "My name is Iris — already confirmed" / "I'm Iris, always have been" / "I am Iris (confirmed)"
+      { pattern: /^(\s*[*\-•]?\s*)(my name is|i['']?m|i am|just to confirm,? i['']?m|confirmed[,:]? i['']?m)\s+iris[^.\n]{0,150}[.!\n]/i, topic: /\b(name|iris|sophia)\b/i },
+      // "Sorry for the confusion about <topic>" — generic apologetic preamble
+      { pattern: /^(\s*[*\-•]?\s*)(sorry for the confusion|apologies for the confusion|to clarify[,:])\s*[^.\n]{0,200}[.!\n]/i, topic: /\b(confusion|clarify|earlier|prior)\b/i },
+      // "As I noted before..." / "Just to be clear, [restating a rule]..."
+      { pattern: /^(\s*[*\-•]?\s*)(as i (noted|mentioned|said) before|just to be clear|to reiterate)[,:]?\s*[^.\n]{0,200}[.!\n]/i, topic: /\b(noted|mentioned|reiterate|clear)\b/i },
+    ];
+    let stripCount = 0;
+    let stripped = assistantMessage;
+    for (const { pattern, topic } of RECITAL_OPENER_PATTERNS) {
+      const match = stripped.match(pattern);
+      if (match && !topic.test(ownerMsgLower)) {
+        stripped = stripped.replace(pattern, '').trimStart();
+        stripCount++;
+      }
+    }
+    // Also collapse leading horizontal-rule dividers ("---") that often
+    // separate the stripped preamble from the real answer below.
+    stripped = stripped.replace(/^\s*(---|—{2,})\s*\n+/g, '').trimStart();
+    if (stripCount > 0 && stripped.length > 0) {
+      console.log(`[iris-${surface}] Stripped ${stripCount} recital opener(s). Original: "${assistantMessage.slice(0, 100)}..." Cleaned: "${stripped.slice(0, 100)}..."`);
+      assistantMessage = stripped;
+    }
+    // If stripping ate the entire message (unlikely but possible), restore the original.
+    if (stripped.length === 0) {
+      console.warn(`[iris-${surface}] Recital stripper would have emptied the message — restoring original.`);
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
     // CODE-SIDE FABRICATION GUARD
     //
     // Three prompt-only patches failed to stop Iris from saying "going forward
@@ -279,7 +333,13 @@ export async function generateIrisReply(
       /(going forward|from now on|from here on)[\s\S]{0,20}[.!]/i,
       // Identity / name fabrications.
       /i (am|'m) (now |going to be )?[a-z]+ (— |- |going forward|from now on)/i,
-      /(always have been|always was) (?!a |an )/i,  // "always have been Iris" — claims unchanged state right after a rename
+      // "always have been Iris" / "always was [X]" — claims unchanged state right
+      // after a rename. Broadened 2026-05-23 — earlier pattern required a SPACE
+      // after "been" before the negative lookahead, so sentence-ending uses like
+      // "I'm Iris — always have been." (period, not space) slipped through.
+      // \b after "been|was" matches word boundary which handles ".", "!", "?",
+      // EOL, etc. Then exclude legitimate "a/an" continuations.
+      /\balways (have been|was)\b(?![ \t]+(a|an)\b)/i,
     ];
     const detectFabrication = (text: string): string[] => {
       const hits: string[] = [];
