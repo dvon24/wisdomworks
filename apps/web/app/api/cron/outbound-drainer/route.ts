@@ -124,7 +124,43 @@ export async function GET(request: Request) {
     let merged = 0;
     let failed = 0;
 
+    // Lazy-import mute helper (matches daily-briefing / digest / email-sift
+    // pattern). Other crons honor mute; the drainer didn't, which let
+    // queued messages (workflow results, briefings, etc) bypass an
+    // explicit mute. 2026-05-23 — Devon at the pool muted himself for
+    // 120 min via mute_assistant; the 10:23 Tasklet-followup message
+    // bypassed because the drainer never checked.
+    const { isMuted } = await import('../../_lib/mute-state');
+
     for (const [tenantPhone, rows] of byTenant) {
+      // Mute check FIRST — if owner is muted, defer everything (don't
+      // send, don't merge, don't lose). Urgent messages still go through
+      // because the only way to escape an active mute is explicit owner
+      // override, but if the owner asked for quiet, even urgent items
+      // should defer (they're queued, so they don't get lost — just
+      // wait for the mute to expire).
+      try {
+        const mute = await isMuted(tenantPhone);
+        if (mute?.muted) {
+          // Defer every pending row for this tenant until the mute expires.
+          const deferUntil = mute.until
+            ? new Date(mute.until).toISOString()
+            : new Date(Date.now() + DEFER_MINUTES * 60_000).toISOString();
+          for (const r of rows) {
+            await fetch(`${SUPABASE_URL}/rest/v1/outbound_messages?id=eq.${r.id}`, {
+              method: 'PATCH',
+              headers: { ...headers(), Prefer: 'return=minimal' },
+              body: JSON.stringify({ status: 'deferred', deferred_until: deferUntil }),
+            });
+            deferred++;
+          }
+          console.log(`[outbound-drainer] ${tenantPhone} muted (${mute.reason ?? 'no reason'}), deferred ${rows.length} message(s) until ${deferUntil}`);
+          continue;
+        }
+      } catch (err) {
+        console.warn(`[outbound-drainer] mute check failed for ${tenantPhone}, proceeding:`, err);
+      }
+
       // Active-chat check: pull the tenant's last_owner_message_at +
       // last_assistant_message_at. last_seen is the owner-side
       // timestamp updated on every inbound webhook.
