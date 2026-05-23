@@ -3308,6 +3308,9 @@ export async function executeTool(
         return {
           content: `Saved ${saved.length} rule${saved.length === 1 ? '' : 's'}: ${summary}.${tail} Future emails matching any rule skip the LLM entirely.`,
           success: failed.length === 0,
+          owner_confirmation: saved.length > 0
+            ? `Saved ${saved.length} sender rule${saved.length === 1 ? '' : 's'}: ${summary}. Future matches skip the LLM classifier.`
+            : undefined,
         };
       }
 
@@ -3481,6 +3484,7 @@ export async function executeTool(
         return {
           content: `✓ ${result.catalogEntry?.display_name} MCP enabled.${capsNote}\n\nNOTE (2026-05-22): MCP tool execution lands in the next session. For now, the audit + capability reflection works; agent tools that call MCP servers are stubbed.`,
           success: true,
+          owner_confirmation: `${result.catalogEntry?.display_name ?? serverSlug} MCP enabled.${capsNote}`,
         };
       }
 
@@ -3603,6 +3607,7 @@ export async function executeTool(
         return {
           content: `${agentName} is now mapped to canonical role "${canonicalRoleSlug}" (${entry.description}). Workflow templates for this role can be seeded with seed_agent_routines.`,
           success: true,
+          owner_confirmation: `${agentName} mapped to canonical role "${canonicalRoleSlug}".`,
         };
       }
 
@@ -5152,6 +5157,7 @@ export async function executeTool(
         return {
           content: `✓ Autonomy updated to ${saved.autonomy_level}. ${saved.autonomy_level === 'L4' ? `Auto-publishing up to ${saved.max_auto_publish_per_day}/day on ${saved.auto_publish_channels.join(', ')}.` : ''}`.trim(),
           success: true,
+          owner_confirmation: `Marketing autonomy set to ${saved.autonomy_level}${saved.autonomy_level === 'L4' ? ` — auto-publishing up to ${saved.max_auto_publish_per_day}/day on ${saved.auto_publish_channels.join(', ')}` : ''}.`,
         };
       }
 
@@ -5534,7 +5540,15 @@ export async function executeTool(
           `  • X-WisdomWorks-Event header (event type)`,
           isZapier ? '\n⚠ Heads up: Zapier requires their $19.99/mo Starter plan for "Webhooks by Zapier" triggers. Make.com and IFTTT have free webhooks if you want to avoid that.' : '',
         ].filter(Boolean);
-        return { content: lines.join('\n'), success: true };
+        return {
+          content: lines.join('\n'),
+          success: true,
+          // Confirmation intentionally omits the signing secret — it's
+          // shown ONCE in `content` (which the model relays) but doesn't
+          // belong in the appended confirmation block since this code-
+          // generated line gets stored in history/RAG.
+          owner_confirmation: `Webhook "${label}" connected (id: ${result.id}). Receives ${eventTypes.length > 0 ? eventTypes.join(', ') : 'all events'}.`,
+        };
       }
 
       case 'list_automation_webhooks': {
@@ -6173,7 +6187,11 @@ export async function executeTool(
           tags: Array.isArray(call.input.tags) ? call.input.tags.map(String) : [],
         });
         return id
-          ? { content: `Got it. Every agent will know: "${content.slice(0, 100)}".`, success: true }
+          ? {
+              content: `Got it. Every agent will know: "${content.slice(0, 100)}".`,
+              success: true,
+              owner_confirmation: `Saved to memory (${kind}): "${content.slice(0, 100)}${content.length > 100 ? '…' : ''}". All agents now have access.`,
+            }
           : { content: 'Could not save.', success: false };
       }
 
@@ -6804,7 +6822,11 @@ export async function executeTool(
 
         user.profile.team = team;
         await saveUserContext(user);
-        return { content: `Moved ${movedAgent.name} under ${newParent.name}. ${newParent.name}'s team is now ${sub.count}.`, success: true };
+        return {
+          content: `Moved ${movedAgent.name} under ${newParent.name}. ${newParent.name}'s team is now ${sub.count}.`,
+          success: true,
+          owner_confirmation: `Moved ${movedAgent.name} under ${newParent.name}. ${newParent.name}'s team is now ${sub.count}.`,
+        };
       }
 
       case 'remove_agent_from_team': {
