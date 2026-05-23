@@ -730,6 +730,20 @@ const TOOL_REMOVE_SENDER_RULE: AnthropicTool = {
   },
 };
 
+const TOOL_RECALL_BEHAVIORAL_RAG: AnthropicTool = {
+  name: 'recall_behavioral_rag',
+  description:
+    "Semantically search past conversation turns to find prior corrections, clarifications, established facts, or relationship history with the owner. Returns top-k most relevant past turns with their content. CALL THIS BEFORE: (a) mentioning any agent name to verify they're on the team, (b) referencing any person (Eric, Crystal, Sherisse, etc.) the owner has talked about, (c) claiming a tool/integration is configured, (d) making any factual claim about the owner's life / preferences / past statements. Especially important: if you're about to say something the owner might have corrected before, query first. The current conversation_history window is only 15 turns — anything older lives in this RAG. Pass a concrete query like 'agent name Mia' or 'Eric attorney email' or 'morning brief preferences'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: "Concrete topic to search for. Specific > vague. 'agent name Mia' beats 'past mentions of agents'." },
+      limit: { type: 'number', description: "Max results to return (default 5)." },
+    },
+    required: ['query'],
+  },
+};
+
 const TOOL_QUERY_KB: AnthropicTool = {
   name: 'query_knowledge_base',
   description:
@@ -2611,6 +2625,7 @@ export function buildToolList(
   tools.push(TOOL_LIST_TASKS);
   tools.push(TOOL_FIND_CONFLICTS);
   tools.push(TOOL_QUERY_KB);
+  tools.push(TOOL_RECALL_BEHAVIORAL_RAG);
   tools.push(TOOL_ERROR_CHECK);
   tools.push(TOOL_CREATE_DOCUMENT);
   tools.push(TOOL_RUN_WORKFLOW);
@@ -3920,6 +3935,40 @@ export async function executeTool(
           };
         } catch (err) {
           return { content: `Knowledge base error: ${err}`, success: false };
+        }
+      }
+
+      case 'recall_behavioral_rag': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const query = call.input.query?.toString();
+        if (!query) return { content: 'Missing query.', success: false };
+        try {
+          const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+          const { matches } = await queryKnowledge(cleanPhone, query, {
+            limit: call.input.limit ?? 5,
+            sourceKinds: ['conversation', 'atom', 'insight'],
+            source: 'agent_recall',
+            minSimilarity: 0.3,
+          });
+          if (matches.length === 0) {
+            return {
+              content: `No past memory matches for "${query}". Either it's a genuinely new topic or the behavioral RAG hasn't indexed enough yet. Treat as a first-mention.`,
+              success: true,
+            };
+          }
+          const lines = matches.map((m, i) => {
+            const corr = (m as any).metadata?.is_correction ? ' ⚠ CORRECTION' : '';
+            const when = (m as any).metadata?.turn_timestamp
+              ? new Date((m as any).metadata.turn_timestamp).toISOString().slice(0, 16).replace('T', ' ')
+              : 'unknown time';
+            return `${i + 1}. [${m.source_kind} · ${when}${corr}] (similarity ${(m.similarity * 100).toFixed(0)}%)\n   ${m.content.slice(0, 350)}${m.content.length > 350 ? '…' : ''}`;
+          });
+          return {
+            content: `Behavioral recall — ${matches.length} match${matches.length > 1 ? 'es' : ''}:\n\n${lines.join('\n\n')}\n\nIf any of these contradicts what you're about to say, REVISE.`,
+            success: true,
+          };
+        } catch (err) {
+          return { content: `Recall error: ${err}`, success: false };
         }
       }
 

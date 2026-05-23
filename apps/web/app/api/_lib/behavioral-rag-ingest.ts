@@ -406,6 +406,90 @@ export async function ingestClientVisits(tenantPhone: string, limit = 100): Prom
   }
 }
 
+// ─── Per-turn conversation indexing ──────────────────────────────────────
+//
+// 2026-05-23 — the rolling-summary indexing below loses per-turn fidelity.
+// Corrections, clarifications, "no that's wrong" moments get compressed
+// into a paragraph and become unsearchable as discrete events. This
+// function embeds INDIVIDUAL turns so Iris's recall_behavioral_rag tool
+// can find specific past corrections semantically.
+//
+// Conflict resolution: on_conflict on (tenant_phone, source_kind,
+// source_row_id, chunk_index) per the 2026-05-15a unique index. Re-
+// ingesting the same turn updates the embedding rather than duplicating.
+
+export async function ingestConversationTurn(args: {
+  tenantPhone: string;
+  userMessage: string;
+  assistantMessage: string;
+  timestampIso?: string;
+  isCorrection?: boolean;
+  evidence?: string;
+}): Promise<{ ok: boolean; chunk_id?: string; reason?: string }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    return { ok: false, reason: 'supabase_not_configured' };
+  }
+  const cleanPhone = args.tenantPhone.replace(/[\s\-+()]/g, '');
+  const ts = args.timestampIso ?? new Date().toISOString();
+
+  // Synthetic deterministic row id — `turn:<phone>:<iso>:<contentHash>`.
+  // Same turn ingested twice overwrites the same chunk via unique index.
+  const contentHash = simpleHash(args.userMessage + '|' + args.assistantMessage).toString(36);
+  const sourceRowId = `turn:${cleanPhone}:${ts.slice(0, 19)}:${contentHash}`;
+
+  const content = [
+    `[Turn ${ts.slice(0, 19)}${args.isCorrection ? ' — OWNER CORRECTION' : ''}]`,
+    `Owner: ${args.userMessage.slice(0, 800)}`,
+    `Iris: ${args.assistantMessage.slice(0, 800)}`,
+    args.evidence ? `Evidence: ${args.evidence.slice(0, 200)}` : '',
+  ].filter(Boolean).join('\n');
+
+  try {
+    const emb = await embedText(content);
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/knowledge_chunks?on_conflict=tenant_phone,source_kind,source_row_id,chunk_index`,
+      {
+        method: 'POST',
+        headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=representation' },
+        body: JSON.stringify({
+          tenant_phone: cleanPhone,
+          source_entity_id: null,
+          source_entity_type: 'conversation_turn',
+          source_entity_name: `Turn ${ts.slice(0, 16)}`,
+          source_kind: 'conversation',
+          source_row_id: sourceRowId,
+          chunk_index: 0,
+          content: content.slice(0, 4000),
+          embedding: emb.embedding,
+          tokens: emb.tokens,
+          metadata: {
+            turn_timestamp: ts,
+            is_correction: !!args.isCorrection,
+            owner_message_preview: args.userMessage.slice(0, 200),
+            iris_reply_preview: args.assistantMessage.slice(0, 200),
+          },
+        }),
+      },
+    );
+    if (!res.ok) {
+      return { ok: false, reason: `${res.status}: ${(await res.text()).slice(0, 200)}` };
+    }
+    const rows = await res.json();
+    return { ok: true, chunk_id: Array.isArray(rows) ? rows[0]?.id : rows?.id };
+  } catch (err: any) {
+    return { ok: false, reason: err?.message ?? String(err) };
+  }
+}
+
+// Simple deterministic hash — not crypto, just for stable row ids.
+function simpleHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
 // ─── Conversation summaries ──────────────────────────────────────────────
 
 /**

@@ -327,6 +327,31 @@ export async function generateIrisReply(
     // memory without duplication.
     await saveUserContext(user);
 
+    // 2026-05-23 — fire-and-forget per-turn ingest into behavioral RAG.
+    // The rolling-summary indexer in behavioral-rag-refresh runs every
+    // 30 min and loses per-turn fidelity. This inline ingest captures
+    // each owner↔Iris exchange as a discrete searchable chunk so
+    // recall_behavioral_rag can find specific past corrections /
+    // clarifications semantically. Detects correction-class turns via
+    // simple owner-language patterns (no/not/wrong/incorrect/that's
+    // not + person) so they get the is_correction flag for ranking.
+    void (async () => {
+      try {
+        const { ingestConversationTurn } = await import('../../_lib/behavioral-rag-ingest');
+        const isCorrection = /\b(no|not|wrong|incorrect|that'?s not|change|stop|don'?t)\b/i.test(text) &&
+          text.length < 300; // short owner messages with negation tend to be corrections
+        await ingestConversationTurn({
+          tenantPhone: user.phoneNumber,
+          userMessage: text,
+          assistantMessage,
+          isCorrection,
+          evidence: isCorrection ? text.slice(0, 200) : undefined,
+        });
+      } catch (err) {
+        console.warn('[iris-brain] inline behavioral-rag ingest failed (non-blocking):', err);
+      }
+    })();
+
     const totalTokensIn = uncachedTokensIn + cacheWriteTokensIn + cacheReadTokensIn;
     const cachedPct = totalTokensIn > 0 ? Math.round((cacheReadTokensIn / totalTokensIn) * 100) : 0;
     const costUsd = estimateChatCost(uncachedTokensIn, cacheWriteTokensIn, cacheReadTokensIn, totalTokensOut);
