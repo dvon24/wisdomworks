@@ -14,8 +14,15 @@
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const MAX_CONVERSATION_MESSAGES = 50;
-const CONTEXT_SUMMARY_THRESHOLD = 30; // Summarize when history exceeds this
+// 2026-05-23 — shrunk 50 → 15 after observing repetition / closed-loop
+// resurrection. Devon's tenant has 42-user/8-assistant ratio in a 50-msg
+// window — short rapid-fire owner messages dominate context, and topics
+// from hours ago (Mia, Tasklet, pool) stay in the window long enough for
+// Iris to treat them as live threads. 15 turns covers ~10-15 min of active
+// chat; older context still accessible via behavioral RAG (knowledge_chunks)
+// and disposition profile (auto-mined operating manual).
+const MAX_CONVERSATION_MESSAGES = 15;
+const CONTEXT_SUMMARY_THRESHOLD = 12; // Summarize when history exceeds this
 
 // ─── Types ───
 

@@ -526,7 +526,7 @@ export async function buildDispositionContext(
   // Fire-and-forget bump applied_count — never block the prompt build
   void bumpAppliedCount(filtered.map((r) => r.id));
 
-  return `\n\nOPERATING MANUAL FOR THIS OWNER (auto-learned from past interactions — never re-relearn):\n${sections.join('\n\n')}`;
+  return `\n\nOPERATING MANUAL FOR THIS OWNER (auto-learned — silent guidance, NOT topics to discuss):\n${sections.join('\n\n')}\n\nUSE THESE RULES SILENTLY. Do NOT open responses with "Confirmed I'm X" or "As I noted before..." or "Just to be clear, [rule]." Do NOT volunteer corrections from this manual unprompted in unrelated responses. Behave consistently with the rules — that's the proof you heard them. Reciting them in every reply is itself a failure mode (performative compliance) and reads as anchoring rather than listening.`;
 }
 
 async function bumpAppliedCount(ids: string[]): Promise<void> {
