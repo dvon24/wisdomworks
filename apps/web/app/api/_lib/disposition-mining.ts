@@ -440,15 +440,59 @@ export async function buildDispositionContext(
   options: { lane?: string; limit?: number } = {},
 ): Promise<string> {
   const limit = options.limit ?? 12;
-  const rules = await listActiveDispositionRules(tenantPhone, limit * 2);
-  if (rules.length === 0) return '';
 
-  // Filter by scope: keep 'everywhere' + matching lane scope
-  const filtered = rules.filter((r) => {
+  // 2026-05-23 — tiered fetch fixes the "fresh corrections get starved" bug.
+  // Previously a single applied_count.desc order meant old preferences with
+  // 470+ apply counts crowded out fresh corrections at apply_count=10. The
+  // Iris-vs-Sophia correction mined today could fall off the bottom of the
+  // limit:12 cap. Now: corrections + frustration_triggers get reserved
+  // SLOTS at the top (recency-ordered), preferences/approvals/style fill
+  // the rest (apply-count-ordered). Negative-space rules don't compete
+  // with positive-space rules for slot count.
+  if (!SUPABASE_URL || !SUPABASE_KEY) return '';
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+
+  // Reserved-slot fetch: most-recent corrections + frustration_triggers.
+  // Recency wins here — a brand-new correction should always be visible.
+  const NEGATIVE_SPACE_RESERVED = Math.min(7, limit);
+  const negativeSpaceUrl =
+    `${SUPABASE_URL}/rest/v1/tenant_disposition_rules?tenant_phone=eq.${cleanPhone}&status=eq.active` +
+    `&kind=in.(correction,frustration_trigger)&order=created_at.desc&limit=${NEGATIVE_SPACE_RESERVED}&select=*`;
+
+  // Positive-space fetch: preferences/approvals/style, applied-count ordered.
+  // These get whatever slots remain after corrections + triggers claim theirs.
+  const positiveSpaceUrl =
+    `${SUPABASE_URL}/rest/v1/tenant_disposition_rules?tenant_phone=eq.${cleanPhone}&status=eq.active` +
+    `&kind=in.(preference,approval,communication_style)&order=applied_count.desc,created_at.desc&limit=${limit}&select=*`;
+
+  let negativeRules: DispositionRule[] = [];
+  let positiveRules: DispositionRule[] = [];
+  try {
+    const [negRes, posRes] = await Promise.all([
+      fetch(negativeSpaceUrl, { headers: headers() }),
+      fetch(positiveSpaceUrl, { headers: headers() }),
+    ]);
+    if (negRes.ok) negativeRules = await negRes.json();
+    if (posRes.ok) positiveRules = await posRes.json();
+  } catch {
+    return '';
+  }
+
+  if (negativeRules.length === 0 && positiveRules.length === 0) return '';
+
+  // Apply scope filter to both sets.
+  const scopeOk = (r: DispositionRule) => {
     if (r.scope === 'everywhere' || !r.scope) return true;
     if (options.lane && r.scope === `lane:${options.lane}`) return true;
     return false;
-  }).slice(0, limit);
+  };
+  const filteredNeg = negativeRules.filter(scopeOk);
+  const filteredPos = positiveRules.filter(scopeOk);
+
+  // Combine: negative-space first (always reserved), positive-space fills
+  // whatever slots remain up to the total limit.
+  const positiveSlotsRemaining = Math.max(0, limit - filteredNeg.length);
+  const filtered = [...filteredNeg, ...filteredPos.slice(0, positiveSlotsRemaining)];
 
   if (filtered.length === 0) return '';
 
