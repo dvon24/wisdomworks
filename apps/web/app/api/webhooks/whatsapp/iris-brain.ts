@@ -305,6 +305,75 @@ export async function generateIrisReply(
     }
 
     // ───────────────────────────────────────────────────────────────────────
+    // ATTRIBUTION GATE
+    //
+    // Devon's 2026-05-23 transcript: Iris said "Alex flagged this for
+    // immediate front-end triage. He's looking at CSS/responsive layout
+    // bugs..." — no consult_manager call, no agent_runs row, no actual
+    // delegation. Pure attribution fabrication. Same shape as the cron
+    // "Mira flagged this email" bug fixed in e050c9e (prompt-only patch).
+    //
+    // The named team agents in user.profile.team are PERSONAS Iris
+    // coordinates — they don't have autonomous backends that "flag" or
+    // "look at" things. ALL work is done by Iris's own tools. So any
+    // past-tense action attributed to another agent is unsupported
+    // UNLESS Iris called a team-aware tool this turn (consult_manager,
+    // add_agent_to_team, update_agent, move_agent_under_manager) that
+    // makes the attribution real.
+    //
+    // We strip the FULL SENTENCE containing the unsupported attribution.
+    // Conservative — if the model wrote a long paragraph, one sentence
+    // drops without orphaning the rest. Iris herself is excluded (she
+    // IS the speaker).
+    // ───────────────────────────────────────────────────────────────────────
+    const TEAM_AWARE_TOOLS = new Set([
+      'consult_manager',
+      'add_agent_to_team',
+      'update_agent',
+      'move_agent_under_manager',
+      'remove_agent_from_team',
+    ]);
+    const teamToolFired = toolsUsed.some((t) => TEAM_AWARE_TOOLS.has(t));
+    // Iris IS the personal-assistant slot at team[0] — exclude her name
+    // from the attribution scan since she's the speaker, not a third-
+    // party actor.
+    const irisNameLower = (user.profile?.team?.[0]?.name ?? 'Iris').toLowerCase();
+    const teamNames = (user.profile?.team ?? [])
+      .map((a) => a.name)
+      .filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
+      .filter((n) => n.toLowerCase() !== irisNameLower);
+    if (!teamToolFired && teamNames.length > 0) {
+      // Past-tense + present-progressive + future-tense action verbs that
+      // make a CLAIM about an agent having done / doing / about-to-do
+      // something. Owner-facing phrasing only — internal Iris-speak like
+      // "Marcus is your finance lead" doesn't trigger.
+      const ATTR_VERBS =
+        '(flagged|noted|handled|fixed|prepared|reviewed|checked|sent|posted|published|emailed|wrote|drafted|recommended|analyzed|caught|spotted|identified|escalated|approved|rejected|investigated|monitored|is\\s+(looking|monitoring|reviewing|checking|handling|investigating|preparing|drafting)|will\\s+(look|monitor|review|check|handle|investigate|prepare|draft|send|post|publish|email)|has\\s+(flagged|noted|handled|fixed|prepared|reviewed|checked|sent|posted|published))';
+      const namesAlt = teamNames.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+      const attrPattern = new RegExp(`\\b(${namesAlt})\\b[^.!?\\n]{0,60}\\b${ATTR_VERBS}\\b[^.!?\\n]{0,200}[.!?\\n]`, 'gi');
+      const hits: string[] = [];
+      let attrStripped = assistantMessage;
+      let match: RegExpExecArray | null;
+      // Collect all hits first to log before mutating.
+      const re = new RegExp(attrPattern.source, attrPattern.flags);
+      while ((match = re.exec(assistantMessage)) !== null) {
+        hits.push(match[0]);
+      }
+      if (hits.length > 0) {
+        attrStripped = assistantMessage.replace(attrPattern, '').replace(/\n{3,}/g, '\n\n').trim();
+        // Don't ship an empty message — if every sentence was an
+        // unsupported attribution, fall back to an honest one-liner.
+        if (attrStripped.length === 0) {
+          attrStripped = "I don't have anything specific to attribute here — what would you like me to do?";
+        }
+        console.warn(
+          `[iris-${surface}] Attribution gate stripped ${hits.length} unsupported claim(s): ${JSON.stringify(hits.map((h) => h.slice(0, 100)))}`,
+        );
+        assistantMessage = attrStripped;
+      }
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
     // CODE-SIDE FABRICATION GUARD
     //
     // Three prompt-only patches failed to stop Iris from saying "going forward
