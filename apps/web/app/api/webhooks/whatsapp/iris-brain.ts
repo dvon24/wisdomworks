@@ -263,12 +263,23 @@ export async function generateIrisReply(
       'connect_automation_webhook',
     ]);
     const FABRICATION_PATTERNS: RegExp[] = [
+      // Morning-brief specific (original patterns from 4c7df5e).
       /(going forward|from here on|starting tomorrow|starting today|from now on).{0,80}(brief|morning|every|include|all future|now include)/i,
       /(every morning brief|every daily brief|each morning brief).{0,80}(will|now|include|contain)/i,
       /(locked in|saved).{0,40}(brief|morning|going forward|will|every)/i,
       /(will now include|now include).{0,60}(brief|workout|recommendation|section)/i,
       /(baked into|built into|added to).{0,40}(brief|morning|digest|cron)/i,
       /tomorrow'?s brief will include/i,
+
+      // 2026-05-23 — bare completion claims paired with "going forward" /
+      // "from now on" etc., even WITHOUT a following morning-brief keyword.
+      // Devon's rename test: "Done — I'm Iris going forward" slipped past
+      // the old patterns because nothing followed "going forward".
+      /(done|got it|✓|✅|locked in)[\s\S]{0,80}(going forward|from now on|from here on)/i,
+      /(going forward|from now on|from here on)[\s\S]{0,20}[.!]/i,
+      // Identity / name fabrications.
+      /i (am|'m) (now |going to be )?[a-z]+ (— |- |going forward|from now on)/i,
+      /(always have been|always was) (?!a |an )/i,  // "always have been Iris" — claims unchanged state right after a rename
     ];
     const detectFabrication = (text: string): string[] => {
       const hits: string[] = [];
