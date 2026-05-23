@@ -181,6 +181,17 @@ export async function generateIrisReply(
   let cacheReadTokensIn = 0;
   let totalTokensOut = 0;
   const toolsUsed: string[] = [];
+  // 2026-05-23 — code-generated state-change confirmations.
+  // Each persisting tool that succeeds populates a canonical owner-facing
+  // confirmation string (ToolResult.owner_confirmation). We accumulate
+  // them here through the loop and append at delivery, AFTER the model's
+  // natural-language reply. This makes the model's "going forward..."
+  // claims redundant rather than load-bearing — the appended canonical
+  // string IS the proof of the persisted change. Replaces the regex
+  // fabrication guard as the primary defense for state-change claims;
+  // the guard stays as an informational tripwire until we've watched
+  // this pattern in production for a week.
+  const ownerConfirmations: string[] = [];
   const startedAt = Date.now();
 
   const accumulate = (usage: any) => {
@@ -208,6 +219,9 @@ export async function generateIrisReply(
         console.log(`[iris-${surface}] Tool call: ${call.name}`, call.input);
         toolsUsed.push(call.name);
         const result = await executeTool(call, connections, user);
+        if (result.success && typeof result.owner_confirmation === 'string' && result.owner_confirmation.trim().length > 0) {
+          ownerConfirmations.push(result.owner_confirmation.trim());
+        }
         toolResults.push({
           type: 'tool_result',
           tool_use_id: block.id,
@@ -352,7 +366,17 @@ export async function generateIrisReply(
     const hasPersistingTool = toolsUsed.some(t => PERSISTING_TOOLS.has(t));
 
     const fabricationHits = detectFabrication(assistantMessage);
-    if (fabricationHits.length > 0 && !hasPersistingTool) {
+    // When a persisting tool fired AND it returned a canonical
+    // owner_confirmation, the fabrication regex becomes INFORMATIONAL
+    // ONLY — we'll append the canonical confirmation below regardless
+    // of what the model said in prose. Logging the hit still tells us
+    // the model is generating redundant prose we can train it out of,
+    // but we don't retry (and we don't ship a stripped/empty message).
+    if (fabricationHits.length > 0 && ownerConfirmations.length > 0) {
+      console.info(
+        `[iris-${surface}] Fabrication phrases present but ${ownerConfirmations.length} canonical confirmation(s) will be appended — model prose is redundant, not load-bearing. Phrases: ${JSON.stringify(fabricationHits)}`,
+      );
+    } else if (fabricationHits.length > 0 && !hasPersistingTool) {
       console.warn(
         `[iris-${surface}] Fabrication guard triggered. Phrases: ${JSON.stringify(fabricationHits)} | tools this turn: ${JSON.stringify(toolsUsed)}`,
       );
@@ -377,6 +401,34 @@ export async function generateIrisReply(
           );
         }
       }
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // CODE-GENERATED STATE-CHANGE CONFIRMATIONS
+    //
+    // For any persisting tool that fired AND populated owner_confirmation,
+    // append the canonical string to the response. This runs AFTER the
+    // recital stripper and fabrication guard so:
+    //   - the model's natural-language reply (potentially containing
+    //     "going forward..." prose) stays, BUT
+    //   - the canonical confirmation is the load-bearing source of truth
+    //     about what actually changed in the DB.
+    //
+    // Future iterations may substitute rather than append (replacing the
+    // model's claim entirely), but appending keeps the rollout reversible
+    // and gives us a clean signal to train the model out of duplicate prose.
+    // ───────────────────────────────────────────────────────────────────────
+    if (ownerConfirmations.length > 0) {
+      const block = ownerConfirmations.map((c) => `✓ ${c}`).join('\n');
+      // Trim trailing whitespace from the model's text before appending so
+      // the divider sits cleanly. If the model's text is empty (rare —
+      // would mean it called tools and produced no prose), the
+      // confirmations stand alone.
+      const trimmed = assistantMessage.trim();
+      assistantMessage = trimmed.length > 0
+        ? `${trimmed}\n\n${block}`
+        : block;
+      console.log(`[iris-${surface}] Appended ${ownerConfirmations.length} canonical confirmation(s).`);
     }
 
     // NOTE: we don't push the assistant message to conversationHistory here.

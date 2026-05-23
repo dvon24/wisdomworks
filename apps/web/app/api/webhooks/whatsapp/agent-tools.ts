@@ -2761,6 +2761,31 @@ export interface ToolResult {
    * populate it explicitly.
    */
   data?: Record<string, any>;
+  /**
+   * Canonical owner-facing confirmation string. ONLY populated by tools
+   * that produce persistent state changes the owner needs to know
+   * happened (rename, workflow creation, agent add/remove, etc).
+   *
+   * iris-brain appends these verbatim to the final assistant message,
+   * AFTER the model's natural-language response. The model is
+   * instructed not to author state-change claims itself — the canonical
+   * confirmation IS the proof. This collapses the entire fabrication-
+   * guard surface for the cases that matter:
+   *   - "going forward your brief will include..." → impossible, because
+   *     the appended confirmation is either "Workflow created..." (real)
+   *     or absent (no tool fired).
+   *   - "I'm Iris going forward" → impossible, because update_agent's
+   *     confirmation reads "Renamed Sophia → Iris. Saved to agent_configs."
+   *     and the model's prose is no longer load-bearing.
+   *
+   * Format guidelines:
+   *   - One short sentence per change, past tense, naming the persisted
+   *     row in plain English ("Workflow 'X' created", "Renamed A → B").
+   *   - Include the next observable consequence ("First run: 2026-05-24
+   *     07:00 UTC", "Reply 'approve X' to activate").
+   *   - Multiple confirmations from the same turn get joined with \n.
+   */
+  owner_confirmation?: string;
 }
 
 // Story 2.10 — destructive tools that fire a pre_action snapshot before
@@ -3351,7 +3376,15 @@ export async function executeTool(
           steps: Array.isArray(call.input.steps) ? call.input.steps : [],
         });
         if (!result.ok) return { content: `Couldn't create workflow: ${result.reason}`, success: false };
-        return { content: result.proposal_summary, success: true };
+        return {
+          content: result.proposal_summary,
+          success: true,
+          // Canonical owner-facing confirmation. createUserWorkflow's
+          // proposal_summary already names the row + schedule + next
+          // action — reuse verbatim so the appended confirmation matches
+          // what the workflow library produced.
+          owner_confirmation: result.proposal_summary,
+        };
       }
 
       case 'list_workflows': {
@@ -3383,7 +3416,12 @@ export async function executeTool(
         const next = result.workflow?.next_run_at
           ? ` First run: ${new Date(result.workflow.next_run_at).toISOString().slice(0, 16).replace('T', ' ')} UTC.`
           : ' On-demand only — invoke with run_workflow_now when ready.';
-        return { content: `Workflow "${wf.name}" activated.${next}`, success: true };
+        const msg = `Workflow "${wf.name}" activated.${next}`;
+        return {
+          content: msg,
+          success: true,
+          owner_confirmation: msg,
+        };
       }
 
       case 'pause_workflow': {
@@ -6570,6 +6608,7 @@ export async function executeTool(
           return {
             content: `Added ${name} (${role}) under ${manager.name}. ${manager.name}'s team is now ${sub.count}.${seedSuffix}\n\n${audit.interpretation}`,
             success: true,
+            owner_confirmation: `Added ${name} (${role}) under ${manager.name}. Persisted to agent_configs + chat-side team profile.`,
           };
         }
 
@@ -6602,6 +6641,7 @@ export async function executeTool(
         return {
           content: `Added ${name} (${role}) as a top-level agent on the team.${seedSuffix}\n\n${auditTop.interpretation}`,
           success: true,
+          owner_confirmation: `Added ${name} (${role}) as a top-level agent. Persisted to agent_configs + chat-side team profile.`,
         };
       }
 
@@ -6701,7 +6741,19 @@ export async function executeTool(
         void regenerateOrgDoc(user.phoneNumber).catch((err) =>
           console.warn('[update_agent] regen failed:', err),
         );
-        return { content: `Updated ${oldName}${newName ? ` (now "${newName}")` : ''}: ${changes.join('; ')}.`, success: true };
+        // Canonical owner-facing confirmation. Rename is the load-bearing
+        // case (Devon's 2026-05-23 Sophia→Iris bug — Iris claimed the
+        // rename without calling the tool). With this string appended at
+        // delivery, the model's natural-language claim becomes redundant
+        // rather than load-bearing.
+        const ownerConfirmation = newName && newName.toLowerCase() !== oldName?.toLowerCase()
+          ? `Renamed "${oldName}" → "${newName}". Saved to agent_configs and chat-side team profile.`
+          : `Updated ${oldName}: ${changes.join('; ')}. Saved to agent_configs.`;
+        return {
+          content: `Updated ${oldName}${newName ? ` (now "${newName}")` : ''}: ${changes.join('; ')}.`,
+          success: true,
+          owner_confirmation: ownerConfirmation,
+        };
       }
 
       case 'move_agent_under_manager': {
