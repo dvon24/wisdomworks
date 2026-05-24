@@ -94,6 +94,7 @@ export async function GET(request: Request) {
         orchestratorName,
         notifications: items,
         recentAgentRuns: [],
+        tenantPhone,
       });
       if (!synth.hasSignal) { noSignal++; continue; }
 

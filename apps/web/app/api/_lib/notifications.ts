@@ -187,6 +187,22 @@ export async function expireStaleNotifications(): Promise<number> {
 
 // ─── Digest synthesis ─────────────────────────────────────────────────────
 
+/**
+ * Pull the OPERATING MANUAL appendix for cross-surface disposition
+ * propagation. Returns empty string on miss — digest still synthesizes,
+ * just without honoring owner standing rules. Never throws.
+ */
+async function loadDispositionForDigest(tenantPhone: string | undefined): Promise<string> {
+  if (!tenantPhone) return '';
+  try {
+    const { buildDispositionContext } = await import('./disposition-mining');
+    return await buildDispositionContext(tenantPhone, { limit: 8 });
+  } catch (err) {
+    console.warn('[notifications] disposition load failed (non-blocking):', err);
+    return '';
+  }
+}
+
 /** Group notifications into severity buckets with friendly labels. */
 function groupBySeverity(items: NotificationRow[]) {
   return {
@@ -207,11 +223,22 @@ export async function synthesizeStructuredDigest(args: {
   orchestratorName: string;
   notifications: NotificationRow[];
   recentAgentRuns?: any[];
+  /**
+   * 2026-05-24 — cross-surface disposition propagation. When passed,
+   * the digest synthesizer pulls the tenant's OPERATING MANUAL (frustration
+   * triggers, communication style, etc.) and appends it to the system
+   * prompt the same way iris-brain does. Without this, the digest cron
+   * ignored owner standing rules — Devon had to re-correct the same
+   * patterns across surfaces. Optional for backwards compatibility;
+   * derives from the first notification's tenant_phone if missing.
+   */
+  tenantPhone?: string;
 }): Promise<{ hasSignal: boolean; message: string; deliveredIds: string[] }> {
   const { notifications, orchestratorName, recentAgentRuns = [] } = args;
   if (notifications.length === 0 && recentAgentRuns.length === 0) {
     return { hasSignal: false, message: '', deliveredIds: [] };
   }
+  const tenantPhone = args.tenantPhone ?? notifications[0]?.tenant_phone;
 
   const grouped = groupBySeverity(notifications);
   const deliveredIds = notifications.map((n) => n.id);
@@ -273,7 +300,7 @@ Rules:
 - Skip a section entirely if it has no items.
 - If only FYI items exist, still show them but acknowledge it's quiet.
 - Total message under 1500 chars.
-- No markdown bold/italics — WhatsApp shows them as literal asterisks.`;
+- No markdown bold/italics — WhatsApp shows them as literal asterisks.${await loadDispositionForDigest(tenantPhone)}`;
 
   try {
     const res = await fetch(ANTHROPIC_URL, {

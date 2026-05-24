@@ -52,6 +52,7 @@ export async function GET(request: Request) {
             orchestratorName: 'Iris',
             notifications: queued,
             recentAgentRuns: [],
+            tenantPhone: user.phone_number,
           });
           if (synth.hasSignal) {
             combined = `${briefing}\n\n— — —\n\n${synth.message}`;
@@ -260,6 +261,20 @@ async function generateBriefing(user: any): Promise<string> {
     ? `\n⚠ ${conflictsCount} schedule conflict${conflictsCount === 1 ? '' : 's'} detected — owner should review.`
     : '';
 
+  // 2026-05-24 — cross-surface disposition propagation. Pull the OPERATING
+  // MANUAL appendix so the morning brief honors the owner's standing rules
+  // (frustration_triggers like "stop bringing up Mia", communication_style
+  // like "shorter please", etc.) the same way iris-brain does. Without
+  // this, cron output ignored the owner's accumulated rules and Devon kept
+  // re-correcting the same patterns across surfaces.
+  let dispositionAppendix = '';
+  try {
+    const { buildDispositionContext } = await import('../../_lib/disposition-mining');
+    dispositionAppendix = await buildDispositionContext(cleanPhone, { limit: 8 });
+  } catch (err) {
+    console.warn('[daily-briefing] disposition load failed (non-blocking):', err);
+  }
+
   const userMsg = `Today is ${dayOfWeek}, ${dateStr}.
 
 Owner: ${user.name}
@@ -311,7 +326,7 @@ Rules:
     ✗ "Riley holding..."           (the email-sift cron is holding)
 - You MAY attribute work to a named agent ONLY if that agent's NAME appears in the input data below as the actor of a real agent_runs row. Otherwise describe the action without an actor.
 - If the team had a quiet night and nothing needs attention, say so plainly — don't pad
-- Be warm but not sycophantic. No 'have a wonderful day!'`,
+- Be warm but not sycophantic. No 'have a wonderful day!'${dispositionAppendix}`,
           cache_control: { type: 'ephemeral' },
         }],
         messages: [{ role: 'user', content: userMsg }],
