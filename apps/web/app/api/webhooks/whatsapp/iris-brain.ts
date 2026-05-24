@@ -374,6 +374,106 @@ export async function generateIrisReply(
     }
 
     // ───────────────────────────────────────────────────────────────────────
+    // UNPROMPTED-TOPIC GATE
+    //
+    // Devon's 2026-05-23 5:52 PM transcript: in response to "needed to add
+    // the fixes to the folder so I can get them fixed", Iris opened with:
+    //   *Who's Mia* — she appears in older system data...
+    //   *My name* — I'm Iris. Already set correctly...
+    //   *Au7o mobile issues* — Alex flagged this...
+    //   *A couple of loose ends from the earlier thread:*
+    //     - The Eric email — ...
+    //     - The Ron letter — you said don't send...
+    //     - Swim — noted, hope it was good. 🏊
+    //
+    // Closed-loop resurrection: Iris re-raised topics the owner had already
+    // resolved or never asked about THIS turn. The recital stripper missed
+    // it because the opener wasn't apologetic, just volunteered.
+    //
+    // Two narrow patterns this gate targets:
+    //   1. SELF-REFERENTIAL OPENER — a leading section header like
+    //      *Who's <name>* or *My name* or "I'm Iris..." when the owner's
+    //      current message has zero overlap with identity/name topics.
+    //   2. LOOSE-ENDS TRAILER — a trailing section like "loose ends from
+    //      the earlier thread" / "couple of things from before" / "still
+    //      pending" when the owner's message is short and unrelated.
+    //
+    // Conservative: we only strip the matched SECTION (header + its body
+    // up to the next blank line or section break), never the whole reply.
+    // Falls back to original if stripping would empty the message.
+    // ───────────────────────────────────────────────────────────────────────
+    const ownerMsgLowerForTopic = (text ?? '').toLowerCase();
+    // Words that mean "the owner is referencing identity/naming topics this turn"
+    const IDENTITY_HINTS = /\b(name|who are|who's|call you|rename|call yourself|mia|sophia|iris|persona|identity)\b/i;
+    // Words that mean "the owner is referencing loose-ends / catch-up topics this turn"
+    const CATCHUP_HINTS = /\b(loose ends|catch up|what'?s pending|status|update me|where (are|were) we|earlier|before|from yesterday|from last (night|time|week))\b/i;
+
+    const ownerReferencesIdentity = IDENTITY_HINTS.test(ownerMsgLowerForTopic);
+    const ownerReferencesCatchup = CATCHUP_HINTS.test(ownerMsgLowerForTopic);
+
+    let topicStripped = assistantMessage;
+    const topicHits: string[] = [];
+
+    // PATTERN 1 — self-referential opener section. Matches a leading
+    // *Who's <Name>* or **Who's <Name>** or *My name* etc, optionally
+    // followed by a paragraph of body text up to a blank line / new section.
+    // Only fires when owner didn't reference identity topics.
+    if (!ownerReferencesIdentity) {
+      const SELF_REF_OPENERS: RegExp[] = [
+        // *Who's Mia* / **Who is Mia** / *Who was Sophia*
+        /^\s*\*{1,2}\s*who'?s?\s+(was\s+|is\s+)?[a-z]+\s*\*{1,2}\b[\s\S]*?(?=\n\s*\n|\n\s*\*{1,2}\s*\w|$)/i,
+        // *My name* / *My name —* / **My name** etc.
+        /^\s*\*{1,2}\s*my\s+name\s*\*{1,2}\b[\s\S]*?(?=\n\s*\n|\n\s*\*{1,2}\s*\w|$)/i,
+        // *Name* / *About my name* / *On my name*
+        /^\s*\*{1,2}\s*(about|on|re)\s+my\s+name\s*\*{1,2}\b[\s\S]*?(?=\n\s*\n|\n\s*\*{1,2}\s*\w|$)/i,
+      ];
+      for (const pat of SELF_REF_OPENERS) {
+        const match = topicStripped.match(pat);
+        if (match) {
+          topicHits.push(`self-ref-opener: ${match[0].slice(0, 80)}`);
+          topicStripped = topicStripped.replace(pat, '').trimStart();
+        }
+      }
+    }
+
+    // PATTERN 2 — loose-ends trailer block. Matches a section like
+    // "*A couple of loose ends from the earlier thread:*" through to end
+    // of message. Only fires when owner didn't reference catch-up topics.
+    if (!ownerReferencesCatchup) {
+      const LOOSE_ENDS_PATTERNS: RegExp[] = [
+        // *A couple of loose ends* / *Loose ends* / *Few loose ends from earlier*
+        /\n\s*\*{1,2}\s*(a\s+)?(couple|few)\s+(of\s+)?loose\s+ends?[^*\n]*\*{1,2}[\s\S]*$/i,
+        /\n\s*\*{1,2}\s*loose\s+ends?[^*\n]*\*{1,2}[\s\S]*$/i,
+        // "Also still want to make sure these didn't get lost"
+        /\n\s*(also\s+)?(still\s+want|wanted)\s+to\s+(make\s+sure|circle\s+back|mention)[\s\S]*$/i,
+        // *Catching up* / *From the earlier thread*
+        /\n\s*\*{1,2}\s*(catching\s+up|from\s+(the\s+)?earlier\s+thread|from\s+before)[^*\n]*\*{1,2}[\s\S]*$/i,
+      ];
+      for (const pat of LOOSE_ENDS_PATTERNS) {
+        const match = topicStripped.match(pat);
+        if (match) {
+          topicHits.push(`loose-ends-trailer: ${match[0].slice(0, 80).trim()}`);
+          topicStripped = topicStripped.replace(pat, '').trimEnd();
+        }
+      }
+    }
+
+    if (topicHits.length > 0) {
+      const cleaned = topicStripped.trim();
+      // Safety: never ship empty — fall back to original.
+      if (cleaned.length > 0) {
+        console.warn(
+          `[iris-${surface}] Unprompted-topic gate stripped ${topicHits.length} section(s): ${JSON.stringify(topicHits)}`,
+        );
+        assistantMessage = cleaned;
+      } else {
+        console.warn(
+          `[iris-${surface}] Unprompted-topic gate would have emptied the message — restoring original. Hits: ${JSON.stringify(topicHits)}`,
+        );
+      }
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
     // CODE-SIDE FABRICATION GUARD
     //
     // Three prompt-only patches failed to stop Iris from saying "going forward
