@@ -176,7 +176,49 @@ export interface AnthropicTool {
     properties: Record<string, any>;
     required?: string[];
   };
+  /**
+   * 2026-05-24 — Programmatic Tool Calling (PTC) opt-in.
+   *
+   * When set to ["direct", "code_execution_20250825"], the model can
+   * call this tool EITHER directly (round-trip through context) OR by
+   * writing Python in the code-execution container that invokes it.
+   * Results from container calls do NOT enter the model's context
+   * window — massive token savings on data-heavy reads (~90% in the
+   * Anthropic cookbook benchmark).
+   *
+   * SAFETY: Only opt in READ tools. WRITE/persisting tools (anything
+   * in PERSISTING_TOOLS or DESTRUCTIVE_TOOLS) must stay direct-only,
+   * because:
+   *   - Persisting tools populate owner_confirmation which gets
+   *     appended at delivery via the confirmation gate. PTC hides
+   *     results from the model, bypassing this path.
+   *   - Destructive tools fire pre_action snapshots for rollback.
+   *     Container-invoked calls don't go through the same audit path
+   *     reliably.
+   *
+   * See reference_programmatic_tool_calling memory for the full
+   * rollout policy + cookbook source.
+   */
+  allowed_callers?: Array<'direct' | 'code_execution_20250825'>;
 }
+
+/**
+ * Allow a READ tool to be invoked from both the model directly AND from
+ * the code-execution container. Convenience constant so the per-tool
+ * opt-in line stays a one-liner.
+ */
+export const PTC_READ_CALLERS: Array<'direct' | 'code_execution_20250825'> = ['direct', 'code_execution_20250825'];
+
+/**
+ * The code_execution tool itself, appended to the tool list whenever
+ * ANY PTC-enabled tool is present. This is what gives the model access
+ * to the Python sandbox where it writes the orchestration code that
+ * then calls our PTC-enabled tools.
+ */
+export const CODE_EXECUTION_TOOL = {
+  type: 'code_execution_20250825' as const,
+  name: 'code_execution',
+};
 
 const TOOL_LIST_EMAILS: AnthropicTool = {
   name: 'list_unread_emails',
@@ -191,6 +233,7 @@ const TOOL_LIST_EMAILS: AnthropicTool = {
       },
     },
   },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_SEARCH_EMAILS: AnthropicTool = {
@@ -207,6 +250,7 @@ const TOOL_SEARCH_EMAILS: AnthropicTool = {
       limit: { type: 'number', description: 'Max results. Default 10.' },
     },
   },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_SEND_EMAIL: AnthropicTool = {
@@ -257,6 +301,7 @@ const TOOL_LIST_CALENDAR: AnthropicTool = {
       },
     },
   },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_LIST_CALENDARS: AnthropicTool = {
@@ -526,6 +571,7 @@ const TOOL_LIST_WORKFLOWS: AnthropicTool = {
   description:
     "Show all of the owner's saved workflows with their status (pending_approval / active / paused), schedule, and last-run outcome. Use when the owner asks 'what workflows do I have?', 'what's scheduled?', 'show my routines'.",
   input_schema: { type: 'object', properties: {}, required: [] },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_APPROVE_WORKFLOW: AnthropicTool = {
@@ -616,6 +662,7 @@ const TOOL_LIST_MY_MCP_SERVERS: AnthropicTool = {
   description:
     "List which MCP servers are currently enabled for this tenant + their status. Use when the owner asks 'which MCPs are connected?', 'what extra integrations does my team have?', 'is github MCP working?'.",
   input_schema: { type: 'object', properties: {}, required: [] },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_DISABLE_MCP_SERVER: AnthropicTool = {
@@ -742,6 +789,7 @@ const TOOL_RECALL_BEHAVIORAL_RAG: AnthropicTool = {
     },
     required: ['query'],
   },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_QUERY_KB: AnthropicTool = {
@@ -887,6 +935,7 @@ const TOOL_LIST_KNOWN_PEOPLE: AnthropicTool = {
   description:
     "List everyone in the owner's personal/business network the assistant has been told about (manually or auto-mined). Use when the owner asks 'who do you know?', 'what do you have for me?', or when you need to look someone up before drafting an email or making a recommendation.",
   input_schema: { type: 'object', properties: {} },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_FORGET_PERSON: AnthropicTool = {
@@ -999,6 +1048,7 @@ const TOOL_GET_MY_SPEND: AnthropicTool = {
   description:
     "Report the owner's current month-to-date AI spend and how close they are to the included budget. Use ONLY when the owner explicitly asks about cost / spend / bill / usage / 'how much have I used' / 'what's my burn'. Returns: month-to-date $, monthly budget $, % used, days-to-exhaustion, and breakdown by category (chat vs background agents). Do not proactively cite costs in unrelated replies — only when asked.",
   input_schema: { type: 'object', properties: {} },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_GET_SPEND_BREAKDOWN: AnthropicTool = {
@@ -1006,6 +1056,7 @@ const TOOL_GET_SPEND_BREAKDOWN: AnthropicTool = {
   description:
     "Detailed per-agent and per-model spend breakdown for the current month. Use when the owner asks 'where's my budget going?', 'which agent costs the most?', 'show me the breakdown'. Returns cost per agent_name and per model_used.",
   input_schema: { type: 'object', properties: {} },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_ISSUE_DECK_LOGIN: AnthropicTool = {
@@ -1565,6 +1616,7 @@ const TOOL_LIST_MY_TEAM: AnthropicTool = {
   description:
     "List the owner's CURRENT active agent team (name, role, lane, status). Use BEFORE propose_team_addition so you don't suggest an agent that overlaps an existing one. Also use when the owner asks 'who's on my team', 'what agents do I have', 'who handles X'.",
   input_schema: { type: 'object', properties: {} },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 const TOOL_APPROVE_LATEST_PROPOSAL: AnthropicTool = {
@@ -2229,6 +2281,7 @@ const TOOL_GET_WEATHER: AnthropicTool = {
     },
     required: ['location'],
   },
+  allowed_callers: PTC_READ_CALLERS,
 };
 
 // ─── Email indexing privacy controls (Story 2.9 Phase 2c) ─────────────

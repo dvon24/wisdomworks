@@ -71,6 +71,7 @@ async function callAnthropic(
   messages: any[],
   tools: any[],
   effort: EffortLevel,
+  containerId?: string | null,
 ): Promise<any> {
   // Prompt caching strategy (3 of the 4 available breakpoints):
   //   1. tools[-1].cache_control — caches the tool definitions (stable per tenant)
@@ -97,23 +98,44 @@ async function callAnthropic(
     ],
     messages,
   };
+  // PTC support: when any tool opted in via allowed_callers, append the
+  // code_execution_20250825 tool so the model has a sandbox to write
+  // Python that calls those tools. Beta header gates the whole feature.
+  let toolsForRequest = tools;
+  let usePtc = false;
   if (tools.length > 0) {
+    usePtc = tools.some((t) => Array.isArray(t.allowed_callers) && t.allowed_callers.includes('code_execution_20250825'));
+    if (usePtc) {
+      const { CODE_EXECUTION_TOOL } = await import('./agent-tools');
+      toolsForRequest = [...tools, CODE_EXECUTION_TOOL];
+    }
     // Mark the last tool definition for caching so the tools array is
     // cached as the first layer (cheaper than re-shipping ~12kb of tool
     // schemas on every iteration of the tool loop).
-    const toolsWithCache = tools.map((t, i) =>
-      i === tools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
+    const toolsWithCache = toolsForRequest.map((t, i) =>
+      i === toolsForRequest.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
     );
     body.tools = toolsWithCache;
+  }
+  // Preserve container state across iterations so the model's Python
+  // env doesn't reset each round-trip (containers TTL ~5min — matches
+  // prompt cache).
+  if (containerId) {
+    body.container = containerId;
+  }
+
+  const headers: Record<string, string> = {
+    'x-api-key': apiKey,
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json',
+  };
+  if (usePtc) {
+    headers['anthropic-beta'] = 'advanced-tool-use-2025-11-20';
   }
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(body),
   });
   if (!response.ok) {
@@ -221,10 +243,18 @@ export async function generateIrisReply(
 
   const effort = EFFORT_BY_SURFACE[surface] ?? 'medium';
 
+  // 2026-05-24 — PTC container tracking. When PTC-enabled tools are
+  // present and the model writes Python in the code-exec container,
+  // the container needs to persist across loop iterations or each
+  // round-trip starts fresh (defeating the token-savings purpose).
+  // First response sets containerId; subsequent calls echo it back.
+  let containerId: string | null = null;
+
   try {
     let iteration = 0;
-    let response = await callAnthropic(apiKey, systemPrompt, messages, tools, effort);
+    let response = await callAnthropic(apiKey, systemPrompt, messages, tools, effort, containerId);
     accumulate(response.usage);
+    if (response.container?.id) containerId = response.container.id;
 
     while (response.stop_reason === 'tool_use' && iteration < MAX_ITERATIONS) {
       iteration++;
@@ -234,7 +264,11 @@ export async function generateIrisReply(
       const toolResults: any[] = [];
       for (const block of toolUseBlocks) {
         const call: ToolCall = { name: block.name, input: block.input };
-        console.log(`[iris-${surface}] Tool call: ${call.name}`, call.input);
+        // PTC caller distinction — tool calls from the code-exec container
+        // have caller.type === 'code_execution_20250825'. Logged for
+        // debugging but routed through the same executeTool path.
+        const callerType = (block as any).caller?.type ?? 'direct';
+        console.log(`[iris-${surface}] Tool call (${callerType}): ${call.name}`, call.input);
         toolsUsed.push(call.name);
         const result = await executeTool(call, connections, user);
         if (result.success && typeof result.owner_confirmation === 'string' && result.owner_confirmation.trim().length > 0) {
@@ -248,8 +282,9 @@ export async function generateIrisReply(
         });
       }
       messages.push({ role: 'user', content: toolResults });
-      response = await callAnthropic(apiKey, systemPrompt, messages, tools, effort);
+      response = await callAnthropic(apiKey, systemPrompt, messages, tools, effort, containerId);
       accumulate(response.usage);
+      if (response.container?.id) containerId = response.container.id;
     }
 
     // If the loop exited while still in tool_use (hit cap, or model wanted to keep going),
