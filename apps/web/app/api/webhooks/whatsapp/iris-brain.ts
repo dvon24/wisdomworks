@@ -159,6 +159,24 @@ export async function generateIrisReply(
   }
   console.log(`[iris-${surface}] Loaded ${connections.length} connection(s) for ${user.phoneNumber}: ${connections.map((c) => `${c.provider}/${c.service}`).join(', ') || 'none'}`);
   const tools = buildToolList(connections, { ownerPhone: user.phoneNumber });
+
+  // 2026-05-24 — MCP tool execution layer (commit will reference). For
+  // each MCP server the tenant has enabled in tenant_mcp_servers, fetch
+  // its advertised tool list and append namespaced (mcp__<slug>__<name>)
+  // tools to the array. Discovery is cached per-tenant for 5 min and
+  // wraps Promise.all so one slow server doesn't serialize the rest.
+  // Failed servers reflect their error back into tenant_mcp_servers so
+  // list_my_mcp_servers shows the failure to the owner.
+  try {
+    const { discoverMcpToolsForTenant } = await import('../../_lib/mcp-tool-discovery');
+    const mcpTools = await discoverMcpToolsForTenant(user.phoneNumber);
+    if (mcpTools.length > 0) {
+      tools.push(...mcpTools.map((m) => m.anthropicTool));
+      console.log(`[iris-${surface}] Added ${mcpTools.length} MCP tool(s): ${mcpTools.map((m) => m.fullName).join(', ')}`);
+    }
+  } catch (err) {
+    console.warn(`[iris-${surface}] MCP discovery failed (non-blocking):`, err);
+  }
   const messages: any[] = buildContextMessages(user);
   // Build the system prompt then append the owner-disposition block —
   // the operating manual auto-mined from past interactions. Renders

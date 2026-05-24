@@ -2884,6 +2884,51 @@ export async function executeTool(
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // MCP TOOL ROUTING (2026-05-24)
+  //
+  // If the tool name starts with mcp__ (namespaced by the discovery
+  // layer), route it through the MCP HTTP client instead of the
+  // built-in switch. resolveMcpTool looks up which server + auth to
+  // use; callMcpTool does the JSON-RPC call. Returns the standard
+  // ToolResult shape so the rest of the loop (toolsUsed bookkeeping,
+  // owner_confirmation accumulation, gates) treats MCP tools uniformly.
+  //
+  // MCP tools NEVER populate owner_confirmation because we don't know
+  // their semantics — many will be reads (safe to omit), and the ones
+  // that are writes we can opt-in to confirmations once we audit per
+  // server. For now, the result string is the only owner-facing trace.
+  // ─────────────────────────────────────────────────────────────────────
+  const { MCP_TOOL_PREFIX, resolveMcpTool } = await import('../../_lib/mcp-tool-discovery');
+  if (user && call.name.startsWith(MCP_TOOL_PREFIX)) {
+    const resolved = await resolveMcpTool(user.phoneNumber, call.name);
+    if (!resolved) {
+      return {
+        content: `MCP tool ${call.name} could not be resolved — server may have been disabled or its catalog entry changed. Try list_my_mcp_servers to see current state.`,
+        success: false,
+      };
+    }
+    const { callMcpTool } = await import('../../_lib/mcp-client');
+    const result = await callMcpTool({
+      serverUrl: resolved.serverUrl,
+      authKind: resolved.authKind,
+      authConfig: resolved.authConfig,
+      toolName: resolved.toolName,
+      toolArgs: call.input ?? {},
+    });
+    if (!result.ok) {
+      return {
+        content: `${resolved.serverSlug} MCP call failed: ${result.reason}`,
+        success: false,
+      };
+    }
+    return {
+      content: result.text ?? `[${resolved.serverSlug}] ${resolved.toolName} succeeded with no text output.`,
+      success: true,
+      data: result.data ? { mcp_blocks: result.data } : undefined,
+    };
+  }
+
   try {
     switch (call.name) {
       case 'list_unread_emails': {
@@ -3481,8 +3526,14 @@ export async function executeTool(
         const capsNote = caps.length > 0
           ? ` Capabilities lit up: ${caps.join(', ')}. Roles needing these will now audit as ready instead of mcp-pending.`
           : '';
+        // Invalidate the tool-discovery cache so the newly-enabled server's
+        // tools appear on the next iris-brain turn instead of waiting 5min.
+        try {
+          const { invalidateMcpToolCache } = await import('../../_lib/mcp-tool-discovery');
+          invalidateMcpToolCache(user.phoneNumber);
+        } catch {}
         return {
-          content: `✓ ${result.catalogEntry?.display_name} MCP enabled.${capsNote}\n\nNOTE (2026-05-22): MCP tool execution lands in the next session. For now, the audit + capability reflection works; agent tools that call MCP servers are stubbed.`,
+          content: `✓ ${result.catalogEntry?.display_name} MCP enabled.${capsNote}\n\nTools auto-discovered on next turn (5-min cache). If the server URL is unreachable, the failure surfaces in list_my_mcp_servers.`,
           success: true,
           owner_confirmation: `${result.catalogEntry?.display_name ?? serverSlug} MCP enabled.${capsNote}`,
         };
@@ -3512,6 +3563,10 @@ export async function executeTool(
         const { disableMcpServer } = await import('../../_lib/mcp-catalog');
         const result = await disableMcpServer({ tenantPhone: user.phoneNumber, serverSlug });
         if (!result.ok) return { content: `Couldn't disable: ${result.reason}`, success: false };
+        try {
+          const { invalidateMcpToolCache } = await import('../../_lib/mcp-tool-discovery');
+          invalidateMcpToolCache(user.phoneNumber);
+        } catch {}
         return { content: `${serverSlug} MCP disabled. Re-enable any time with enable_mcp_server.`, success: true };
       }
 
