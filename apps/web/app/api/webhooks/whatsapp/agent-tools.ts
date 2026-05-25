@@ -1931,15 +1931,22 @@ const TOOL_ANALYZE_WEBSITE: AnthropicTool = {
   },
 };
 
+const TOOL_LIST_AGENT_TOOL_REQUESTS: AnthropicTool = {
+  name: 'list_agent_tool_requests',
+  description:
+    "List pending tool/capability requests that named agents (Alex, Marcus, Mira, etc.) raised in recent ticks. Each request comes from an agent that tried to do something but lacked a needed tool. Use when the owner asks 'what do my agents need?' / 'any new agent requests?' / 'why isn't Alex producing more?'. Each entry includes which agent, what capability they're asking for, and the reason. Owner approves by saying 'give X to Alex' or 'yes grant Alex Y' — then Iris calls add_tool_to_agent. Returns at most 20 most-recent requests across all agents, deduplicated by (agent, capability).",
+  input_schema: { type: 'object', properties: {}, required: [] },
+};
+
 const TOOL_ADD_TOOL_TO_AGENT: AnthropicTool = {
   name: 'add_tool_to_agent',
   description:
-    "Add a tool/integration to an agent on the user's team. Use when they say things like \"give Marcus access to GitHub\" or \"Luna needs Instagram\". The tool name is stored on the agent's profile and surfaced in their card.",
+    "Grant an agent access to a specific tool/integration so it ACTUALLY USES it on its next tick (not just decorative metadata). Use when the owner says \"give Marcus GitHub\", \"Alex needs analytics\", \"let Mira read sheets\", or when surfacing a tool-request from list_agent_tool_requests. Accepts owner-friendly aliases — 'github', 'search console', 'sheets', 'analytics', 'quickbooks', 'email', 'calendar', 'spend', 'instagram', 'workflows', 'team', 'audit', 'clients' — OR raw canonical tool names (get_search_console_data, list_recent_commits, etc.). Persists to agent_configs.config.extra_tools so the next tickAgent run picks it up via getToolsForAgent.",
   input_schema: {
     type: 'object',
     properties: {
-      agentName: { type: 'string', description: 'The name of the agent (e.g. Marcus, Luna).' },
-      tool: { type: 'string', description: 'The tool to add (e.g. GitHub, Slack, VS Code, Notion).' },
+      agentName: { type: 'string', description: 'The agent receiving the tool (e.g. Marcus, Alex, Mira).' },
+      tool: { type: 'string', description: 'Either an owner-friendly alias (github / search console / sheets / analytics / quickbooks / email / calendar / spend / instagram) OR a canonical tool name (get_search_console_data, list_recent_commits, ...). Aliases get expanded into the full canonical set.' },
     },
     required: ['agentName', 'tool'],
   },
@@ -2712,6 +2719,7 @@ export function buildToolList(
   tools.push(TOOL_RETIRE_SKILL);
   tools.push(TOOL_ADD_AGENT);
   tools.push(TOOL_ADD_TOOL_TO_AGENT);
+  tools.push(TOOL_LIST_AGENT_TOOL_REQUESTS);
   tools.push(TOOL_UPDATE_AGENT);
   tools.push(TOOL_MOVE_AGENT);
   tools.push(TOOL_REMOVE_AGENT);
@@ -2889,9 +2897,110 @@ const DESTRUCTIVE_TOOLS = new Set<string>([
  * Unknown / unmapped role slugs get the default list only — safer than
  * inheriting an arbitrary role's tools.
  */
+/**
+ * Canonical registry of all tool definitions, keyed by tool name.
+ * Used by getToolsForAgent to resolve `extra_tools[]` from agent_configs
+ * back to AnthropicTool objects. Update this when new tools are added —
+ * the per-role switch in getToolsForAgent only adds defaults; this
+ * registry is what makes a per-agent override "give Marcus get_my_spend"
+ * actually work.
+ */
+export const TOOL_REGISTRY: Record<string, AnthropicTool> = {
+  list_unread_emails: TOOL_LIST_EMAILS,
+  search_emails: TOOL_SEARCH_EMAILS,
+  list_calendar_events: TOOL_LIST_CALENDAR,
+  list_calendars: TOOL_LIST_CALENDARS,
+  list_workflows: TOOL_LIST_WORKFLOWS,
+  list_my_team: TOOL_LIST_MY_TEAM,
+  list_my_mcp_servers: TOOL_LIST_MY_MCP_SERVERS,
+  list_known_people: TOOL_LIST_KNOWN_PEOPLE,
+  recall_atoms: TOOL_RECALL_ATOMS,
+  query_kb: TOOL_QUERY_KB,
+  recall_behavioral_rag: TOOL_RECALL_BEHAVIORAL_RAG,
+  get_weather: TOOL_GET_WEATHER,
+  get_my_spend: TOOL_GET_MY_SPEND,
+  get_spend_breakdown: TOOL_GET_SPEND_BREAKDOWN,
+  get_search_console_data: TOOL_GET_SEARCH_CONSOLE_DATA,
+  get_analytics_data: TOOL_GET_ANALYTICS_DATA,
+  list_recent_commits: TOOL_LIST_RECENT_COMMITS,
+  list_open_issues: TOOL_LIST_OPEN_ISSUES,
+  read_repo_file: TOOL_READ_REPO_FILE,
+  list_repo_tree: TOOL_LIST_REPO_TREE,
+  fetch_deployed_page: TOOL_FETCH_DEPLOYED_PAGE,
+  analyze_website: TOOL_ANALYZE_WEBSITE,
+  list_sheets: TOOL_LIST_SHEETS,
+  read_sheet: TOOL_READ_SHEET,
+  qbo_outstanding_ar: TOOL_QBO_OUTSTANDING_AR,
+  qbo_list_unpaid_invoices: TOOL_QBO_LIST_UNPAID_INVOICES,
+  list_recent_payments: TOOL_LIST_RECENT_PAYMENTS,
+  marketing_performance_summary: TOOL_MARKETING_PERFORMANCE,
+  list_marketing_drafts: TOOL_LIST_MARKETING_DRAFTS,
+  list_marketing_styles: TOOL_LIST_MARKETING_STYLES,
+  instagram_activity: TOOL_INSTAGRAM_ACTIVITY,
+  list_my_schedule: TOOL_LIST_MY_SCHEDULE,
+  find_calendar_conflicts: TOOL_FIND_CONFLICTS,
+  list_followups: TOOL_LIST_FOLLOWUPS,
+  list_tasks: TOOL_LIST_TASKS,
+  audit_team: TOOL_AUDIT_TEAM,
+  list_insights: TOOL_LIST_INSIGHTS,
+  get_classifier_accuracy: TOOL_GET_CLASSIFIER_ACCURACY,
+  list_client_history: TOOL_LIST_CLIENT_HISTORY,
+  lookup_client: TOOL_LOOKUP_CLIENT,
+  list_my_clients: TOOL_LIST_MY_CLIENTS,
+};
+
+/**
+ * Owner-friendly tool aliases — what the owner SAYS maps to which actual
+ * tool names get added. When the owner tells Iris "give Alex github",
+ * we don't want them to know about list_recent_commits / list_open_issues /
+ * read_repo_file individually. The alias expands to the right canonical
+ * tools. Aliases use lowercase keys; lookup is case-insensitive.
+ */
+export const TOOL_ALIASES: Record<string, string[]> = {
+  github: ['list_recent_commits', 'list_open_issues', 'read_repo_file', 'list_repo_tree'],
+  'search console': ['get_search_console_data'],
+  gsc: ['get_search_console_data'],
+  'google search console': ['get_search_console_data'],
+  analytics: ['get_analytics_data'],
+  ga: ['get_analytics_data'],
+  'google analytics': ['get_analytics_data'],
+  'google sheets': ['list_sheets', 'read_sheet'],
+  sheets: ['list_sheets', 'read_sheet'],
+  quickbooks: ['qbo_outstanding_ar', 'qbo_list_unpaid_invoices'],
+  qbo: ['qbo_outstanding_ar', 'qbo_list_unpaid_invoices'],
+  calendar: ['list_calendar_events', 'find_calendar_conflicts'],
+  email: ['list_unread_emails', 'search_emails'],
+  gmail: ['list_unread_emails', 'search_emails'],
+  weather: ['get_weather'],
+  spend: ['get_my_spend', 'get_spend_breakdown'],
+  budget: ['get_my_spend', 'get_spend_breakdown'],
+  instagram: ['instagram_activity'],
+  ig: ['instagram_activity'],
+  'marketing performance': ['marketing_performance_summary', 'list_marketing_drafts'],
+  rag: ['recall_behavioral_rag', 'query_kb'],
+  memory: ['recall_atoms', 'recall_behavioral_rag'],
+  workflows: ['list_workflows'],
+  team: ['list_my_team'],
+  audit: ['audit_team', 'list_insights'],
+  clients: ['list_my_clients', 'lookup_client', 'list_client_history'],
+};
+
+/**
+ * Resolve an owner-given alias OR a raw canonical tool name into the
+ * canonical tool names it represents. Returns empty array if unknown.
+ * Case-insensitive on input.
+ */
+export function resolveToolAlias(input: string): string[] {
+  const key = input.toLowerCase().trim();
+  if (TOOL_ALIASES[key]) return TOOL_ALIASES[key];
+  if (TOOL_REGISTRY[key]) return [key];
+  return [];
+}
+
 export function getToolsForAgent(
   canonicalRoleSlug: string | null | undefined,
   connections: OAuthConnection[],
+  overrides?: { extra_tools?: string[]; disabled_tools?: string[] },
 ): AnthropicTool[] {
   const slug = (canonicalRoleSlug ?? '').toLowerCase().trim();
   const conns = connections as any[];
@@ -2989,6 +3098,41 @@ export function getToolsForAgent(
     default:
       // Unknown / unmapped roles — defaults only. Safer than guessing.
       break;
+  }
+
+  // ─── Per-agent overrides (Iris-granted extras + owner-disabled tools) ───
+  //
+  // overrides.extra_tools — canonical tool names from agent_configs.config
+  //   that the owner asked Iris to ADD to this agent beyond the role default.
+  //   Iris's add_tool_to_agent populates this list. Names may be either
+  //   raw tool names (list_recent_commits) or short aliases — resolveToolAlias
+  //   handles expansion.
+  // overrides.disabled_tools — canonical tool names to REMOVE from the
+  //   role default (e.g. owner says "Marcus shouldn't see spend data").
+  //
+  // Defaults are preserved either way — every agent keeps recall_atoms,
+  // query_kb, recall_behavioral_rag, list_my_team, get_weather,
+  // list_known_people. Disabling those is intentionally not supported
+  // since they're cheap and stop agents from being blind.
+  if (overrides?.extra_tools && overrides.extra_tools.length > 0) {
+    const existingNames = new Set(tools.map((t) => t.name));
+    for (const raw of overrides.extra_tools) {
+      const canonicalNames = resolveToolAlias(raw);
+      for (const name of canonicalNames) {
+        const tool = TOOL_REGISTRY[name];
+        if (tool && !existingNames.has(name)) {
+          tools.push(tool);
+          existingNames.add(name);
+        }
+      }
+    }
+  }
+  if (overrides?.disabled_tools && overrides.disabled_tools.length > 0) {
+    const disabled = new Set<string>();
+    for (const raw of overrides.disabled_tools) {
+      for (const n of resolveToolAlias(raw)) disabled.add(n);
+    }
+    return tools.filter((t) => !disabled.has(t.name));
   }
 
   return tools;
@@ -6901,6 +7045,63 @@ export async function executeTool(
         };
       }
 
+      case 'list_agent_tool_requests': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!supaUrl || !supaKey) return { content: 'Supabase not configured.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        try {
+          // Pull recent agent_runs with non-null tool_request in metadata.
+          // PostgREST jsonb operators: ?  /  ->>  — we use jsonb is not null
+          // pattern via metadata->tool_request not is null.
+          const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+          const url = `${supaUrl}/rest/v1/agent_runs?tenant_phone=eq.${cleanPhone}&started_at=gte.${since}&metadata->tool_request=not.is.null&select=agent_instance_id,started_at,metadata,agent_instances!inner(agent_configs!inner(agent_name,canonical_role_slug,config))&order=started_at.desc&limit=50`;
+          const res = await fetch(url, { headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` } });
+          if (!res.ok) {
+            return { content: `Couldn't fetch tool requests: ${res.status} ${await res.text()}`, success: false };
+          }
+          const rows = await res.json() as any[];
+          if (!Array.isArray(rows) || rows.length === 0) {
+            return { content: 'No pending tool requests from any agents in the last 14 days.', success: true };
+          }
+          // Dedupe by (agent_name, capability) — same agent asking for same
+          // thing in multiple ticks counts as one outstanding request.
+          // Keep the most recent reason text.
+          const seen = new Map<string, { agent: string; capability: string; reason: string; ts: string; alreadyGranted: boolean }>();
+          for (const r of rows) {
+            const tr = r.metadata?.tool_request;
+            if (!tr?.capability) continue;
+            const agentName = r.agent_instances?.agent_configs?.agent_name ?? 'unknown';
+            const cfg = r.agent_instances?.agent_configs?.config ?? {};
+            const existingExtras: string[] = Array.isArray(cfg.extra_tools) ? cfg.extra_tools : [];
+            const { resolveToolAlias: resolve } = await import('./agent-tools');
+            const canonicalForCap = resolve(tr.capability);
+            // If owner already granted this capability since the request,
+            // mark as already_granted so Iris can skip surfacing it.
+            const alreadyGranted = canonicalForCap.length > 0 && canonicalForCap.every((n) => existingExtras.includes(n));
+            const key = `${agentName.toLowerCase()}|${tr.capability.toLowerCase()}`;
+            if (!seen.has(key)) {
+              seen.set(key, { agent: agentName, capability: tr.capability, reason: tr.reason ?? '(no reason given)', ts: r.started_at, alreadyGranted });
+            }
+          }
+          const pending = Array.from(seen.values()).filter((e) => !e.alreadyGranted);
+          if (pending.length === 0) {
+            return { content: `All recent tool requests have already been granted. Nothing pending.`, success: true };
+          }
+          const lines = pending.slice(0, 20).map((e, i) => {
+            const ago = Math.max(1, Math.round((Date.now() - new Date(e.ts).getTime()) / (60 * 60 * 1000)));
+            return `  ${i + 1}. ${e.agent} → "${e.capability}" (${ago}h ago)\n     reason: ${e.reason.slice(0, 200)}`;
+          });
+          return {
+            content: `Pending agent tool requests (${pending.length}):\n${lines.join('\n\n')}\n\nApprove by saying "give <capability> to <agent>" — I'll call add_tool_to_agent to actually grant it.`,
+            success: true,
+          };
+        } catch (err) {
+          return { content: `Couldn't fetch tool requests: ${err}`, success: false };
+        }
+      }
+
       case 'add_tool_to_agent': {
         if (!user) return { content: 'Internal: user context required.', success: false };
         const team = user.profile?.team ?? [];
@@ -6911,14 +7112,85 @@ export async function executeTool(
         }
         const tool = call.input.tool?.toString().trim();
         if (!tool) return { content: 'Missing tool name.', success: false };
-        const existing = agent.tools ?? [];
-        if (existing.some((t) => t.toLowerCase() === tool.toLowerCase())) {
-          return { content: `${agent.name} already has ${tool}.`, success: true };
+
+        // 2026-05-25 — actually persist this so the agent's next tick
+        // gets the tool. Previously this only wrote to user.profile.team
+        // (display metadata) — the deck card showed the tool but the
+        // agent's actual tool list was unchanged. Now:
+        //   1. Resolve the owner-given input through TOOL_ALIASES — "github"
+        //      expands to list_recent_commits + list_open_issues + read_repo_file
+        //      + list_repo_tree. Raw canonical names ("get_search_console_data")
+        //      pass through unchanged.
+        //   2. PATCH agent_configs.config.extra_tools with the merged set so
+        //      getToolsForAgent picks them up on the next tick.
+        //   3. Keep the chat-side write so the deck card still shows it.
+        const canonicalNames = resolveToolAlias(tool);
+        if (canonicalNames.length === 0) {
+          return {
+            content: `"${tool}" isn't a known tool or alias. Known aliases: github, search console, analytics, sheets, quickbooks, email, calendar, spend, instagram, workflows, audit, clients. Or pass a raw tool name from TOOL_REGISTRY.`,
+            success: false,
+          };
         }
-        agent.tools = [...existing, tool];
-        user.profile.team = team;
-        await saveUserContext(user);
-        return { content: `Added ${tool} to ${agent.name}'s toolset.`, success: true };
+
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        let dbPersisted = 0;
+        if (supaUrl && supaKey) {
+          const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+          try {
+            // Read current config to merge.
+            const curRes = await fetch(
+              `${supaUrl}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&agent_name=ilike.${encodeURIComponent(agent.name ?? '')}&status=neq.removed&select=id,config&limit=1`,
+              { headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` } },
+            );
+            if (curRes.ok) {
+              const rows = await curRes.json();
+              if (Array.isArray(rows) && rows.length > 0) {
+                const row = rows[0];
+                const config = (row.config ?? {}) as any;
+                const currentExtras: string[] = Array.isArray(config.extra_tools) ? config.extra_tools : [];
+                const merged = Array.from(new Set([...currentExtras, ...canonicalNames]));
+                if (merged.length > currentExtras.length) {
+                  await fetch(
+                    `${supaUrl}/rest/v1/agent_configs?id=eq.${row.id}`,
+                    {
+                      method: 'PATCH',
+                      headers: {
+                        apikey: supaKey,
+                        Authorization: `Bearer ${supaKey}`,
+                        'Content-Type': 'application/json',
+                        Prefer: 'return=minimal',
+                      },
+                      body: JSON.stringify({ config: { ...config, extra_tools: merged } }),
+                    },
+                  );
+                  dbPersisted = merged.length - currentExtras.length;
+                }
+              }
+            }
+          } catch (err) {
+            console.warn('[add_tool_to_agent] DB persist failed (chat-side will still apply):', err);
+          }
+        }
+
+        // Chat-side display write — keeps deck cards consistent.
+        const existing = agent.tools ?? [];
+        const displayLabel = tool;
+        if (!existing.some((t) => t.toLowerCase() === displayLabel.toLowerCase())) {
+          agent.tools = [...existing, displayLabel];
+          user.profile.team = team;
+          await saveUserContext(user);
+        }
+
+        const friendlyList = canonicalNames.join(', ');
+        const owner_confirmation = dbPersisted > 0
+          ? `${agent.name} now has access to ${tool} (${friendlyList}). ${dbPersisted} new tool${dbPersisted === 1 ? '' : 's'} live on next tick.`
+          : `${agent.name} already had access to ${tool} — no change.`;
+        return {
+          content: owner_confirmation,
+          success: true,
+          owner_confirmation,
+        };
       }
 
       case 'update_agent': {

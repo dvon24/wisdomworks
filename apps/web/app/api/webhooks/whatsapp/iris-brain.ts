@@ -385,6 +385,7 @@ export async function generateIrisReply(
       'update_agent',
       'move_agent_under_manager',
       'remove_agent_from_team',
+      'add_tool_to_agent',
     ]);
     const teamToolFired = toolsUsed.some((t) => TEAM_AWARE_TOOLS.has(t));
     // Iris IS the personal-assistant slot at team[0] — exclude her name
@@ -551,6 +552,7 @@ export async function generateIrisReply(
       'move_agent_under_manager',
       'set_marketing_autonomy',
       'connect_automation_webhook',
+      'add_tool_to_agent',
     ]);
     const FABRICATION_PATTERNS: RegExp[] = [
       // Morning-brief specific (original patterns from 4c7df5e).

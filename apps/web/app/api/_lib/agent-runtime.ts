@@ -527,6 +527,11 @@ interface ReasoningResult {
   consult?: { peer_name: string; question: string; reason?: string } | null;
   /** Phase 1B — if the agent received a consult and is answering, populate */
   answer_to_consult?: { consult_id: string; answer: string } | null;
+  /** 2026-05-25 — self-identified tool gap. When the agent tried to do
+   *  something this tick but lacked a tool, it sets this so Iris can
+   *  surface the request to the owner for approval (and then grant via
+   *  add_tool_to_agent). */
+  tool_request?: { capability: string; reason: string } | null;
 }
 
 function buildAgentSystemPrompt(config: AgentConfigRow, autonomy: string, ctx: TickContext): string {
@@ -807,8 +812,15 @@ Respond with ONLY a JSON object in your final text block (after any tool calls),
   "solution_brief": { "problem": "...", "proposed_solution": "...", "expected_impact": "...", "confidence": 0..1, "risk": "low" | "medium" | "high" } OR null,
   "applied_skill_signature": "snake_case_signature_from_proven_techniques_block_if_you_used_one_or_null",
   "consult": { "peer_name": "Marcus", "question": "specific question for them", "reason": "why you're asking" } OR null,
-  "answer_to_consult": { "consult_id": "8-char-prefix", "answer": "1-3 sentence answer to a consult in your inbox" } OR null
+  "answer_to_consult": { "consult_id": "8-char-prefix", "answer": "1-3 sentence answer to a consult in your inbox" } OR null,
+  "tool_request": { "capability": "short name of the missing tool (e.g. 'github', 'analytics', 'sheets', 'qbo')", "reason": "1 sentence — what you tried to do that needed it" } OR null
 }
+
+TOOL REQUESTS — when to populate tool_request:
+- You attempted a tool call that returned "no Google account connected" or "X not connected" or similar gap signal.
+- Your tick brief would be substantially more useful with a tool you don't have — e.g. you're a web-developer agent without get_search_console_data, or a finance agent without QBO access.
+- Use the SHORTEST useful name (github / analytics / sheets / qbo / instagram / sentry / etc.). Don't list specific canonical tool names — Iris will expand the alias when she grants it.
+- Don't fire tool_request on routine successful ticks. Owners shouldn't get spammed with capability requests they already know about — only request when you have a specific use case THIS TICK that the missing tool would unlock.
 
 PRIORITY GUIDE:
 - "none" → routine, no signal
@@ -1151,7 +1163,17 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
     // scoped lists. Unknown / unmapped slugs fall through to the
     // defaults inside getToolsForAgent (memory + team awareness only).
     const { getToolsForAgent } = await import('../webhooks/whatsapp/agent-tools');
-    const agentTools = getToolsForAgent(config.canonical_role_slug, ctx.connections as any[]);
+    // Per-agent overrides — Iris's add_tool_to_agent populates
+    // config.extra_tools; admin / future tools can populate
+    // config.disabled_tools. getToolsForAgent merges them with the
+    // role default.
+    const cfgAny = (config as any).config ?? {};
+    const extraTools: string[] = Array.isArray(cfgAny.extra_tools) ? cfgAny.extra_tools : [];
+    const disabledTools: string[] = Array.isArray(cfgAny.disabled_tools) ? cfgAny.disabled_tools : [];
+    const agentTools = getToolsForAgent(config.canonical_role_slug, ctx.connections as any[], {
+      extra_tools: extraTools,
+      disabled_tools: disabledTools,
+    });
 
     const { result, tokensIn, tokensOut, raw, toolsUsed } = await callAnthropicForTick(
       primaryModel,
@@ -1282,6 +1304,21 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
         // Only stored if the brief passed the hard rules above; otherwise null.
         solution_brief: sanitizedBrief,
         applied_skill_signature: result.applied_skill_signature ?? null,
+        // 2026-05-25 — agent self-identified capability gap. Iris reads
+        // these via list_agent_tool_requests to surface for owner
+        // approval. Validated minimally — short capability name, non-
+        // empty reason. Empty / malformed entries dropped.
+        tool_request: (result.tool_request &&
+          typeof result.tool_request.capability === 'string' &&
+          result.tool_request.capability.trim().length > 0 &&
+          result.tool_request.capability.trim().length <= 60 &&
+          typeof result.tool_request.reason === 'string' &&
+          result.tool_request.reason.trim().length > 5)
+          ? {
+              capability: result.tool_request.capability.trim().toLowerCase(),
+              reason: result.tool_request.reason.trim().slice(0, 300),
+            }
+          : null,
       },
     }, true);
 
