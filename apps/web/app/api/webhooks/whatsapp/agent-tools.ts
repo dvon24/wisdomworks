@@ -2864,6 +2864,136 @@ const DESTRUCTIVE_TOOLS = new Set<string>([
   'set_marketing_autonomy',
 ]);
 
+/**
+ * Per-canonical-role tool filter for agent ticks.
+ *
+ * Iris (the personal-assistant slot) gets the FULL tool catalog via
+ * buildToolList. Other agents (Marcus, Mira, Alex, etc.) run via the
+ * agent-tick cron in agent-runtime.ts and historically had ZERO tools.
+ * As of 2026-05-25 they each get a role-scoped tool list so they can
+ * surface real data in their briefs instead of guessing from world-
+ * state hashes.
+ *
+ * Scoping principles:
+ *   - READ tools by default — ticks are observation/recommendation,
+ *     not action. Write tools (send_email, publish_*, schedule_event)
+ *     stay Iris-only so the owner sees them in chat with confirmation.
+ *   - Connection-gated where applicable — Alex doesn't get GSC if
+ *     Google Search Console isn't connected.
+ *   - PTC-friendly — tools already have allowed_callers from yesterday's
+ *     PTC rollout (a15c6d6); same tools work for agents and benefit from
+ *     the same token savings.
+ *   - Defaults applied to every agent — memory recall + behavioral RAG
+ *     + team awareness, so every tick has the same baseline.
+ *
+ * Unknown / unmapped role slugs get the default list only — safer than
+ * inheriting an arbitrary role's tools.
+ */
+export function getToolsForAgent(
+  canonicalRoleSlug: string | null | undefined,
+  connections: OAuthConnection[],
+): AnthropicTool[] {
+  const slug = (canonicalRoleSlug ?? '').toLowerCase().trim();
+  const conns = connections as any[];
+  const hasGoogle = conns.some((c) => c.provider === 'google');
+  const hasGsc = conns.some((c) => c.provider === 'google' && c.service === 'search_console');
+  const hasAnalytics = conns.some((c) => c.provider === 'google' && c.service === 'analytics');
+  const hasSheets = conns.some((c) => c.provider === 'google' && c.service === 'sheets');
+  const hasEmail = conns.some((c) => c.service === 'email');
+  const hasCalendar = conns.some((c) => c.service === 'calendar');
+  const hasQuickBooks = conns.some((c) => c.provider === 'quickbooks');
+  const hasMeta = conns.some((c) => c.provider === 'meta');
+
+  // Default tools every agent gets — memory + awareness, no side effects.
+  const tools: AnthropicTool[] = [
+    TOOL_RECALL_ATOMS,
+    TOOL_QUERY_KB,
+    TOOL_RECALL_BEHAVIORAL_RAG,
+    TOOL_LIST_MY_TEAM,
+    TOOL_GET_WEATHER,
+    TOOL_LIST_KNOWN_PEOPLE,
+  ];
+
+  switch (slug) {
+    case 'web-developer':
+      // Alex (Au7o agent). Owns SEO + deployment + repo visibility.
+      if (hasGsc) tools.push(TOOL_GET_SEARCH_CONSOLE_DATA);
+      if (hasAnalytics) tools.push(TOOL_GET_ANALYTICS_DATA);
+      tools.push(TOOL_LIST_RECENT_COMMITS);
+      tools.push(TOOL_LIST_OPEN_ISSUES);
+      tools.push(TOOL_READ_REPO_FILE);
+      tools.push(TOOL_LIST_REPO_TREE);
+      tools.push(TOOL_FETCH_DEPLOYED_PAGE);
+      tools.push(TOOL_ANALYZE_WEBSITE);
+      break;
+
+    case 'financial-advisor':
+    case 'bookkeeper':
+      // Mira et al. — read-only finance signals for the brief.
+      if (hasSheets) tools.push(TOOL_LIST_SHEETS, TOOL_READ_SHEET);
+      if (hasQuickBooks) tools.push(TOOL_QBO_OUTSTANDING_AR, TOOL_QBO_LIST_UNPAID_INVOICES);
+      tools.push(TOOL_GET_MY_SPEND);
+      tools.push(TOOL_GET_SPEND_BREAKDOWN);
+      tools.push(TOOL_LIST_RECENT_PAYMENTS);
+      break;
+
+    case 'marketing-manager':
+    case 'social-media-manager':
+      tools.push(TOOL_MARKETING_PERFORMANCE);
+      tools.push(TOOL_LIST_MARKETING_DRAFTS);
+      tools.push(TOOL_LIST_MARKETING_STYLES);
+      if (hasMeta) tools.push(TOOL_INSTAGRAM_ACTIVITY);
+      break;
+
+    case 'scheduler':
+    case 'personal-assistant':
+      if (hasCalendar) {
+        tools.push(TOOL_LIST_CALENDAR);
+        tools.push(TOOL_LIST_MY_SCHEDULE);
+        tools.push(TOOL_FIND_CONFLICTS);
+      }
+      tools.push(TOOL_LIST_FOLLOWUPS);
+      tools.push(TOOL_LIST_TASKS);
+      break;
+
+    case 'operations-manager':
+    case 'general-manager':
+      tools.push(TOOL_LIST_WORKFLOWS);
+      tools.push(TOOL_GET_MY_SPEND);
+      tools.push(TOOL_GET_SPEND_BREAKDOWN);
+      tools.push(TOOL_AUDIT_TEAM);
+      tools.push(TOOL_LIST_INSIGHTS);
+      break;
+
+    case 'customer-service':
+    case 'concierge':
+      if (hasEmail) tools.push(TOOL_LIST_EMAILS, TOOL_SEARCH_EMAILS);
+      tools.push(TOOL_LIST_CLIENT_HISTORY);
+      tools.push(TOOL_LOOKUP_CLIENT);
+      tools.push(TOOL_LIST_MY_CLIENTS);
+      break;
+
+    case 'runtime-auditor':
+      tools.push(TOOL_AUDIT_TEAM);
+      tools.push(TOOL_LIST_INSIGHTS);
+      tools.push(TOOL_LIST_WORKFLOWS);
+      tools.push(TOOL_GET_CLASSIFIER_ACCURACY);
+      break;
+
+    case 'recruiter':
+    case 'hr-manager':
+      if (hasEmail) tools.push(TOOL_LIST_EMAILS, TOOL_SEARCH_EMAILS);
+      tools.push(TOOL_LIST_KNOWN_PEOPLE);
+      break;
+
+    default:
+      // Unknown / unmapped roles — defaults only. Safer than guessing.
+      break;
+  }
+
+  return tools;
+}
+
 export async function executeTool(
   call: ToolCall,
   connections: OAuthConnection[],

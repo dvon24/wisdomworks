@@ -33,6 +33,13 @@ interface AgentConfigRow {
   id: string;
   agent_name: string;
   agent_role: string;
+  /**
+   * 2026-05-25 — canonical_role_slug drives per-agent tool-loop scoping.
+   * Maps to agent_role_catalog.role_slug. tickAgent uses this to call
+   * getToolsForAgent() and hand the agent the right subset of tools
+   * (e.g. web-developer → GSC + Analytics + repo tools).
+   */
+  canonical_role_slug?: string | null;
   model_routing: any;
   output_channels: string[];
   config?: {
@@ -779,7 +786,15 @@ ${autonomy === 'L4' ? '→ Fully autonomous; escalate only on errors or novel si
 
 THIS IS A SCHEDULED TICK. Spend it as if you'd just looked up from your work. Look at YOUR domain only — do NOT speculate about things outside your role. Be honest if there's nothing meaningful to report this tick.
 
-Respond with ONLY a JSON object, no other text:
+TOOL USE — IF YOUR TOOL LIST IS NON-EMPTY:
+You have READ tools scoped to your role (e.g. for web-developer: get_search_console_data, get_analytics_data, list_recent_commits). Before forming your observation:
+  1. Call the most relevant tools to gather REAL data — impressions/clicks for SEO agents, P&L numbers for finance, calendar events for schedulers, etc. Don't guess from world-state.
+  2. Compare period-over-period when applicable (last 7d vs prior 7d) so your brief surfaces actual TRENDS, not snapshots.
+  3. Cross-reference: if you see a metric shift, check related tools for cause (e.g. recent commits if traffic moved). Correlation matters more than the raw number.
+  4. Only after gathering data: produce your tick JSON below. The JSON is your final output — it goes in the last text block AFTER all your tool calls.
+Bound your tool use to what's actually relevant — you have ~4 iterations max. Don't fish.
+
+Respond with ONLY a JSON object in your final text block (after any tool calls), no other text:
 {
   "observation": "1-2 sentences on what you observed in your domain since your last tick",
   "recommendation": "1-2 sentences on what you'd do or what the owner should know — keep it concrete",
@@ -822,34 +837,138 @@ If ANY of these fail, return solution_brief: null. The owner is FAR more annoyed
 When starved (no external connections, no project, no delegations in your inbox), solution_brief is BANNED. You don't have enough information to propose anything structured. Stay in observation mode.`;
 }
 
-async function callAnthropicForTick(model: string, systemPrompt: string): Promise<{ result: ReasoningResult; tokensIn: number; tokensOut: number; raw: string }> {
-  const res = await fetch(ANTHROPIC_URL, {
-    method: 'POST',
-    headers: {
-      'x-api-key': ANTHROPIC_API_KEY!,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
+/**
+ * Agent tick LLM call. As of 2026-05-25 this supports a tool-use loop
+ * for non-Iris agents — when tools are supplied, the model can call
+ * READ tools to gather real data before producing its JSON observation.
+ *
+ * Backwards compatible: if tools is empty / omitted, runs the legacy
+ * single-shot path (max_tokens 400). When tools are present, max_tokens
+ * bumps to 4000 and we run a bounded tool loop (MAX_TICK_ITERATIONS = 4).
+ *
+ * The model produces tick-shaped JSON in its final text block — same
+ * shape as before. Tool calls happen on intermediate iterations.
+ */
+const MAX_TICK_ITERATIONS = 4;
+
+async function callAnthropicForTick(
+  model: string,
+  systemPrompt: string,
+  tools: any[] = [],
+  connections: any[] = [],
+  tenantPhone?: string,
+): Promise<{ result: ReasoningResult; tokensIn: number; tokensOut: number; raw: string; toolsUsed: string[] }> {
+  const hasTools = tools.length > 0;
+  const messages: any[] = [{ role: 'user', content: 'Run your scheduled tick.' }];
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
+  const toolsUsed: string[] = [];
+
+  // Lazy-load executeTool + loadUserContext only when tools are present,
+  // avoiding the import cost on tick paths that don't use tools.
+  let executeTool: any = null;
+  let userCtxForTools: any = undefined;
+  if (hasTools && tenantPhone) {
+    const at = await import('../webhooks/whatsapp/agent-tools');
+    executeTool = at.executeTool;
+    try {
+      const { loadUserContext } = await import('../webhooks/whatsapp/context-store');
+      userCtxForTools = await loadUserContext(tenantPhone, 'agent-tick');
+    } catch {
+      // Non-fatal — most READ tools don't need full user context.
+    }
+  }
+
+  const buildBody = (): any => {
+    const body: any = {
       model,
-      max_tokens: 400,
+      max_tokens: hasTools ? 4000 : 400,
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: 'Run your scheduled tick.' }],
-    }),
-  });
-  if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
-  const data = await res.json();
-  const text = data.content?.[0]?.text ?? '';
-  const match = text.match(/\{[\s\S]*\}/);
+      messages,
+    };
+    if (hasTools) {
+      // Cache the tool list (it's stable per tick) so subsequent loop
+      // iterations don't re-ship the schemas.
+      body.tools = tools.map((t, i) =>
+        i === tools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
+      );
+    }
+    return body;
+  };
+
+  const usePtc = hasTools && tools.some((t) => Array.isArray(t.allowed_callers) && t.allowed_callers.includes('code_execution_20250825'));
+  const requestHeaders: Record<string, string> = {
+    'x-api-key': ANTHROPIC_API_KEY!,
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json',
+  };
+  if (usePtc) requestHeaders['anthropic-beta'] = 'advanced-tool-use-2025-11-20';
+
+  let iteration = 0;
+  let lastResponse: any = null;
+  let finalText = '';
+
+  while (iteration <= MAX_TICK_ITERATIONS) {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: requestHeaders,
+      body: JSON.stringify(buildBody()),
+    });
+    if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
+    lastResponse = await res.json();
+    totalTokensIn += lastResponse.usage?.input_tokens ?? 0;
+    totalTokensOut += lastResponse.usage?.output_tokens ?? 0;
+
+    // Find any text block (used as the final brief JSON).
+    const textBlock = lastResponse.content?.find((b: any) => b.type === 'text');
+    if (textBlock?.text) finalText = textBlock.text;
+
+    if (lastResponse.stop_reason !== 'tool_use' || !hasTools || !executeTool) break;
+
+    // Execute tool calls + loop.
+    const toolUseBlocks = lastResponse.content.filter((b: any) => b.type === 'tool_use');
+    if (toolUseBlocks.length === 0) break;
+    messages.push({ role: 'assistant', content: lastResponse.content });
+
+    const toolResults: any[] = [];
+    for (const block of toolUseBlocks) {
+      toolsUsed.push(block.name);
+      try {
+        const result = await executeTool(
+          { name: block.name, input: block.input },
+          connections,
+          userCtxForTools,
+        );
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: result.content ?? '',
+          is_error: !result.success,
+        });
+      } catch (err: any) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `Tool error: ${err?.message ?? String(err)}`,
+          is_error: true,
+        });
+      }
+    }
+    messages.push({ role: 'user', content: toolResults });
+    iteration++;
+  }
+
+  const match = finalText.match(/\{[\s\S]*\}/);
   let parsed: ReasoningResult = { observation: '', recommendation: '', requires_action: false, escalation_priority: 'none' };
   if (match) {
     try { parsed = { ...parsed, ...JSON.parse(match[0]) }; } catch {}
   }
   return {
     result: parsed,
-    tokensIn: data.usage?.input_tokens ?? 0,
-    tokensOut: data.usage?.output_tokens ?? 0,
-    raw: text,
+    tokensIn: totalTokensIn,
+    tokensOut: totalTokensOut,
+    raw: finalText,
+    toolsUsed,
   };
 }
 
@@ -1024,7 +1143,26 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
     });
     const recentBlock = recentContext.text ? `\n\n${recentContext.text}\n` : '';
     const systemPrompt = baseSystemPrompt + dispositionBlock + recentBlock;
-    const { result, tokensIn, tokensOut, raw } = await callAnthropicForTick(primaryModel, systemPrompt);
+
+    // 2026-05-25 — agents now get a per-canonical-role tool list (Phase 2
+    // of the tool-loop architecture). Alex (web-developer) gets GSC +
+    // Analytics + repo tools so his tick brief surfaces real Au7o data
+    // instead of guessing from world state. Other roles get their own
+    // scoped lists. Unknown / unmapped slugs fall through to the
+    // defaults inside getToolsForAgent (memory + team awareness only).
+    const { getToolsForAgent } = await import('../webhooks/whatsapp/agent-tools');
+    const agentTools = getToolsForAgent(config.canonical_role_slug, ctx.connections as any[]);
+
+    const { result, tokensIn, tokensOut, raw, toolsUsed } = await callAnthropicForTick(
+      primaryModel,
+      systemPrompt,
+      agentTools,
+      ctx.connections,
+      instance.tenant_phone,
+    );
+    if (toolsUsed.length > 0) {
+      console.log(`[agent-runtime] ${config.agent_name} tick called ${toolsUsed.length} tool(s): ${toolsUsed.join(', ')}`);
+    }
 
     // Autonomy gate — at L1 we never claim 'acted', only 'proposed' or 'observed'
     let outcome: 'observed' | 'proposed' | 'acted' | 'escalated' = 'observed';
@@ -1467,7 +1605,7 @@ export async function tickRunningAgents(): Promise<{ tenants: number; ticked: nu
 
   const cfgIds = Array.from(new Set(instances.map((i) => i.agent_config_id)));
   const cfgRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/agent_configs?id=in.(${cfgIds.join(',')})&select=id,agent_name,agent_role,model_routing,output_channels,config`,
+    `${SUPABASE_URL}/rest/v1/agent_configs?id=in.(${cfgIds.join(',')})&select=id,agent_name,agent_role,canonical_role_slug,model_routing,output_channels,config`,
     { headers: headers() },
   );
   if (!cfgRes.ok) return { tenants: 0, ticked: 0, failed: 0, skipped: 0 };
