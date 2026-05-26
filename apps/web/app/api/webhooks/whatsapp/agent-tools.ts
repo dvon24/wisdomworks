@@ -2412,6 +2412,27 @@ const TOOL_RECALL_DOCUMENTS: AnthropicTool = {
       limit: { type: 'number', description: 'Default 5.' },
     },
   },
+  allowed_callers: PTC_READ_CALLERS,
+};
+
+const TOOL_ASK_ABOUT_DOCUMENT: AnthropicTool = {
+  name: 'ask_about_document',
+  description:
+    "Answer a SPECIFIC question about a PDF document the owner sent. Different from recall_recent_documents (which lists generic summaries) — this loads the actual PDF bytes and asks Claude the owner's literal question against the document content. Use when the owner asks 'what does the lease say about late fees', 'pull the renewal date from the contract', 'is there an auto-renewal clause in that PDF', 'what was the total invoice amount'. Pass `document_query` to identify which doc (filename substring, or topic keyword from the summary) — if multiple match, the most recent wins. Pass `question` as the owner's literal question, paraphrased to be standalone. Returns the model's natural-language answer grounded in the document.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      document_query: {
+        type: 'string',
+        description: "Filename substring or topic keyword to find the right doc (e.g. 'lease', 'invoice 4501', 'inspector report'). If empty, uses the MOST RECENT analyzed document.",
+      },
+      question: {
+        type: 'string',
+        description: "The specific question to answer against the document (e.g. 'what is the late-fee percentage', 'is there a 30-day cancellation clause', 'who is the counterparty').",
+      },
+    },
+    required: ['question'],
+  },
 };
 
 // ─── Story 2.15 — Business Type Framework Dictionary visibility ──────────
@@ -2758,6 +2779,7 @@ export function buildToolList(
   tools.push(TOOL_RESOLVE_LESSON);
   tools.push(TOOL_BUSINESS_TYPE_DICTIONARY);
   tools.push(TOOL_RECALL_DOCUMENTS);
+  tools.push(TOOL_ASK_ABOUT_DOCUMENT);
   tools.push(TOOL_ANALYZE_EMAIL_ATTACHMENT);
   tools.push(TOOL_SHOW_EMAIL_ENGAGEMENT);
   tools.push(TOOL_SHOW_DISPOSITION_PROFILE);
@@ -8306,6 +8328,87 @@ export async function executeTool(
           lastErr = result.error;
         }
         return { content: `Couldn't fetch the attachment: ${lastErr ?? 'unknown error'}`, success: false };
+      }
+
+      case 'ask_about_document': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const docQuery = call.input.document_query ? String(call.input.document_query).trim().toLowerCase() : '';
+        const question = call.input.question ? String(call.input.question).trim() : '';
+        if (question.length < 3) return { content: 'question is required.', success: false };
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!supaUrl || !supaKey) return { content: 'Supabase not configured.', success: false };
+
+        try {
+          // Find the matching analyzed doc. Restrict to PDFs for now — docx/xlsx
+          // would need a different path (they're parsed to text, not sent as
+          // document blocks to Claude).
+          const fetchLimit = docQuery ? 25 : 1;
+          const docRes = await fetch(
+            `${supaUrl}/rest/v1/received_documents?tenant_phone=eq.${cleanPhone}&status=eq.analyzed&mime_type=ilike.application/pdf&order=analyzed_at.desc&limit=${fetchLimit}&select=id,filename,summary,storage_path,public_url,tags,analyzed_at`,
+            { headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` } },
+          );
+          if (!docRes.ok) return { content: `Document lookup failed: ${docRes.status}`, success: false };
+          let docs = await docRes.json();
+          if (docQuery) {
+            docs = docs.filter((d: any) => {
+              const haystack = `${d.filename ?? ''} ${d.summary ?? ''} ${(d.tags ?? []).join(' ')}`.toLowerCase();
+              return haystack.includes(docQuery);
+            });
+          }
+          if (docs.length === 0) {
+            return {
+              content: docQuery
+                ? `No analyzed PDF matching "${docQuery}". recall_recent_documents to see what's available.`
+                : 'No analyzed PDFs on file yet — send one via WhatsApp first.',
+              success: true,
+            };
+          }
+          const doc = docs[0];
+
+          // Prefer the public_url path (Claude can fetch directly via url source).
+          // Falls back to base64 if no public URL (private bucket).
+          const { answerQuestionAboutPdf } = await import('../../_lib/document-analysis');
+          let result: { ok: boolean; answer: string; error?: string };
+          if (doc.public_url) {
+            result = await answerQuestionAboutPdf({
+              pdfUrl: doc.public_url,
+              question,
+              hintFilename: doc.filename ?? undefined,
+            });
+          } else {
+            // Private bucket — download bytes from storage, convert to base64.
+            const sigRes = await fetch(
+              `${supaUrl}/storage/v1/object/sign/received-docs/${encodeURIComponent(doc.storage_path)}?expiresIn=120`,
+              {
+                method: 'POST',
+                headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` },
+              },
+            );
+            if (!sigRes.ok) return { content: `Couldn't sign storage URL: ${sigRes.status}`, success: false };
+            const { signedURL } = await sigRes.json();
+            const fileRes = await fetch(`${supaUrl}/storage/v1${signedURL}`);
+            if (!fileRes.ok) return { content: `Couldn't download stored PDF: ${fileRes.status}`, success: false };
+            const arr = await fileRes.arrayBuffer();
+            const b64 = Buffer.from(arr).toString('base64');
+            result = await answerQuestionAboutPdf({
+              pdfBase64: b64,
+              question,
+              hintFilename: doc.filename ?? undefined,
+            });
+          }
+
+          if (!result.ok) {
+            return { content: `Couldn't answer against "${doc.filename ?? doc.id}": ${result.error}`, success: false };
+          }
+          return {
+            content: `[from ${doc.filename ?? '(unnamed PDF)'}]\n\n${result.answer}`,
+            success: true,
+          };
+        } catch (err: any) {
+          return { content: `Document Q&A failed: ${err?.message ?? String(err)}`, success: false };
+        }
       }
 
       case 'recall_recent_documents': {

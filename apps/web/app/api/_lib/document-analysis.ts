@@ -130,6 +130,65 @@ export async function analyzePdfDocument(input: {
  * headings survive the conversion; embedded images don't (acceptable
  * tradeoff — docx images are rarely load-bearing for analysis).
  */
+/**
+ * Owner-initiated Q&A against a stored PDF. Different from analyzePdfDocument
+ * (which produces a structured generic summary) — this takes a SPECIFIC
+ * question the owner asked and returns a focused natural-language answer.
+ *
+ * Use case: owner sent a lease PDF days ago, today asks "what does it say
+ * about late fees?" — Iris's ask_about_document tool finds the row in
+ * received_documents, downloads bytes from storage, and calls this.
+ *
+ * Returns the model's text response directly (not parsed JSON). Caller
+ * surfaces it verbatim to the owner via Iris's reply.
+ */
+export async function answerQuestionAboutPdf(input: {
+  pdfBase64?: string;
+  pdfUrl?: string;
+  question: string;
+  hintFilename?: string;
+}): Promise<{ ok: boolean; answer: string; error?: string }> {
+  if (!ANTHROPIC_API_KEY) return { ok: false, answer: '', error: 'ANTHROPIC_API_KEY not set' };
+  if (!input.pdfBase64 && !input.pdfUrl) {
+    return { ok: false, answer: '', error: 'either pdfBase64 or pdfUrl required' };
+  }
+  const q = input.question.trim();
+  if (q.length < 3) return { ok: false, answer: '', error: 'question too short' };
+
+  const documentBlock: any = input.pdfBase64
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: input.pdfBase64 } }
+    : { type: 'document', source: { type: 'url', url: input.pdfUrl } };
+
+  const userText = `${input.hintFilename ? `Document: ${input.hintFilename}\n\n` : ''}Question: ${q}\n\nAnswer the question based ONLY on the document content. If the document doesn't address it, say so plainly — don't guess. Quote the relevant passage where useful. Keep the answer tight (2-5 sentences unless the question genuinely needs more).`;
+
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1200,
+        messages: [
+          {
+            role: 'user',
+            content: [documentBlock, { type: 'text', text: userText }],
+          },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return { ok: false, answer: '', error: `Claude PDF Q&A failed: ${res.status} ${body.slice(0, 300)}` };
+    }
+    const data = await res.json();
+    const answer = (data.content?.[0]?.text ?? '').trim();
+    if (!answer) return { ok: false, answer: '', error: 'empty model response' };
+    return { ok: true, answer };
+  } catch (err: any) {
+    return { ok: false, answer: '', error: err?.message ?? String(err) };
+  }
+}
+
 export async function analyzeDocxDocument(input: {
   bytes: Uint8Array;
   hintFilename?: string;
