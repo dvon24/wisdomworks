@@ -648,7 +648,7 @@ export async function generateIrisReply(
     // ships original draft on failure.
     // ───────────────────────────────────────────────────────────────────────
     try {
-      const { critiqueResponse, buildRevisionInstruction } = await import('../../_lib/axis-critic');
+      const { critiqueResponse, buildRevisionInstruction, persistCritique } = await import('../../_lib/axis-critic');
       // Trim recent turns for the critic — last 3 user+assistant pairs.
       const histForCritic = (user.conversationHistory ?? [])
         .slice(-6)
@@ -661,6 +661,18 @@ export async function generateIrisReply(
         toolsUsedThisTurn: toolsUsed,
       });
       accumulate({ input_tokens: critique.tokens_in, output_tokens: critique.tokens_out } as any);
+      // Persist EVERY violation (high + medium + low) so the aggregation
+      // layer sees full signal, not just revision-triggering ones. Fire-
+      // and-forget — never blocks delivery.
+      const willRevise = !critique.passes && critique.violations.length > 0;
+      void persistCritique({
+        tenantPhone: user.phoneNumber,
+        surface: 'iris-chat',
+        critique,
+        sourceMessage: text,
+        draft: assistantMessage,
+        revisionAttempted: willRevise,
+      });
       if (critique.critic_error) {
         console.warn(`[iris-${surface}] Axis critic failed (non-blocking): ${critique.critic_error}`);
       } else if (!critique.passes) {

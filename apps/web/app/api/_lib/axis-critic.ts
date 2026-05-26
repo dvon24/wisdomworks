@@ -36,6 +36,8 @@
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const HAIKU_MODEL = 'claude-haiku-4-5-20251001';
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 export type CriticSurface = 'iris-chat' | 'agent-tick' | 'email-sift' | 'daily-briefing' | 'marketing-draft';
 
@@ -240,6 +242,64 @@ Audit the draft and return JSON.`;
     };
   } catch (err: any) {
     return { passes: true, violations: [], tokens_in, tokens_out, critic_error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * Persist every Axis violation to axis_critiques (fire-and-forget).
+ *
+ * This is the LEARNING-loop foundation: repeated violations of the
+ * same rule on the same tenant are evidence of a system-prompt or
+ * disposition gap, not a one-off slip. Aggregation queries surface
+ * those patterns to the owner ("Iris has buried questions 8x this
+ * week — want me to tighten the prompt?") OR to auto-promotion logic
+ * that lifts a recurring violation into a new disposition rule.
+ *
+ * Append-only. Never blocks delivery — even on persist failure, the
+ * audit + revision already happened by the time this runs.
+ */
+export async function persistCritique(args: {
+  tenantPhone: string;
+  surface: CriticSurface;
+  critique: CritiqueResult;
+  sourceMessage: string;
+  draft: string;
+  revisionAttempted: boolean;
+}): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  if (!args.critique.violations || args.critique.violations.length === 0) return;
+  const cleanPhone = args.tenantPhone.replace(/[\s\-+()]/g, '');
+  try {
+    const rows = args.critique.violations.map((v) => ({
+      tenant_phone: cleanPhone,
+      surface: args.surface,
+      rule: v.rule,
+      severity: v.severity,
+      evidence: v.evidence?.slice(0, 200) ?? null,
+      fix: v.fix?.slice(0, 300) ?? null,
+      source_message_preview: args.sourceMessage?.slice(0, 400) ?? null,
+      draft_preview: args.draft?.slice(0, 400) ?? null,
+      revision_attempted: args.revisionAttempted,
+      metadata: {
+        critic_tokens_in: args.critique.tokens_in,
+        critic_tokens_out: args.critique.tokens_out,
+        critic_model: HAIKU_MODEL,
+      },
+    }));
+    await fetch(`${SUPABASE_URL}/rest/v1/axis_critiques`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify(rows),
+    });
+  } catch (err) {
+    // Non-blocking; aggregation just won't see this hit. Log so we can
+    // notice if persist is silently broken.
+    console.warn('[axis-critic] persist failed:', err);
   }
 }
 

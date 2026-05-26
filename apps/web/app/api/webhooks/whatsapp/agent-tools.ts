@@ -2347,6 +2347,23 @@ const TOOL_SHOW_DISPOSITION_PROFILE: AnthropicTool = {
   input_schema: { type: 'object', properties: {} },
 };
 
+const TOOL_SHOW_AXIS_AUDIT_SUMMARY: AnthropicTool = {
+  name: 'show_axis_audit_summary',
+  description:
+    "Show the owner what Axis (the runtime quality auditor) has been catching in agent responses over the past N days. Returns counts per rule + severity + a few example evidences. Use when owner asks 'what's Axis catching', 'how is the audit going', 'what mistakes is Iris making', 'are the agents learning'. Helps the owner decide whether a recurring violation should become a permanent disposition rule (auto-promotion) or trigger a system-prompt tightening.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      days_back: { type: 'number', description: 'Default 7. Max 30.' },
+      surface: {
+        type: 'string',
+        description: "Optional filter — 'iris-chat', 'agent-tick', 'email-sift', 'daily-briefing', 'marketing-draft'. Omit for all surfaces.",
+      },
+    },
+  },
+  allowed_callers: PTC_READ_CALLERS,
+};
+
 const TOOL_FORGET_DISPOSITION_RULE: AnthropicTool = {
   name: 'forget_disposition_rule',
   description:
@@ -2783,6 +2800,7 @@ export function buildToolList(
   tools.push(TOOL_ANALYZE_EMAIL_ATTACHMENT);
   tools.push(TOOL_SHOW_EMAIL_ENGAGEMENT);
   tools.push(TOOL_SHOW_DISPOSITION_PROFILE);
+  tools.push(TOOL_SHOW_AXIS_AUDIT_SUMMARY);
   tools.push(TOOL_FORGET_DISPOSITION_RULE);
   tools.push(TOOL_RECALL_FROM_MEMORY);
   tools.push(TOOL_SHOW_EMAIL_INDEXING_PREFS);
@@ -8224,6 +8242,71 @@ export async function executeTool(
         }
         lines.push('', "Reply 'forget rule <id>' to dismiss any of them.");
         return { content: lines.join('\n'), success: true };
+      }
+
+      case 'show_axis_audit_summary': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const days = Math.max(1, Math.min(30, typeof call.input.days_back === 'number' ? call.input.days_back : 7));
+        const surfaceFilter = call.input.surface ? String(call.input.surface).trim().toLowerCase() : '';
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!supaUrl || !supaKey) return { content: 'Supabase not configured.', success: false };
+        try {
+          const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+          const surfaceQ = surfaceFilter ? `&surface=eq.${encodeURIComponent(surfaceFilter)}` : '';
+          const res = await fetch(
+            `${supaUrl}/rest/v1/axis_critiques?tenant_phone=eq.${cleanPhone}&created_at=gte.${since}${surfaceQ}&order=created_at.desc&limit=500&select=rule,severity,evidence,surface,created_at`,
+            { headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` } },
+          );
+          if (!res.ok) return { content: `Axis audit fetch failed: ${res.status}`, success: false };
+          const rows = (await res.json()) as Array<{ rule: string; severity: string; evidence: string | null; surface: string; created_at: string }>;
+          if (rows.length === 0) {
+            return {
+              content: `No Axis violations in the last ${days} day${days === 1 ? '' : 's'}${surfaceFilter ? ` on ${surfaceFilter}` : ''}. Either the agents are behaving or the audit hasn't seen enough traffic yet.`,
+              success: true,
+            };
+          }
+          // Aggregate by rule + severity.
+          type Bucket = { high: number; medium: number; low: number; examples: string[]; surfaces: Set<string> };
+          const byRule = new Map<string, Bucket>();
+          for (const r of rows) {
+            const sev = (r.severity ?? 'low') as 'high' | 'medium' | 'low';
+            const b = byRule.get(r.rule) ?? { high: 0, medium: 0, low: 0, examples: [], surfaces: new Set<string>() };
+            b[sev] += 1;
+            b.surfaces.add(r.surface);
+            if (b.examples.length < 2 && r.evidence) b.examples.push(r.evidence.slice(0, 120));
+            byRule.set(r.rule, b);
+          }
+          // Sort by total severity weight (high=3, med=2, low=1).
+          const ranked = Array.from(byRule.entries()).sort(
+            (a, b) =>
+              b[1].high * 3 + b[1].medium * 2 + b[1].low - (a[1].high * 3 + a[1].medium * 2 + a[1].low),
+          );
+          const lines: string[] = [
+            `📋 Axis audit summary — last ${days} day${days === 1 ? '' : 's'}${surfaceFilter ? ` (${surfaceFilter})` : ''}: ${rows.length} total violation${rows.length === 1 ? '' : 's'} across ${ranked.length} rule${ranked.length === 1 ? '' : 's'}`,
+            '',
+          ];
+          for (const [rule, b] of ranked.slice(0, 10)) {
+            const sevBits: string[] = [];
+            if (b.high) sevBits.push(`${b.high} high`);
+            if (b.medium) sevBits.push(`${b.medium} med`);
+            if (b.low) sevBits.push(`${b.low} low`);
+            const surfaceBit = b.surfaces.size > 1 ? ` · ${Array.from(b.surfaces).join('/')}` : '';
+            lines.push(`  • ${rule} — ${sevBits.join(' / ')}${surfaceBit}`);
+            for (const ex of b.examples) lines.push(`      e.g. "${ex}"`);
+          }
+          // Hint when a rule fires HIGH 5+ times in window — that's the
+          // promotion-candidate signal for the owner to act on.
+          const promoCandidates = ranked.filter(([_, b]) => b.high >= 5).map(([rule]) => rule);
+          if (promoCandidates.length > 0) {
+            lines.push('');
+            lines.push(`⚡ Promotion candidates (5+ HIGH violations): ${promoCandidates.join(', ')}. Worth tightening the system prompt or adding a disposition rule.`);
+          }
+          return { content: lines.join('\n'), success: true };
+        } catch (err: any) {
+          return { content: `Axis audit summary failed: ${err?.message ?? String(err)}`, success: false };
+        }
       }
 
       case 'forget_disposition_rule': {
