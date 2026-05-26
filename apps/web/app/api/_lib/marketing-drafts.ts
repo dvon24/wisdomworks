@@ -466,8 +466,21 @@ async function generateDraftConcepts(tenantPhone: string): Promise<ConceptSeed[]
   const voiceBlock = approvedCaptions.length > 0
     ? `\n\nOWNER'S VOICE (recent approved captions — match this tone exactly):\n${approvedCaptions.map((c, i) => `Example ${i + 1}: "${c}"`).join('\n')}`
     : '';
+  // 2026-05-25 — disposition propagation. Marketing drafts get
+  // approved/dismissed by the owner; corrections like "stop using
+  // exclamation points", "tone is too hype", "never propose
+  // discount/sale content" must apply here too. Without this, the
+  // marketing loop keeps generating drafts that the owner already
+  // taught Iris to avoid.
+  let dispositionBlock = '';
+  try {
+    const { buildDispositionContext } = await import('./disposition-mining');
+    dispositionBlock = await buildDispositionContext(cleanPhone, { lane: 'marketing', limit: 10 });
+  } catch (err) {
+    console.warn('[marketing-drafts] disposition fetch failed (non-blocking):', err);
+  }
 
-  const system = `You are the marketing strategist for ${businessName} (${vertical}). Propose 1-2 short-form video concepts (Instagram Reel, 5-8s) that the owner could publish this week. Each concept must be grounded in something concrete about the business — current promotions, recent reviews, services they offer, seasonal context. Avoid generic "engagement bait."${voiceBlock}
+  const system = `You are the marketing strategist for ${businessName} (${vertical}). Propose 1-2 short-form video concepts (Instagram Reel, 5-8s) that the owner could publish this week. Each concept must be grounded in something concrete about the business — current promotions, recent reviews, services they offer, seasonal context. Avoid generic "engagement bait."${voiceBlock}${dispositionBlock}
 
 Output STRICT JSON:
 {

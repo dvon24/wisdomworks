@@ -160,6 +160,18 @@ export async function draftFollowup(args: {
 
   const profile = await getVoiceProfile(args.tenantPhone);
   const voiceBlock = renderVoiceForDraft(profile);
+  // 2026-05-25 — disposition propagation. Follow-up drafts go out to
+  // real humans; tone/phrasing corrections from chat MUST apply here
+  // too (e.g. "stop signing off with 'Cheers'", "don't be so apologetic
+  // in follow-ups"). Without this, drafts violate corrections Iris
+  // already learned.
+  let dispositionBlock = '';
+  try {
+    const { buildDispositionContext } = await import('./disposition-mining');
+    dispositionBlock = await buildDispositionContext(args.tenantPhone, { lane: 'email-followup', limit: 8 });
+  } catch (err) {
+    console.warn('[email-followup] disposition fetch failed (non-blocking):', err);
+  }
 
   const subject = /^re:\s/i.test(args.originalSubject) ? args.originalSubject : `Re: ${args.originalSubject}`;
 
@@ -172,7 +184,7 @@ Rules:
 - End with a clear ask or next step that's easy to respond to.
 - Match the OWNER VOICE PROFILE precisely — if they're casual, be casual; if formal, formal.
 - No greeting/sign-off scaffolding (the SMTP layer adds those). Just the body.
-- Return ONLY the email body. No preamble, no "Subject:" line.${voiceBlock}`;
+- Return ONLY the email body. No preamble, no "Subject:" line.${voiceBlock}${dispositionBlock}`;
 
   const userMsg = `Recipient: ${args.recipientName ? `${args.recipientName} <${args.recipientAddress}>` : args.recipientAddress}
 Original subject: ${args.originalSubject}

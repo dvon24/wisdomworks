@@ -423,6 +423,20 @@ async function classifyAndDraft(emails: EmailMessage[], tenantPhone?: string): P
   // and away from spam, even when subject lines look promotional.
   const trustedContacts = tenantPhone ? await getTopContacts(tenantPhone, 30) : [];
   const trustBlock = renderTrustedContactsForClassifier(trustedContacts);
+  // 2026-05-25 — disposition propagation. Email-sift produces drafts
+  // and classifications the owner sees; it MUST respect owner corrections
+  // ("stop drafting replies to X", "always treat Y as spam", "this tone
+  // is too formal"). Without this, the cron happily violates rules Iris
+  // already learned in chat, breaking trust.
+  let dispositionBlock = '';
+  if (tenantPhone) {
+    try {
+      const { buildDispositionContext } = await import('../../_lib/disposition-mining');
+      dispositionBlock = await buildDispositionContext(tenantPhone, { lane: 'email-sift', limit: 10 });
+    } catch (err) {
+      console.warn('[email-sift] disposition fetch failed (non-blocking):', err);
+    }
+  }
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return emails.map((e) => ruleResults.get(e.id) ?? ({
@@ -508,7 +522,7 @@ LANE ROUTING (which agent handles this on the tenant's team):
 - orchestrator: anything addressed personally to the owner that needs their attention (most personal-tinged business mail)
 - specialist: anything else / vertical-specific that doesn't fit cleanly above
 
-For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's eyes only).${profContext}${engagementContext}${trustBlock}`,
+For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's eyes only).${profContext}${engagementContext}${trustBlock}${dispositionBlock}`,
             cache_control: { type: 'ephemeral' },
           },
         ],
