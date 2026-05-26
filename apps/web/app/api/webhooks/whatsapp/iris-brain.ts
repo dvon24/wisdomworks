@@ -628,6 +628,82 @@ export async function generateIrisReply(
     }
 
     // ───────────────────────────────────────────────────────────────────────
+    // AXIS RUNTIME CRITIC — Generator-Critic loop
+    //
+    // Anthropic Constitutional AI pattern. Haiku 4.5 reads the draft +
+    // owner's last message + last 3 turns + tools-used + per-surface
+    // rule sheet, returns structured JSON identifying any violations.
+    // On HIGH violations, force ONE revision pass with critique as
+    // additional system context (NOT injected as user message — preserves
+    // trust boundary).
+    //
+    // Replaces the regex-gate primary defense with bounded language
+    // understanding. Regex gates above stay as cheap pre-filters. The
+    // critic catches every novel failure shape they miss — the Au7o
+    // Traffic recital, the Anthropic charges repetition, the bare
+    // "✓ Saved" fake, the buried owner question.
+    //
+    // Cost: ~$0.001-0.003 per audited reply + ~1-2s latency. Skipped
+    // for short acks. Critic failure (network/parse) is non-blocking —
+    // ships original draft on failure.
+    // ───────────────────────────────────────────────────────────────────────
+    try {
+      const { critiqueResponse, buildRevisionInstruction } = await import('../../_lib/axis-critic');
+      // Trim recent turns for the critic — last 3 user+assistant pairs.
+      const histForCritic = (user.conversationHistory ?? [])
+        .slice(-6)
+        .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content ?? '' }));
+      const critique = await critiqueResponse({
+        surface: 'iris-chat',
+        ownerMessage: text,
+        draft: assistantMessage,
+        recentTurns: histForCritic,
+        toolsUsedThisTurn: toolsUsed,
+      });
+      accumulate({ input_tokens: critique.tokens_in, output_tokens: critique.tokens_out } as any);
+      if (critique.critic_error) {
+        console.warn(`[iris-${surface}] Axis critic failed (non-blocking): ${critique.critic_error}`);
+      } else if (!critique.passes) {
+        const highCount = critique.violations.filter((v) => v.severity === 'high').length;
+        console.warn(`[iris-${surface}] Axis flagged ${critique.violations.length} violation(s) (${highCount} high): ${JSON.stringify(critique.violations.map((v) => `${v.severity}:${v.rule}`))}`);
+        // ONE revision pass — append critique as additional system
+        // prompt content. NOT a fake user message (preserves trust
+        // boundary). The model sees its own previous reply in messages
+        // and the audit feedback in system, then rewrites.
+        const revisionAddendum = buildRevisionInstruction(critique);
+        const revisedSystem = `${systemPrompt}${revisionAddendum}`;
+        // The conversation already has the draft as the most recent
+        // assistant message in iris-brain's loop. Push it explicitly
+        // here so the model sees what to revise.
+        const revisionMessages = [...messages];
+        // The final assistant message from the loop may already be in
+        // `messages` (pushed during tool_use iterations). If the LAST
+        // entry is the user's tool_results, we need to append the
+        // draft so the model has something to revise. Otherwise the
+        // assistant content is already there.
+        const lastMsg = revisionMessages[revisionMessages.length - 1];
+        if (!lastMsg || lastMsg.role !== 'assistant') {
+          revisionMessages.push({ role: 'assistant', content: assistantMessage });
+        }
+        // No tools on revision — the model already gathered evidence;
+        // we want a clean rewrite, not more tool calls.
+        const retryResp = await callAnthropic(apiKey, revisedSystem, revisionMessages, [], effort, containerId);
+        accumulate(retryResp.usage);
+        const retryTextBlock = retryResp.content.find((b: any) => b.type === 'text');
+        if (retryTextBlock?.text && retryTextBlock.text.trim().length > 0) {
+          console.log(`[iris-${surface}] Axis revision: original "${assistantMessage.slice(0, 80)}..." → revised "${retryTextBlock.text.slice(0, 80)}..."`);
+          assistantMessage = retryTextBlock.text;
+          textBlock = retryTextBlock;
+        }
+      } else if (critique.violations.length > 0) {
+        // Medium/low only — log for tuning, don't revise.
+        console.log(`[iris-${surface}] Axis passed with ${critique.violations.length} low/medium note(s).`);
+      }
+    } catch (err: any) {
+      console.warn(`[iris-${surface}] Axis critic exception (non-blocking): ${err?.message ?? String(err)}`);
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
     // CODE-GENERATED STATE-CHANGE CONFIRMATIONS
     //
     // For any persisting tool that fired AND populated owner_confirmation,
