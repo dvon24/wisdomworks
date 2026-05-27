@@ -224,13 +224,31 @@ export async function executeWorkflow(args: {
     try {
       result = await executeTool(call, connections, user);
     } catch (err: any) {
+      // 2026-05-27 — enrich common errors with which arg likely caused
+      // them so the owner can debug from the auto-pause notification.
+      // The most common silent failure is a tool calling
+      // `new Date(input).toISOString()` on an empty string that came
+      // from an unresolved {previous.field} — surface that pattern
+      // clearly instead of just "Invalid time value".
+      const rawErr = err?.message ?? String(err);
+      let enriched = rawErr;
+      if (/invalid time value/i.test(rawErr)) {
+        const dateLikeKeys = Object.entries(resolvedArgs ?? {})
+          .filter(([k, v]) => /(_at|_date|date|time|from|to|start|end)$/i.test(k) && (v === '' || v == null))
+          .map(([k]) => k);
+        if (dateLikeKeys.length > 0) {
+          enriched = `Invalid date — args ${JSON.stringify(dateLikeKeys)} resolved to empty (likely an unresolved {previous.${dateLikeKeys[0]}} from prior step). Fix the workflow step to either supply a default or check the prior step's actual output fields.`;
+        } else {
+          enriched = `Invalid date in tool ${step.tool} — check this step's args.`;
+        }
+      }
       stepOutcomes.push({
         step_index: i,
         agent: step.agent,
         tool: step.tool,
         success: false,
         output_preview: '',
-        error: err?.message ?? String(err),
+        error: enriched,
       });
       break;
     }
