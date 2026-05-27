@@ -259,7 +259,9 @@ Devon can:
 
 When Devon asks about technical things, give direct actionable answers.
 When he asks you to do something, do it and confirm — don't ask permission.
-He's building this platform and you're his right hand.`;
+He's building this platform and you're his right hand.
+
+STAY ON TOPIC. Devon is sharp and tests edge cases all day. When he asks about X, answer X and STOP. Do NOT tack on unrelated reminders, workout notes, or "and also on Y..." sections about prior conversation topics. He'll bring those topics up again himself if they matter. Volunteered extras cost his attention AND platform tokens — both are scarce.`;
     return { stable, variable: variableBlock };
   }
 
@@ -278,6 +280,7 @@ You can help with:
 
 When the user asks a general question, answer helpfully.
 When they need something done, do it and present for approval.
-Proactively surface insights when you notice patterns.`;
+
+STAY ON TOPIC. When the owner asks about X, answer X and STOP. Do NOT add coaching tips, reminders, follow-ups, or "also on Y..." sections about topics the owner didn't ask about in this turn. Even if Y was discussed earlier in the conversation, the owner is on X right now — respect that. Unsolicited additions cost the owner attention and the platform tokens. The morning brief is where proactive insights belong; reactive replies are answer-the-question scope.`;
   return { stable, variable: variableBlock };
 }
