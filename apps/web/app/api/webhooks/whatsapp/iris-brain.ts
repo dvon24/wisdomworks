@@ -16,7 +16,7 @@ import {
   saveUserContext,
   type UserContext,
 } from './context-store';
-import { buildSystemPrompt } from './system-prompt';
+import { buildSystemPromptParts } from './system-prompt';
 import { buildToolList, executeTool, type ToolCall } from './agent-tools';
 import { recordChatRun } from '../../_lib/chat-cost-tracker';
 
@@ -67,7 +67,7 @@ const EFFORT_BY_SURFACE: Record<'whatsapp' | 'deck' | 'telegram' | 'sms' | 'imes
 
 async function callAnthropic(
   apiKey: string,
-  systemPrompt: string,
+  systemParts: { stable: string; variable: string },
   messages: any[],
   tools: any[],
   effort: EffortLevel,
@@ -75,12 +75,21 @@ async function callAnthropic(
 ): Promise<any> {
   // Prompt caching strategy (3 of the 4 available breakpoints):
   //   1. tools[-1].cache_control — caches the tool definitions (stable per tenant)
-  //   2. system[0].cache_control — caches tools + system prompt prefix
-  //   3. top-level cache_control — automatic caching moves the breakpoint to the
-  //      last message each request, so the growing conversation tail (multi-iter
-  //      tool loops + multi-turn history) reads from cache on subsequent calls.
-  // Hierarchy is tools → system → messages, so each breakpoint covers the
-  // prior layers transitively. Cache reads are 10% of base; writes are 125%.
+  //   2. system[0].cache_control on STABLE block — caches tools + persona +
+  //      ABOUT YOU + THE USER + CONNECTED SERVICES + TEAM + ONE RULE +
+  //      OPERATING PRINCIPLES + INTERACTION CONTRACTS + BEHAVIOR + mode tail.
+  //      This is most of the system prompt by token volume and stays
+  //      stable for the cache TTL.
+  //   3. system[1] = VARIABLE block (date, message count) — UNCACHED.
+  //      Small, changes every turn anyway; cheaper to send fresh than to
+  //      hash-invalidate the whole prefix.
+  //   4. top-level cache_control — automatic caching moves the breakpoint
+  //      to the last message each request, so the growing conversation
+  //      tail reads from cache on subsequent calls.
+  //
+  // The 2026-05-27 split fixes the cache miss every turn caused by
+  // baking nowInTenantTz into the single system block: every minute
+  // the hash differed, so writes accumulated but reads never hit.
   //
   // Thinking: adaptive mode lets Claude decide whether/how much to think
   // per request. On Sonnet 4.6 this also auto-enables interleaved thinking
@@ -94,7 +103,8 @@ async function callAnthropic(
     output_config: { effort },
     cache_control: { type: 'ephemeral' },
     system: [
-      { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: systemParts.stable, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: systemParts.variable },
     ],
     messages,
   };
@@ -204,10 +214,18 @@ export async function generateIrisReply(
   // the operating manual auto-mined from past interactions. Renders
   // into every Iris turn so corrections / preferences / triggers carry
   // forward without re-relearning.
-  const baseSystemPrompt = buildSystemPrompt(user, connections);
+  const baseSystemParts = buildSystemPromptParts(user, connections);
   const { buildDispositionContext } = await import('../../_lib/disposition-mining');
   const dispositionBlock = await buildDispositionContext(user.phoneNumber, { limit: 12 });
-  const systemPrompt = baseSystemPrompt + dispositionBlock;
+  // Disposition rules are semi-stable (change when async miner extracts
+  // a new rule) — append to the variable block so the stable cache prefix
+  // stays valid even when a new rule is mined mid-conversation. Tradeoff:
+  // dispositions don't get cached, but they're small (~200-500 tokens)
+  // and stable-block cache hits matter way more.
+  const systemParts = {
+    stable: baseSystemParts.stable,
+    variable: baseSystemParts.variable + dispositionBlock,
+  };
 
   // Accumulate token + tool usage across every Anthropic round-trip in the loop.
   // Per Anthropic's response schema:
@@ -252,7 +270,7 @@ export async function generateIrisReply(
 
   try {
     let iteration = 0;
-    let response = await callAnthropic(apiKey, systemPrompt, messages, tools, effort, containerId);
+    let response = await callAnthropic(apiKey, systemParts, messages, tools, effort, containerId);
     accumulate(response.usage);
     if (response.container?.id) containerId = response.container.id;
 
@@ -282,7 +300,7 @@ export async function generateIrisReply(
         });
       }
       messages.push({ role: 'user', content: toolResults });
-      response = await callAnthropic(apiKey, systemPrompt, messages, tools, effort, containerId);
+      response = await callAnthropic(apiKey, systemParts, messages, tools, effort, containerId);
       accumulate(response.usage);
       if (response.container?.id) containerId = response.container.id;
     }
@@ -296,7 +314,7 @@ export async function generateIrisReply(
         role: 'user',
         content: 'Summarize what you just did in one or two short sentences for the user. No more tool calls.',
       });
-      response = await callAnthropic(apiKey, systemPrompt, messages, [], effort);
+      response = await callAnthropic(apiKey, systemParts, messages, [], effort);
       accumulate(response.usage);
     }
 
@@ -611,7 +629,7 @@ export async function generateIrisReply(
         role: 'user',
         content: `SYSTEM CORRECTION — your previous response claimed an ongoing/recurring behavior would happen "going forward" without calling a tool that persists it. Specifically these phrases triggered the fabrication guard: ${JSON.stringify(fabricationHits)}. The tools you called this turn (${JSON.stringify(toolsUsed)}) do NOT make any future behavior happen.\n\nRewrite your response. If the owner asked for a recurring action, you have exactly two honest options:\n1. Call create_workflow NOW (in this turn) to actually schedule the recurring action, then describe what you persisted (referencing the user_workflows row).\n2. Explain honestly that you can't modify the hardcoded morning brief, and offer to create a SEPARATE workflow that fires at a similar time. Phrase it as a proposal ("Want me to set up a daily 'X' workflow?"), NOT as a done deal.\n\nDo NOT use phrases like "going forward," "every morning brief will," "locked in," "from here on," "starting tomorrow your brief will include," "baked into," or "now include" unless you can point to a tool call you made this turn that creates the row that makes it true. Retry the response.`,
       });
-      const retryResp = await callAnthropic(apiKey, systemPrompt, messages, [], effort);
+      const retryResp = await callAnthropic(apiKey, systemParts, messages, [], effort);
       accumulate(retryResp.usage);
       const retryTextBlock = retryResp.content.find((b: any) => b.type === 'text');
       if (retryTextBlock?.text) {
@@ -684,7 +702,12 @@ export async function generateIrisReply(
         // boundary). The model sees its own previous reply in messages
         // and the audit feedback in system, then rewrites.
         const revisionAddendum = buildRevisionInstruction(critique);
-        const revisedSystem = `${systemPrompt}${revisionAddendum}`;
+        // Revision: append the audit feedback to the stable block so it
+        // travels with the cached prefix. Variable block stays as-is.
+        const revisedSystemParts = {
+          stable: systemParts.stable + revisionAddendum,
+          variable: systemParts.variable,
+        };
         // The conversation already has the draft as the most recent
         // assistant message in iris-brain's loop. Push it explicitly
         // here so the model sees what to revise.
@@ -700,7 +723,7 @@ export async function generateIrisReply(
         }
         // No tools on revision — the model already gathered evidence;
         // we want a clean rewrite, not more tool calls.
-        const retryResp = await callAnthropic(apiKey, revisedSystem, revisionMessages, [], effort, containerId);
+        const retryResp = await callAnthropic(apiKey, revisedSystemParts, revisionMessages, [], effort, containerId);
         accumulate(retryResp.usage);
         const retryTextBlock = retryResp.content.find((b: any) => b.type === 'text');
         if (retryTextBlock?.text && retryTextBlock.text.trim().length > 0) {
