@@ -234,7 +234,47 @@ export async function GET(request: Request) {
       if (execResult.outcome === 'success' && lastOk?.output_preview) {
         // Real content to deliver. NO plumbing prefix — owner wants
         // the workout/briefing/recommendation, not "✓ workflow_name —".
-        await enqueueWorkflowContent(wf.tenant_phone, lastOk.output_preview);
+        // ──────────────────────────────────────────────────────────────
+        // AXIS AUDIT — workflow content surface
+        // 2026-05-27 — workflow-generated content (Coach's workout,
+        // Marcus's briefing, etc.) goes through the same Generator-
+        // Critic loop as iris-chat replies. Catches the case where a
+        // workflow's tool output violates a disposition rule (e.g.
+        // Coach recommending heavy chest the week the owner explicitly
+        // told us to stay light). Persists hits to axis_critiques for
+        // the learning loop. Non-blocking — ships original on critic
+        // failure.
+        // ──────────────────────────────────────────────────────────────
+        let auditedContent = lastOk.output_preview;
+        try {
+          const { critiqueResponse, persistCritique } = await import('../../_lib/axis-critic');
+          const critique = await critiqueResponse({
+            surface: 'iris-chat', // Reuse iris-chat rule sheet — workflow
+            // content goes to the owner the same way Iris does. Workflow-
+            // specific rule sheet can be added later if patterns diverge.
+            ownerMessage: `Workflow "${wf.name}" content (proactive cron — no specific owner question this turn).`,
+            draft: lastOk.output_preview,
+            recentTurns: [],
+            toolsUsedThisTurn: execResult.step_outcomes.map((o: any) => o.tool).filter(Boolean),
+          });
+          void persistCritique({
+            tenantPhone: wf.tenant_phone,
+            surface: 'iris-chat',
+            critique,
+            sourceMessage: `workflow:${wf.name}`,
+            draft: lastOk.output_preview,
+            revisionAttempted: false, // Workflow content revision needs
+            // re-running the underlying tool — too expensive for
+            // surface gain. Log + ship + tune the workflow's prompt.
+          });
+          if (!critique.passes) {
+            const highCount = critique.violations.filter((v: any) => v.severity === 'high').length;
+            console.warn(`[workflow-dispatcher] Axis flagged ${critique.violations.length} (${highCount} high) on ${wf.name}: ${JSON.stringify(critique.violations.map((v: any) => `${v.severity}:${v.rule}`))}`);
+          }
+        } catch (err: any) {
+          console.warn(`[workflow-dispatcher] Axis audit failed (non-blocking): ${err?.message ?? String(err)}`);
+        }
+        await enqueueWorkflowContent(wf.tenant_phone, auditedContent);
       } else if (isFailure && newFailureCount === AUTO_PAUSE_FAILURE_THRESHOLD) {
         // First time hitting the threshold — pause + send single notice.
         await autoPauseWorkflow(wf.id, execResult.error ?? execResult.step_outcomes[0]?.error ?? 'unknown');

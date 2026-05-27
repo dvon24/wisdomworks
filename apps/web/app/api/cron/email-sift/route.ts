@@ -583,6 +583,53 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
       });
     });
 
+    // ──────────────────────────────────────────────────────────────────
+    // AXIS AUDIT — email-sift draft replies
+    // 2026-05-27 — audit each LLM-generated draft reply against the
+    // owner's disposition rules. Drafts are owner-reviewed before
+    // sending so we don't MODIFY them — we just persist violations to
+    // axis_critiques so patterns surface in show_axis_audit_summary
+    // ("Iris drafted 8 apologetic openings this week" → owner can tune
+    // the classifier prompt). Fire-and-forget per-draft; never blocks
+    // classification. Skipped when tenantPhone is unset (test paths).
+    // ──────────────────────────────────────────────────────────────────
+    if (tenantPhone) {
+      void (async () => {
+        try {
+          const { critiqueResponse, persistCritique } = await import('../../_lib/axis-critic');
+          const auditTasks = Array.from(llmVerdicts.entries())
+            .filter(([_, v]) => v.draftReply && v.draftReply.length > 60)
+            .map(async ([emailId, v]) => {
+              const sourceEmail = remaining.find((e) => e.id === emailId);
+              if (!sourceEmail) return;
+              const subjectLine = `Email from ${sourceEmail.fromName ?? sourceEmail.from}: ${sourceEmail.subject}`;
+              const critique = await critiqueResponse({
+                surface: 'email-sift',
+                ownerMessage: subjectLine,
+                draft: v.draftReply!,
+                recentTurns: [],
+                toolsUsedThisTurn: [],
+              });
+              await persistCritique({
+                tenantPhone,
+                surface: 'email-sift',
+                critique,
+                sourceMessage: subjectLine,
+                draft: v.draftReply!,
+                revisionAttempted: false,
+              });
+              if (!critique.passes) {
+                const highCount = critique.violations.filter((vv: any) => vv.severity === 'high').length;
+                console.warn(`[email-sift] Axis flagged ${critique.violations.length} (${highCount} high) on draft for ${sourceEmail.from}: ${JSON.stringify(critique.violations.map((vv: any) => `${vv.severity}:${vv.rule}`))}`);
+              }
+            });
+          await Promise.allSettled(auditTasks);
+        } catch (err: any) {
+          console.warn(`[email-sift] Axis audit batch failed (non-blocking): ${err?.message ?? String(err)}`);
+        }
+      })();
+    }
+
     // Stitch rule-matched + LLM-classified back into original input order.
     return emails.map((e) => ruleResults.get(e.id) ?? llmVerdicts.get(e.id)!);
   } catch (error) {

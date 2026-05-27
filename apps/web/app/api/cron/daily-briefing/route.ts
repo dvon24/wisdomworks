@@ -60,7 +60,72 @@ export async function GET(request: Request) {
           }
         }
 
-        await sendWhatsApp(user.phone_number, combined);
+        // ──────────────────────────────────────────────────────────────
+        // AXIS AUDIT — daily-briefing surface
+        // 2026-05-27 — same Generator-Critic pattern as iris-chat. Catches
+        // cron-attribution violations ("Mira flagged"), unprompted topic
+        // resurrections, fake confirmations. Persists every hit to
+        // axis_critiques for the learning loop. Non-blocking — on critic
+        // failure, the briefing ships as-is.
+        // ──────────────────────────────────────────────────────────────
+        let auditedBriefing = combined;
+        try {
+          const { critiqueResponse, buildRevisionInstruction, persistCritique } = await import('../../_lib/axis-critic');
+          const critique = await critiqueResponse({
+            surface: 'daily-briefing',
+            // Daily briefings aren't owner-prompted — the "ask" is the
+            // implicit one of "tell me what I need to know this morning."
+            ownerMessage: 'Generate the morning briefing for the user (proactive cron — no specific question).',
+            draft: combined,
+            recentTurns: [],
+            toolsUsedThisTurn: [],
+          });
+          void persistCritique({
+            tenantPhone: user.phone_number,
+            surface: 'daily-briefing',
+            critique,
+            sourceMessage: 'morning-briefing-cron',
+            draft: combined,
+            revisionAttempted: !critique.passes,
+          });
+          if (!critique.passes && critique.violations.length > 0) {
+            const highCount = critique.violations.filter((v: any) => v.severity === 'high').length;
+            console.warn(`[daily-briefing] Axis flagged ${critique.violations.length} (${highCount} high) for ${user.phone_number}: ${JSON.stringify(critique.violations.map((v: any) => `${v.severity}:${v.rule}`))}`);
+            if (highCount > 0) {
+              // ONE revision pass — re-call Anthropic with critique
+              // injected as additional system context. Skip if we can't
+              // get an apiKey (failure mode handled by catch below).
+              const apiKey = process.env.ANTHROPIC_API_KEY;
+              if (apiKey) {
+                const revisionAddendum = buildRevisionInstruction(critique);
+                const revRes = await fetch('https://api.anthropic.com/v1/messages', {
+                  method: 'POST',
+                  headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    model: 'claude-sonnet-4-6',
+                    max_tokens: 400,
+                    system: [{ type: 'text', text: `You are revising a morning briefing draft that failed Axis's quality audit. Output ONLY the revised briefing text — no preamble, no meta-comments.${revisionAddendum}` }],
+                    messages: [
+                      { role: 'user', content: `Original draft:\n\n${combined}\n\nProduce the revised briefing now.` },
+                    ],
+                  }),
+                });
+                if (revRes.ok) {
+                  const revData = await revRes.json();
+                  const revText = revData.content?.[0]?.text;
+                  if (revText && revText.trim().length > 30) {
+                    auditedBriefing = revText.trim();
+                    console.log(`[daily-briefing] Axis revision applied for ${user.phone_number}`);
+                  }
+                }
+              }
+            }
+          }
+        } catch (err: any) {
+          console.warn(`[daily-briefing] Axis audit failed (non-blocking): ${err?.message ?? String(err)}`);
+        }
+
+        await sendWhatsApp(user.phone_number, auditedBriefing);
         if (deliveredIds.length > 0) {
           await markDelivered(deliveredIds);
         }

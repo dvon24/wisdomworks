@@ -98,7 +98,42 @@ export async function GET(request: Request) {
       });
       if (!synth.hasSignal) { noSignal++; continue; }
 
-      const messageId = await sendWhatsApp(tenantPhone, synth.message);
+      // ──────────────────────────────────────────────────────────────
+      // AXIS AUDIT — digest surface
+      // 2026-05-27 — same Generator-Critic loop as daily-briefing.
+      // Digests bundle queued notifications into one structured message
+      // — catches cron-attribution violations, fake confirmations, and
+      // any disposition-rule violations in the bundled prose. Persists
+      // hits to axis_critiques. Non-blocking. Uses daily-briefing rule
+      // sheet (same shape; can split later if patterns diverge).
+      // ──────────────────────────────────────────────────────────────
+      let auditedDigest = synth.message;
+      try {
+        const { critiqueResponse, persistCritique } = await import('../../_lib/axis-critic');
+        const critique = await critiqueResponse({
+          surface: 'daily-briefing',
+          ownerMessage: 'Generate the digest of queued notifications (proactive cron — no specific owner question).',
+          draft: synth.message,
+          recentTurns: [],
+          toolsUsedThisTurn: [],
+        });
+        void persistCritique({
+          tenantPhone,
+          surface: 'daily-briefing',
+          critique,
+          sourceMessage: 'digest-cron',
+          draft: synth.message,
+          revisionAttempted: false,
+        });
+        if (!critique.passes) {
+          const highCount = critique.violations.filter((v: any) => v.severity === 'high').length;
+          console.warn(`[digest] Axis flagged ${critique.violations.length} (${highCount} high) for ${tenantPhone}: ${JSON.stringify(critique.violations.map((v: any) => `${v.severity}:${v.rule}`))}`);
+        }
+      } catch (err: any) {
+        console.warn(`[digest] Axis audit failed (non-blocking): ${err?.message ?? String(err)}`);
+      }
+
+      const messageId = await sendWhatsApp(tenantPhone, auditedDigest);
       await markDelivered(synth.deliveredIds, messageId ?? undefined);
       sent++;
       console.log(`[digest] ${tenantPhone}: bundled ${items.length} item${items.length === 1 ? '' : 's'} into one message`);
