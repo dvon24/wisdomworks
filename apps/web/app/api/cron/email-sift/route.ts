@@ -538,6 +538,26 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
     if (!response.ok) throw new Error(`API error: ${response.status}`);
 
     const data = await response.json();
+    // 2026-05-27 — record classifier's Sonnet cost. Runs every 30 min
+    // when there are unread emails; was the largest untracked sink.
+    if (tenantPhone) {
+      void (async () => {
+        try {
+          const { recordLlmCall } = await import('../../_lib/chat-cost-tracker');
+          await recordLlmCall({
+            tenantPhone,
+            surface: 'email-sift',
+            model: 'claude-sonnet-4-6',
+            tokensIn: data.usage?.input_tokens ?? 0,
+            tokensOut: data.usage?.output_tokens ?? 0,
+            cachedTokensIn: data.usage?.cache_read_input_tokens ?? 0,
+            toolsUsed: [],
+          });
+        } catch (err) {
+          console.warn('[email-sift] cost record failed:', err);
+        }
+      })();
+    }
     const text = data.content?.[0]?.text ?? '[]';
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     const results: {
@@ -609,6 +629,7 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
                 draft: v.draftReply!,
                 recentTurns: [],
                 toolsUsedThisTurn: [],
+                tenantPhone,
               });
               await persistCritique({
                 tenantPhone,

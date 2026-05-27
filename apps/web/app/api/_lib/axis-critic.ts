@@ -79,6 +79,11 @@ export interface CritiqueInput {
   /** Set true to skip the critic entirely (e.g. fabrication-guard
    *  retry where we've already done one revision). */
   skip?: boolean;
+  /** Optional — when provided, the critic's Haiku call is recorded to
+   *  chat_runs via recordLlmCall so the command deck shows the cost.
+   *  Without this, Axis runs free of charge as far as the dashboard
+   *  knows, which is exactly the gap Devon flagged on 2026-05-27. */
+  tenantPhone?: string;
 }
 
 /**
@@ -212,6 +217,26 @@ Audit the draft and return JSON.`;
     const data = await res.json();
     tokens_in = data.usage?.input_tokens ?? 0;
     tokens_out = data.usage?.output_tokens ?? 0;
+    // 2026-05-27 — record critic's Haiku cost so it shows up in deck.
+    // Fire-and-forget; never blocks the audit result.
+    if (input.tenantPhone) {
+      void (async () => {
+        try {
+          const { recordLlmCall } = await import('./chat-cost-tracker');
+          await recordLlmCall({
+            tenantPhone: input.tenantPhone!,
+            surface: 'axis-critic',
+            model: HAIKU_MODEL,
+            tokensIn: tokens_in,
+            tokensOut: tokens_out,
+            cachedTokensIn: data.usage?.cache_read_input_tokens ?? 0,
+            toolsUsed: [],
+          });
+        } catch (err) {
+          console.warn('[axis-critic] cost record failed (non-blocking):', err);
+        }
+      })();
+    }
     const text = data.content?.[0]?.text ?? '';
     const jsonStart = text.indexOf('{');
     const jsonEnd = text.lastIndexOf('}');

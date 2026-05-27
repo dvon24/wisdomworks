@@ -659,6 +659,7 @@ export async function generateIrisReply(
         draft: assistantMessage,
         recentTurns: histForCritic,
         toolsUsedThisTurn: toolsUsed,
+        tenantPhone: user.phoneNumber,
       });
       accumulate({ input_tokens: critique.tokens_in, output_tokens: critique.tokens_out } as any);
       // Persist EVERY violation (high + medium + low) so the aggregation

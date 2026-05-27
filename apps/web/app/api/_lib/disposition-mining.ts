@@ -289,6 +289,24 @@ When in doubt, return []. False rules in the manual run forever; missed signals 
     }
     const data = await res.json();
     const text = data.content?.[0]?.text ?? '';
+    // 2026-05-27 — record extractor's Sonnet cost. Fires on every
+    // owner→Iris turn so this is one of the biggest untracked sinks.
+    void (async () => {
+      try {
+        const { recordLlmCall } = await import('./chat-cost-tracker');
+        await recordLlmCall({
+          tenantPhone: input.tenantPhone,
+          surface: 'disposition-mining',
+          model: 'claude-sonnet-4-6',
+          tokensIn: data.usage?.input_tokens ?? 0,
+          tokensOut: data.usage?.output_tokens ?? 0,
+          cachedTokensIn: data.usage?.cache_read_input_tokens ?? 0,
+          toolsUsed: [],
+        });
+      } catch (err) {
+        console.warn('[disposition-mine] cost record failed:', err);
+      }
+    })();
     const jsonStart = text.indexOf('{');
     const jsonEnd = text.lastIndexOf('}');
     if (jsonStart < 0 || jsonEnd < jsonStart) return [];

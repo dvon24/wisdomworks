@@ -116,6 +116,7 @@ export async function GET(request: Request) {
           draft: synth.message,
           recentTurns: [],
           toolsUsedThisTurn: [],
+          tenantPhone,
         });
         void persistCritique({
           tenantPhone,

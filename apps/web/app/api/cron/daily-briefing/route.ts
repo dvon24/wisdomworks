@@ -79,6 +79,7 @@ export async function GET(request: Request) {
             draft: combined,
             recentTurns: [],
             toolsUsedThisTurn: [],
+            tenantPhone: user.phone_number,
           });
           void persistCritique({
             tenantPhone: user.phone_number,
@@ -399,6 +400,23 @@ Rules:
     });
     if (!response.ok) throw new Error(`Anthropic ${response.status}`);
     const data = await response.json();
+    // 2026-05-27 — record briefing generator's Sonnet cost.
+    void (async () => {
+      try {
+        const { recordLlmCall } = await import('../../_lib/chat-cost-tracker');
+        await recordLlmCall({
+          tenantPhone: user.phone_number,
+          surface: 'daily-briefing',
+          model: 'claude-sonnet-4-6',
+          tokensIn: data.usage?.input_tokens ?? 0,
+          tokensOut: data.usage?.output_tokens ?? 0,
+          cachedTokensIn: data.usage?.cache_read_input_tokens ?? 0,
+          toolsUsed: [],
+        });
+      } catch (err) {
+        console.warn('[daily-briefing] cost record failed:', err);
+      }
+    })();
     return data.content?.[0]?.text ?? `Good morning ${user.name}! Quiet overnight. Anything for today?`;
   } catch (err) {
     console.error('[daily-briefing] generate failed:', err);

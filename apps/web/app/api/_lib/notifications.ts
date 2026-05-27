@@ -315,6 +315,26 @@ Rules:
     });
     if (!res.ok) return { hasSignal: true, message: fallback, deliveredIds };
     const data = await res.json();
+    // 2026-05-27 — record synth's Sonnet cost. Fires whenever the digest
+    // cron has queued notifications to bundle.
+    if (tenantPhone) {
+      void (async () => {
+        try {
+          const { recordLlmCall } = await import('./chat-cost-tracker');
+          await recordLlmCall({
+            tenantPhone,
+            surface: 'digest',
+            model: 'claude-sonnet-4-6',
+            tokensIn: data.usage?.input_tokens ?? 0,
+            tokensOut: data.usage?.output_tokens ?? 0,
+            cachedTokensIn: data.usage?.cache_read_input_tokens ?? 0,
+            toolsUsed: [],
+          });
+        } catch (err) {
+          console.warn('[notifications] cost record failed:', err);
+        }
+      })();
+    }
     const text = (data.content?.[0]?.text ?? '').trim();
     return { hasSignal: true, message: text || fallback, deliveredIds };
   } catch {

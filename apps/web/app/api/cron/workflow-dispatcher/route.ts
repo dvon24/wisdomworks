@@ -256,6 +256,7 @@ export async function GET(request: Request) {
             draft: lastOk.output_preview,
             recentTurns: [],
             toolsUsedThisTurn: execResult.step_outcomes.map((o: any) => o.tool).filter(Boolean),
+            tenantPhone: wf.tenant_phone,
           });
           void persistCritique({
             tenantPhone: wf.tenant_phone,
