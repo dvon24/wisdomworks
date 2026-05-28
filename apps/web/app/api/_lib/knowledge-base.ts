@@ -137,13 +137,24 @@ export async function ingestEntity(entity: OntologyEntity): Promise<number> {
     metadata: { ingested_at: new Date().toISOString() },
   }));
 
-  // Upsert by (source_kind, source_row_id, chunk_index) so re-ingesting
-  // the same source row overwrites cleanly without duplicating.
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/knowledge_chunks`, {
-    method: 'POST',
-    headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify(rows),
-  });
+  // Upsert by (tenant_phone, source_kind, source_row_id, chunk_index)
+  // so re-ingesting the same source row overwrites cleanly without
+  // duplicating.
+  //
+  // 2026-05-28 — PostgREST `merge-duplicates` requires the unique
+  // constraint columns specified via on_conflict=. Without it, the
+  // upsert falls back to PRIMARY KEY (id is gen_random_uuid, never
+  // matches) and crashes on the unique index. Devon's morning logs
+  // showed this 504'ing the knowledge-refresh cron and cascading
+  // to "agents failing" symptoms upstream.
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_chunks?on_conflict=tenant_phone,source_kind,source_row_id,chunk_index`,
+    {
+      method: 'POST',
+      headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(rows),
+    },
+  );
   if (!res.ok) {
     console.warn(`[kb] upsert failed for entity ${entity.id}: ${res.status} ${await res.text()}`);
     return 0;
@@ -207,11 +218,16 @@ async function ingestBehavioral(args: {
     metadata: { ingested_at: new Date().toISOString(), ...(args.metadata ?? {}) },
   }));
 
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/knowledge_chunks`, {
-    method: 'POST',
-    headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify(rows),
-  });
+  // 2026-05-28 — see ontology upsert comment above. Same PostgREST
+  // gotcha: merge-duplicates needs on_conflict= explicitly.
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/knowledge_chunks?on_conflict=tenant_phone,source_kind,source_row_id,chunk_index`,
+    {
+      method: 'POST',
+      headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(rows),
+    },
+  );
   if (!res.ok) {
     console.warn(`[kb-behavioral] upsert failed (${args.sourceKind} ${args.sourceRowId}): ${res.status} ${await res.text()}`);
     return 0;
