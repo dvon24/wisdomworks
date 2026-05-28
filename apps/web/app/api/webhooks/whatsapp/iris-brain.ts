@@ -727,9 +727,59 @@ export async function generateIrisReply(
         accumulate(retryResp.usage);
         const retryTextBlock = retryResp.content.find((b: any) => b.type === 'text');
         if (retryTextBlock?.text && retryTextBlock.text.trim().length > 0) {
-          console.log(`[iris-${surface}] Axis revision: original "${assistantMessage.slice(0, 80)}..." → revised "${retryTextBlock.text.slice(0, 80)}..."`);
-          assistantMessage = retryTextBlock.text;
-          textBlock = retryTextBlock;
+          // 2026-05-28 — RE-AUDIT the revision before shipping. Devon's
+          // 28-row axis_critiques sample showed the critic catching HIGH
+          // violations and triggering revision, but the OWNER still saw the
+          // bad output — meaning the revised draft was also bad. Re-running
+          // the critic on the revised text confirms whether the revision
+          // actually fixed the issue. If it did, ship the revision. If it
+          // didn't, ship the ORIGINAL with a strong log line (worse than
+          // doing nothing? probably not — at least the original was the
+          // model's first-instinct answer rather than a possibly more
+          // confused rewrite that's still flawed).
+          const revisedDraft = retryTextBlock.text;
+          let revisedCritique: typeof critique;
+          try {
+            revisedCritique = await critiqueResponse({
+              surface: 'iris-chat',
+              ownerMessage: text,
+              draft: revisedDraft,
+              recentTurns: histForCritic,
+              toolsUsedThisTurn: toolsUsed,
+              tenantPhone: user.phoneNumber,
+            });
+            // Persist the re-audit result so we can see in axis_critiques
+            // whether revisions are actually working (revision_attempted=false
+            // distinguishes these from primary audits).
+            void persistCritique({
+              tenantPhone: user.phoneNumber,
+              surface: 'iris-chat',
+              critique: revisedCritique,
+              sourceMessage: text,
+              draft: revisedDraft,
+              revisionAttempted: false,
+            });
+          } catch (err) {
+            // Re-audit failure → can't tell if revision is better, ship it
+            // anyway (it's still likely an improvement over the flagged draft).
+            console.warn(`[iris-${surface}] Axis re-audit failed (non-blocking): ${err}`);
+            revisedCritique = { passes: true, violations: [], tokens_in: 0, tokens_out: 0 };
+          }
+
+          const revisedHighCount = revisedCritique.violations.filter((v: any) => v.severity === 'high').length;
+          if (revisedHighCount === 0) {
+            console.log(`[iris-${surface}] Axis revision PASSED re-audit. original "${assistantMessage.slice(0, 80)}..." → revised "${revisedDraft.slice(0, 80)}..."`);
+            assistantMessage = revisedDraft;
+            textBlock = retryTextBlock;
+          } else {
+            // Revision still has HIGH violations. Ship the original — the
+            // first-instinct reply tends to be closer to what the model
+            // actually thinks; a rewrite under "you violated rules X/Y/Z"
+            // pressure can produce worse output (over-apologizing, getting
+            // confused about which rule to honor, etc.). Loud log so we
+            // can see how often this fails.
+            console.error(`[iris-${surface}] Axis REVISION FAILED re-audit: ${revisedHighCount} HIGH still present. Shipping ORIGINAL draft. Original violations: ${JSON.stringify(critique.violations.map((v: any) => v.rule))}. Revised violations: ${JSON.stringify(revisedCritique.violations.map((v: any) => v.rule))}`);
+          }
         }
       } else if (critique.violations.length > 0) {
         // Medium/low only — log for tuning, don't revise.

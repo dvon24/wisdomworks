@@ -225,7 +225,25 @@ export async function GET(request: Request) {
       // Failures, partial outcomes, and bare success-no-content all go to
       // logs. Repeated failures trigger auto-pause + single notification.
       // ──────────────────────────────────────────────────────────────────
-      const META_TOOLS = new Set(['remember_this', 'set_canonical_role', 'enable_mcp_server']);
+      // 2026-05-28 — added the recall_* + show_* tools after seeing axis_critiques
+      // rows 18-20: a coach-morning-workout workflow was surfacing recall_atoms
+      // output verbatim ("68 remembered (preference): ✓ [6c1d54f3] preference: ...")
+      // to the owner via WhatsApp. These tools produce internal IDs and meta-
+      // information meant for Iris's reasoning, not owner-facing prose. Workflows
+      // that need to USE this data should have a synthesis step after; raw recall
+      // output should never be the final owner-visible step.
+      const META_TOOLS = new Set([
+        'remember_this',
+        'set_canonical_role',
+        'enable_mcp_server',
+        'recall_atoms',
+        'recall_recent_documents',
+        'recall_behavioral_rag',
+        'show_disposition_profile',
+        'show_agent_sop',
+        'show_axis_audit_summary',
+        'list_agent_tool_requests',
+      ]);
       const lastOk = execResult.step_outcomes
         .slice()
         .reverse()

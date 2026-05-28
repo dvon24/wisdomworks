@@ -163,8 +163,11 @@ Return STRICT JSON: { "passes": bool, "violations": [{rule, severity, evidence, 
  */
 export async function critiqueResponse(input: CritiqueInput): Promise<CritiqueResult> {
   // Skip for tiny replies (acks, single-word confirmations) — critic
-  // adds latency + cost with no signal to gain.
-  if (input.skip || input.draft.trim().length < 50) {
+  // adds latency + cost with no signal to gain. 2026-05-28: lowered from
+  // 50 → 30 chars after seeing "Anytime! Holler when you're ready to dig
+  // into anything. 👊" (51 chars) escape the audit despite being textbook
+  // chitchat / self-commentary the new self_commentary rule should catch.
+  if (input.skip || input.draft.trim().length < 30) {
     return { passes: true, violations: [], tokens_in: 0, tokens_out: 0 };
   }
   if (!ANTHROPIC_API_KEY) {
