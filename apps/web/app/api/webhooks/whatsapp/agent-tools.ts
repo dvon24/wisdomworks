@@ -7639,9 +7639,17 @@ export async function executeTool(
         ].filter(Boolean).join('\n');
 
         // Mini tool loop — capped at 4 iterations for cost discipline.
+        // 2026-05-28 — first live delegation test (Devon's 7:50 PM
+        // workout request) failed with "claude-haiku-4-5-20251001
+        // doesn't support tool calling." The Haiku ID worked for the
+        // Axis critic (no tools, pure JSON output) but not for worker
+        // tool loops. Switching default to Sonnet 4.6 which we already
+        // run iris-chat on. Cost per delegation ~3-5x Haiku but at
+        // least the worker can actually call tools. Per-agent
+        // preferred_model still wins if set.
         const WORKER_MODEL = (targetAgent.preferred_model && typeof targetAgent.preferred_model === 'string')
           ? targetAgent.preferred_model
-          : 'claude-haiku-4-5-20251001';
+          : 'claude-sonnet-4-6';
         const MAX_WORKER_ITERATIONS = 4;
         const workerMessages: any[] = [{ role: 'user', content: task }];
         const workerToolsUsed: string[] = [];
