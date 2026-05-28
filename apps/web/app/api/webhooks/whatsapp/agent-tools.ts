@@ -2039,6 +2039,39 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
   },
 };
 
+// ─── Founder Agent delegation — FR165 / FR21 / FR22 / FR165 ─────────────
+//
+// The PRD's core architectural commitment: Iris is the Founder Agent,
+// the team is the workforce. When the owner asks for work that belongs
+// to another agent's domain, Iris DELEGATES — she doesn't do the work
+// herself. Coach generates workouts. Marcus pulls P&L. Mira does the
+// books. Iris orchestrates and PRESENTS the result with attribution.
+//
+// This is the primitive that turns the "team" from decorative UI into
+// actual collaborators. Without it the entire Founder Agent thesis
+// from the PRD ("AI-operated business — a category that doesn't yet
+// exist") is just rhetoric.
+
+const TOOL_DELEGATE_TO_AGENT: AnthropicTool = {
+  name: 'delegate_to_agent',
+  description:
+    "Hand a specific task to one of the user's named agents (Coach, Marcus, Mira, Riley, Alex, etc.) and get back their work product. THE FOUNDER AGENT PATTERN — when the owner asks for something that belongs in another agent's domain, you DELEGATE rather than doing it yourself. Workouts → Coach. P&L / financial summaries → Mira or Marcus. Scheduling → Riley. Code/repo work → Alex. The delegated agent runs with their own persona, persistent_facts, and role-scoped tools, returns their work to YOU, and you PRESENT it to the owner with attribution (\"Here's what Coach put together: ...\"). Examples: owner says \"what's my workout\" → delegate_to_agent(agentName: \"Coach\", task: \"Generate today's workout for Devon. Week 2 post-100k recovery. Today is Wednesday per his split — Back & Biceps.\"). Owner says \"draft a follow-up to Acme\" → delegate to the relevant agent. The tool returns the agent's response text + cost + duration. NEVER use this for trivial tasks you can answer in 1 sentence — only delegate when the answer requires the agent's role-specific expertise, persistent_facts, or tools. NEVER delegate to yourself (Iris is not in the delegate list). If the named agent doesn't exist on the team, the tool returns a clear error — fall back to doing the work yourself with a note.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentName: {
+        type: 'string',
+        description: "Exact name of the agent to delegate to (must match a name on the user's team).",
+      },
+      task: {
+        type: 'string',
+        description: "Plain-English task description with all context the agent needs. Be specific: include date/time when relevant, owner constraints, what success looks like. The agent does NOT see the owner's original message — only your task brief.",
+      },
+    },
+    required: ['agentName', 'task'],
+  },
+};
+
 // ─── Package 3 — promotion candidates (unified trust model) ────────────
 
 const TOOL_LIST_PROMOTION_CANDIDATES: AnthropicTool = {
@@ -2762,6 +2795,7 @@ export function buildToolList(
   tools.push(TOOL_MOVE_AGENT);
   tools.push(TOOL_REMOVE_AGENT);
   tools.push(TOOL_CONSULT_MANAGER);
+  tools.push(TOOL_DELEGATE_TO_AGENT);
   tools.push(TOOL_DISPATCH_TO_AGENTS);
   tools.push(TOOL_SHOW_AGENT_SOP);
   tools.push(TOOL_LIST_PROMOTION_CANDIDATES);
@@ -7502,6 +7536,240 @@ export async function executeTool(
         } catch (err) {
           return { content: `${manager.name} consultation error: ${err}`, success: false };
         }
+      }
+
+      case 'delegate_to_agent': {
+        // FOUNDER AGENT DELEGATION (PRD FR165 / FR21 / FR22 / FR25).
+        // Iris hands a specific task to a named agent. The agent runs
+        // its own mini tool loop with role-scoped tools, returns work
+        // product, and Iris presents it to the owner with attribution.
+        // See _lib/worker-boundary-gate.ts for the structural fabrication
+        // gate that runs on the worker's output before it returns to Iris.
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const team = user.profile?.team ?? [];
+        const targetName = call.input.agentName?.toString().trim();
+        const task = call.input.task?.toString().trim();
+        if (!targetName) return { content: 'Missing agentName.', success: false };
+        if (!task || task.length < 5) return { content: 'Missing or too-short task description.', success: false };
+
+        // Structural depth limit: Iris can delegate but workers cannot.
+        // If the caller is itself a delegated worker, refuse.
+        if ((user as any)._isDelegatedWorker) {
+          return { content: 'Workers cannot delegate. Only Iris (the orchestrator) can hand off tasks.', success: false };
+        }
+
+        // Find target in flat team + sub-teams. Case-insensitive.
+        let targetAgent: any = null;
+        for (const a of team) {
+          if (a.name?.toLowerCase() === targetName.toLowerCase()) { targetAgent = a; break; }
+          if (a.subTeam?.agents) {
+            const sub = a.subTeam.agents.find((s: any) => s.name?.toLowerCase() === targetName.toLowerCase());
+            if (sub) { targetAgent = sub; break; }
+          }
+        }
+        if (!targetAgent) {
+          // PRD FR23: graceful fallback. Iris does the work herself with
+          // a note. We return failure with clear text; Iris's prompt
+          // tells her to handle this case.
+          const teamNames = team.map((a: any) => a.name).filter(Boolean).join(', ');
+          return {
+            content: `No agent named "${targetName}" on the team. Top-level agents: ${teamNames}. Fall back to doing the work yourself if it's in scope, or tell the owner the gap.`,
+            success: false,
+          };
+        }
+        // No self-delegation. Iris is team[0].
+        const irisName = (team[0]?.name ?? 'Iris').toLowerCase();
+        if (targetAgent.name?.toLowerCase() === irisName) {
+          return { content: 'Cannot delegate to yourself. If this is in scope, just do the work.', success: false };
+        }
+
+        const apiKey = process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) {
+          return { content: `${targetAgent.name} is offline (no API key). Fall back to doing the work yourself.`, success: false };
+        }
+
+        // Build worker tools. Role-scoped via getToolsForAgent +
+        // FILTER OUT delegate_to_agent + consult_manager so the worker
+        // can't recurse (structural depth limit at 1).
+        // canonical_role_slug lives on agent_configs; the chat-side
+        // team object may not have it, so we look it up if needed.
+        let canonicalRoleSlug: string | null = (targetAgent.canonical_role_slug ?? null);
+        const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!canonicalRoleSlug && supaUrl && supaKey) {
+          try {
+            const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+            const res = await fetch(
+              `${supaUrl}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&agent_name=ilike.${encodeURIComponent(targetAgent.name)}&status=neq.removed&select=canonical_role_slug,config&limit=1`,
+              { headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` } },
+            );
+            if (res.ok) {
+              const rows = await res.json();
+              if (rows[0]?.canonical_role_slug) canonicalRoleSlug = rows[0].canonical_role_slug;
+            }
+          } catch {}
+        }
+        const workerTools = getToolsForAgent(canonicalRoleSlug, connections as any[]).filter((t) => {
+          // Structural depth limit
+          if (t.name === 'delegate_to_agent') return false;
+          if (t.name === 'consult_manager') return false;
+          if (t.name === 'dispatch_to_agents') return false;
+          return true;
+        });
+
+        // Worker system prompt — persona + task + work-product
+        // constraint + capability-honesty constraint (from PRD FR23
+        // graceful-fallback principle).
+        const workerSystem = [
+          `You are ${targetAgent.name}, ${targetAgent.role ?? 'a specialist agent'}.`,
+          targetAgent.description ? `Your remit: ${targetAgent.description}` : '',
+          `Business context: ${user.businessName ?? 'this business'} (${user.businessType ?? 'unknown industry'}).`,
+          `Owner: ${user.name}.`,
+          '',
+          'YOU ARE A DELEGATED WORKER. Iris (the personal assistant) handed you ONE task. Complete it and return your work product.',
+          '',
+          'CRITICAL CONSTRAINTS:',
+          '- PRODUCE WORK PRODUCT ONLY. Return the actual artifact (the workout, the P&L summary, the draft email body). Do NOT describe system features, modes, settings, or platform capabilities. Do NOT invent or reference features that may not exist.',
+          '- DO NOT CLAIM COMPLETED PERSISTENCE. Don\'t say "I\'ve scheduled" / "added to your plan" / "set you to X mode" unless you actually called a tool that persists that state THIS run.',
+          '- STAY IN ROLE. If the task is outside your domain, return a short note saying so — don\'t guess.',
+          '- NO META-COMMENTARY. Don\'t add "let me know if you need adjustments" / "happy to refine" / closers. Iris handles owner-facing framing; you produce the artifact.',
+          '- IF YOU CAN\'T COMPLETE THE TASK, say so directly with the reason. Iris will fall back to handling it herself or surfacing the gap to the owner.',
+          '',
+          'Speak in first person as yourself. The output goes to Iris, who will present it to the owner with your attribution.',
+        ].filter(Boolean).join('\n');
+
+        // Mini tool loop — capped at 4 iterations for cost discipline.
+        const WORKER_MODEL = (targetAgent.preferred_model && typeof targetAgent.preferred_model === 'string')
+          ? targetAgent.preferred_model
+          : 'claude-haiku-4-5-20251001';
+        const MAX_WORKER_ITERATIONS = 4;
+        const workerMessages: any[] = [{ role: 'user', content: task }];
+        const workerToolsUsed: string[] = [];
+        let workerText = '';
+        let workerTokensIn = 0;
+        let workerTokensOut = 0;
+        let workerCacheRead = 0;
+        const workerStarted = Date.now();
+
+        try {
+          let iter = 0;
+          while (iter < MAX_WORKER_ITERATIONS) {
+            iter++;
+            const body: any = {
+              model: WORKER_MODEL,
+              max_tokens: 1500,
+              system: [{ type: 'text', text: workerSystem, cache_control: { type: 'ephemeral' } }],
+              messages: workerMessages,
+            };
+            if (workerTools.length > 0) {
+              body.tools = workerTools.map((t, i) =>
+                i === workerTools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
+              );
+            }
+            const res = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+              const errBody = await res.text();
+              return { content: `${targetAgent.name} encountered an API error: ${res.status} ${errBody.slice(0, 200)}. Fall back to doing the work yourself.`, success: false };
+            }
+            const data = await res.json();
+            workerTokensIn += data.usage?.input_tokens ?? 0;
+            workerTokensOut += data.usage?.output_tokens ?? 0;
+            workerCacheRead += data.usage?.cache_read_input_tokens ?? 0;
+
+            const textBlocks = data.content?.filter((b: any) => b.type === 'text') ?? [];
+            const toolUseBlocks = data.content?.filter((b: any) => b.type === 'tool_use') ?? [];
+            const stopReason = data.stop_reason;
+
+            if (textBlocks.length > 0) {
+              workerText = textBlocks.map((b: any) => b.text).join('\n').trim();
+            }
+
+            if (stopReason === 'end_turn' || toolUseBlocks.length === 0) {
+              break;
+            }
+
+            // Execute tool calls + flag delegated-worker context so a
+            // worker calling a write tool can't be misread elsewhere.
+            workerMessages.push({ role: 'assistant', content: data.content });
+            const toolResults: any[] = [];
+            const workerUser = { ...user, _isDelegatedWorker: true } as any;
+            for (const block of toolUseBlocks) {
+              workerToolsUsed.push(block.name);
+              const result = await executeTool({ name: block.name, input: block.input }, connections, workerUser);
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: block.id,
+                content: result.content,
+                is_error: !result.success,
+              });
+            }
+            workerMessages.push({ role: 'user', content: toolResults });
+          }
+        } catch (err: any) {
+          return { content: `${targetAgent.name} encountered an error: ${err?.message ?? String(err)}. Fall back to doing the work yourself.`, success: false };
+        }
+
+        // Run the worker boundary gate. Strips unsupported completion
+        // claims; flags capability-invention. RAW text stays in audit;
+        // GATED text returns to Iris.
+        const { workerBoundaryGate } = await import('../../_lib/worker-boundary-gate');
+        const gate = workerBoundaryGate({ text: workerText, toolsUsed: workerToolsUsed });
+        const workerDuration = Date.now() - workerStarted;
+
+        if (gate.verdict !== 'ok') {
+          console.warn(`[delegate_to_agent] ${targetAgent.name} boundary gate verdict=${gate.verdict} stripped=${gate.stripped_sentences.length} cap_invention=${gate.capability_invention_flagged}`);
+        }
+
+        // Persist to chat_runs (cost + audit). Stores RAW text in
+        // metadata for debugging; gated_text is what Iris/owner see.
+        // Note: agent_runs would be cleaner but requires an
+        // agent_instance row which doesn't exist for unspun agents
+        // like Coach today.
+        void (async () => {
+          try {
+            const { recordLlmCall } = await import('../../_lib/chat-cost-tracker');
+            await recordLlmCall({
+              tenantPhone: user.phoneNumber,
+              surface: 'agent-tick' as any,
+              model: WORKER_MODEL,
+              tokensIn: workerTokensIn,
+              tokensOut: workerTokensOut,
+              cachedTokensIn: workerCacheRead,
+              durationMs: workerDuration,
+              toolsUsed: workerToolsUsed,
+            });
+          } catch (err) {
+            console.warn('[delegate_to_agent] cost record failed:', err);
+          }
+        })();
+
+        // Owner confirmation reads from STRUCTURAL data (the gated
+        // text + the actual worker name we resolved), NOT from any
+        // narration Iris might produce. Closes the Mia-reborn
+        // fabrication shape.
+        const confirmationPreview = gate.gated_text.slice(0, 100).replace(/\n+/g, ' ');
+        const owner_confirmation = `Delegated to ${targetAgent.name} → ${confirmationPreview}${gate.gated_text.length > 100 ? '...' : ''}`;
+
+        return {
+          content: `[${targetAgent.name}'s response]\n${gate.gated_text}`,
+          success: true,
+          owner_confirmation,
+          data: {
+            worker_name: targetAgent.name,
+            worker_model: WORKER_MODEL,
+            tools_used: workerToolsUsed,
+            tokens_in: workerTokensIn,
+            tokens_out: workerTokensOut,
+            duration_ms: workerDuration,
+            gate_verdict: gate.verdict,
+            stripped_count: gate.stripped_sentences.length,
+            capability_invention_flagged: gate.capability_invention_flagged,
+          },
+        };
       }
 
       case 'dispatch_to_agents': {

@@ -571,6 +571,7 @@ export async function generateIrisReply(
       'set_marketing_autonomy',
       'connect_automation_webhook',
       'add_tool_to_agent',
+      'delegate_to_agent',
     ]);
     const FABRICATION_PATTERNS: RegExp[] = [
       // Morning-brief specific (original patterns from 4c7df5e).
