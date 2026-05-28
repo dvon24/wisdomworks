@@ -2055,7 +2055,7 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
 const TOOL_DELEGATE_TO_AGENT: AnthropicTool = {
   name: 'delegate_to_agent',
   description:
-    "Hand a specific task to one of the user's named agents (Coach, Marcus, Mira, Riley, Alex, etc.) and get back their work product. THE FOUNDER AGENT PATTERN — when the owner asks for something that belongs in another agent's domain, you DELEGATE rather than doing it yourself. Workouts → Coach. P&L / financial summaries → Mira or Marcus. Scheduling → Riley. Code/repo work → Alex. The delegated agent runs with their own persona, persistent_facts, and role-scoped tools, returns their work to YOU, and you PRESENT it to the owner with attribution (\"Here's what Coach put together: ...\"). Examples: owner says \"what's my workout\" → delegate_to_agent(agentName: \"Coach\", task: \"Generate today's workout for Devon. Week 2 post-100k recovery. Today is Wednesday per his split — Back & Biceps.\"). Owner says \"draft a follow-up to Acme\" → delegate to the relevant agent. The tool returns the agent's response text + cost + duration. NEVER use this for trivial tasks you can answer in 1 sentence — only delegate when the answer requires the agent's role-specific expertise, persistent_facts, or tools. NEVER delegate to yourself (Iris is not in the delegate list). If the named agent doesn't exist on the team, the tool returns a clear error — fall back to doing the work yourself with a note.",
+    "Hand a specific task to one of the user's named agents (Coach, Marcus, Mira, Riley, Alex, etc.) and get back their work product. THE FOUNDER AGENT PATTERN — when the owner asks for something that belongs in another agent's domain, you DELEGATE rather than doing it yourself. Workouts → Coach. P&L / financial summaries → Mira or Marcus. Scheduling → Riley. Code/repo work → Alex. The delegated agent runs with their own persona, persistent_facts, and role-scoped tools, returns their work to YOU, and you PRESENT it to the owner with attribution (\"Here's what Coach put together: ...\"). Examples: owner says \"what's my workout\" → delegate_to_agent(agentName: \"Coach\", task: \"Generate today's workout for Devon. Week 2 post-100k recovery. Today is Wednesday per his split — Back & Biceps.\"). Owner says \"draft a follow-up to Acme\" → delegate to the relevant agent. The tool returns the agent's response text + cost + duration. NEVER use this for trivial tasks you can answer in 1 sentence — only delegate when the answer requires the agent's role-specific expertise, persistent_facts, or tools. NEVER delegate to yourself (Iris is not in the delegate list). If the named agent doesn't exist on the team OR errors out, the tool returns a clear error — REPORT THE FAILURE to the owner honestly. Do NOT silently generate the missing agent's work product and present it as their output. If the owner explicitly asks you to substitute, do it with explicit attribution (\"here's one from me, not <Agent>\") so they know who actually produced the content.",
   input_schema: {
     type: 'object',
     properties: {
@@ -7573,7 +7573,7 @@ export async function executeTool(
           // tells her to handle this case.
           const teamNames = team.map((a: any) => a.name).filter(Boolean).join(', ');
           return {
-            content: `No agent named "${targetName}" on the team. Top-level agents: ${teamNames}. Fall back to doing the work yourself if it's in scope, or tell the owner the gap.`,
+            content: `No agent named "${targetName}" on the team. Top-level agents: ${teamNames}. Tell the owner the gap honestly. If they want you to substitute, ASK first and label your work as yours, not "${targetName}'s" — never silently generate the missing agent's output and present it as the delegated result.`,
             success: false,
           };
         }
@@ -7585,7 +7585,7 @@ export async function executeTool(
 
         const apiKey = process.env.ANTHROPIC_API_KEY;
         if (!apiKey) {
-          return { content: `${targetAgent.name} is offline (no API key). Fall back to doing the work yourself.`, success: false };
+          return { content: `${targetAgent.name} is offline (no API key). Report this to the owner; do NOT silently generate ${targetAgent.name}'s work product yourself.`, success: false };
         }
 
         // Build worker tools. Role-scoped via getToolsForAgent +
@@ -7681,7 +7681,24 @@ export async function executeTool(
             });
             if (!res.ok) {
               const errBody = await res.text();
-              return { content: `${targetAgent.name} encountered an API error: ${res.status} ${errBody.slice(0, 200)}. Fall back to doing the work yourself.`, success: false };
+              // 2026-05-28 — CRITICAL: do NOT instruct Iris to "fall
+              // back to doing the work yourself" on worker failure.
+              // That instruction caused the silent-substitution bug
+              // observed at 7:50 PM (owner asked "does Coach have my
+              // workout", Coach errored, Iris generated the workout
+              // herself inline as if it were Coach's output). That's
+              // failure mode #3 — the absent-agent's-job-inline pattern
+              // this whole epic was meant to eliminate.
+              //
+              // Correct shape: report the failure honestly, offer
+              // explicit substitution only if owner asks. NEVER
+              // generate the missing work product without explicit
+              // "this is me, not <Agent>" labeling.
+              console.error(`[delegate_to_agent] ${targetAgent.name} worker API failure: ${res.status} ${errBody.slice(0, 500)}`);
+              return {
+                content: `${targetAgent.name} could not generate a response — worker API returned ${res.status}. Raw error: ${errBody.slice(0, 200)}.\n\nDO NOT generate ${targetAgent.name}'s work product yourself and present it as their output. Report the failure to the owner. If they want you to substitute, do it ONLY with explicit attribution ("here's one from me, not ${targetAgent.name}") so they know the agent didn't actually produce it.`,
+                success: false,
+              };
             }
             const data = await res.json();
             workerTokensIn += data.usage?.input_tokens ?? 0;
@@ -7718,7 +7735,7 @@ export async function executeTool(
             workerMessages.push({ role: 'user', content: toolResults });
           }
         } catch (err: any) {
-          return { content: `${targetAgent.name} encountered an error: ${err?.message ?? String(err)}. Fall back to doing the work yourself.`, success: false };
+          return { content: `${targetAgent.name} encountered an error: ${err?.message ?? String(err)}. Report this failure to the owner. Do NOT silently generate ${targetAgent.name}'s work product and present it as theirs.`, success: false };
         }
 
         // Run the worker boundary gate. Strips unsupported completion
