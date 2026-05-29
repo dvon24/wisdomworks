@@ -9,6 +9,7 @@
     "test": "turbo run test",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "scan-secrets": "node scripts/check-secrets.mjs --all",
+    "iris:debug": "node scripts/iris-debug.mjs",
     "prepare": "git config --local core.hooksPath .githooks || true"
   },
   "devDependencies": {

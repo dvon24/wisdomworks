@@ -20,6 +20,101 @@ import { buildSystemPromptParts } from './system-prompt';
 import { buildToolList, executeTool, type ToolCall } from './agent-tools';
 import { recordChatRun } from '../../_lib/chat-cost-tracker';
 
+// ─────────────────────────────────────────────────────────────────────────
+// DEBUG TRACE
+//
+// Optional structured audit of a single Iris turn. When the caller passes
+// `opts.trace`, the brain populates it in-place with everything it does:
+// tools available, each tool call (input + result + timing), every gate
+// verdict (recital stripper / attribution / unprompted-topic / fabrication /
+// Axis critic), token+cost breakdown, and draft-vs-final reply.
+//
+// Passing it by-reference keeps the function's `Promise<string>` contract
+// intact — the live WhatsApp/deck/telegram paths don't pass a trace and are
+// completely unaffected. Only /api/debug/iris opts in.
+// ─────────────────────────────────────────────────────────────────────────
+export interface IrisTraceStep {
+  iteration: number;
+  tool: string;
+  caller: string; // 'direct' | 'code_execution_20250825'
+  input: any;
+  success: boolean;
+  resultPreview: string;
+  ownerConfirmation?: string;
+  durationMs: number;
+}
+export interface IrisTraceGate {
+  /** recital-stripper | attribution | unprompted-topic | fabrication-guard | axis-critic */
+  gate: string;
+  /** stripped | revised | retry-forced | passed | re-audit-failed | empty-restored */
+  action: string;
+  detail: string;
+}
+export interface IrisTrace {
+  surface: string;
+  model: string;
+  effort: string;
+  connections: string[];
+  toolsAvailable: string[];
+  toolCount: number;
+  systemStableChars: number;
+  systemVariableChars: number;
+  steps: IrisTraceStep[];
+  gates: IrisTraceGate[];
+  iterations: number;
+  hitIterationCap: boolean;
+  tokens: {
+    uncachedIn: number;
+    cacheWriteIn: number;
+    cacheReadIn: number;
+    totalOut: number;
+    cachedPct: number;
+  };
+  costUsd: number;
+  durationMs: number;
+  draftReply?: string; // first text block, before any gate ran
+  finalReply?: string; // what actually ships
+  error?: string;
+}
+
+export interface IrisReplyOptions {
+  /** Pass a (possibly empty) IrisTrace to have the brain fill it in-place. */
+  trace?: IrisTrace;
+  /**
+   * Debug/safe-test mode. When true, the brain runs the full reasoning +
+   * tool loop (so the trace is faithful) but SKIPS every write-back:
+   * saveUserContext, recordChatRun, disposition mining, and behavioral-RAG
+   * ingest. Use it to audit Iris against a real tenant without polluting
+   * their conversation history, usage stats, or mined operating-manual.
+   *
+   * NOTE: this does NOT make executeTool read-only — a message that
+   * triggers a write/send tool (create_workflow, send_*, etc.) still
+   * performs that action. Keep debug messages read-only-intent.
+   */
+  skipPersistence?: boolean;
+}
+
+/** Build a zeroed IrisTrace with array fields ready for in-place population. */
+export function createIrisTrace(surface: string): IrisTrace {
+  return {
+    surface,
+    model: SONNET_MODEL,
+    effort: '',
+    connections: [],
+    toolsAvailable: [],
+    toolCount: 0,
+    systemStableChars: 0,
+    systemVariableChars: 0,
+    steps: [],
+    gates: [],
+    iterations: 0,
+    hitIterationCap: false,
+    tokens: { uncachedIn: 0, cacheWriteIn: 0, cacheReadIn: 0, totalOut: 0, cachedPct: 0 },
+    costUsd: 0,
+    durationMs: 0,
+  };
+}
+
 const MAX_ITERATIONS = 8;
 // Sonnet 4.6 — same $3/$15 per MTok as Sonnet 4 but supports adaptive
 // thinking + interleaved thinking between tool calls. Pure capability
@@ -159,7 +254,10 @@ export async function generateIrisReply(
   text: string,
   user: UserContext,
   surface: 'whatsapp' | 'deck' | 'telegram' | 'sms' | 'imessage' = 'whatsapp',
+  opts?: IrisReplyOptions,
 ): Promise<string> {
+  const trace = opts?.trace;
+  const skipPersistence = opts?.skipPersistence ?? false;
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return `Hi ${user.name}! My AI brain is being set up — I'll be fully operational soon.`;
@@ -209,6 +307,11 @@ export async function generateIrisReply(
   } catch (err) {
     console.warn(`[iris-${surface}] MCP discovery failed (non-blocking):`, err);
   }
+  if (trace) {
+    trace.connections = connections.map((c) => `${c.provider}/${c.service}`);
+    trace.toolsAvailable = tools.map((t: any) => t.name).filter(Boolean);
+    trace.toolCount = tools.length;
+  }
   const messages: any[] = buildContextMessages(user);
   // Build the system prompt then append the owner-disposition block —
   // the operating manual auto-mined from past interactions. Renders
@@ -226,6 +329,10 @@ export async function generateIrisReply(
     stable: baseSystemParts.stable,
     variable: baseSystemParts.variable + dispositionBlock,
   };
+  if (trace) {
+    trace.systemStableChars = systemParts.stable.length;
+    trace.systemVariableChars = systemParts.variable.length;
+  }
 
   // Accumulate token + tool usage across every Anthropic round-trip in the loop.
   // Per Anthropic's response schema:
@@ -260,6 +367,7 @@ export async function generateIrisReply(
   };
 
   const effort = EFFORT_BY_SURFACE[surface] ?? 'medium';
+  if (trace) trace.effort = effort;
 
   // 2026-05-24 — PTC container tracking. When PTC-enabled tools are
   // present and the model writes Python in the code-exec container,
@@ -288,9 +396,22 @@ export async function generateIrisReply(
         const callerType = (block as any).caller?.type ?? 'direct';
         console.log(`[iris-${surface}] Tool call (${callerType}): ${call.name}`, call.input);
         toolsUsed.push(call.name);
+        const toolStartedAt = Date.now();
         const result = await executeTool(call, connections, user);
         if (result.success && typeof result.owner_confirmation === 'string' && result.owner_confirmation.trim().length > 0) {
           ownerConfirmations.push(result.owner_confirmation.trim());
+        }
+        if (trace) {
+          trace.steps.push({
+            iteration,
+            tool: call.name,
+            caller: callerType,
+            input: call.input,
+            success: result.success,
+            resultPreview: (result.content ?? '').toString().slice(0, 500),
+            ownerConfirmation: result.owner_confirmation?.trim() || undefined,
+            durationMs: Date.now() - toolStartedAt,
+          });
         }
         toolResults.push({
           type: 'tool_result',
@@ -309,6 +430,10 @@ export async function generateIrisReply(
     // make one more call WITHOUT tools so it's forced to produce a text reply.
     if (response.stop_reason === 'tool_use') {
       console.warn(`[iris-${surface}] Tool loop hit cap at iteration ${iteration} — forcing final text.`);
+      if (trace) {
+        trace.hitIterationCap = true;
+        trace.gates.push({ gate: 'iteration-cap', action: 'retry-forced', detail: `Hit MAX_ITERATIONS (${MAX_ITERATIONS}) at iteration ${iteration} — forced a no-tools summary call.` });
+      }
       messages.push({ role: 'assistant', content: response.content });
       messages.push({
         role: 'user',
@@ -320,6 +445,7 @@ export async function generateIrisReply(
 
     let textBlock = response.content.find((b: any) => b.type === 'text');
     let assistantMessage = textBlock?.text ?? "I couldn't process that. Try again?";
+    if (trace) trace.draftReply = assistantMessage;
 
     // ───────────────────────────────────────────────────────────────────────
     // CODE-SIDE PERFORMATIVE-COMPLIANCE STRIPPER
@@ -368,6 +494,7 @@ export async function generateIrisReply(
     stripped = stripped.replace(/^\s*(---|—{2,})\s*\n+/g, '').trimStart();
     if (stripCount > 0 && stripped.length > 0) {
       console.log(`[iris-${surface}] Stripped ${stripCount} recital opener(s). Original: "${assistantMessage.slice(0, 100)}..." Cleaned: "${stripped.slice(0, 100)}..."`);
+      if (trace) trace.gates.push({ gate: 'recital-stripper', action: 'stripped', detail: `Removed ${stripCount} apologetic-recital opener(s) the owner didn't reference this turn.` });
       assistantMessage = stripped;
     }
     // If stripping ate the entire message (unlikely but possible), restore the original.
@@ -441,6 +568,7 @@ export async function generateIrisReply(
         console.warn(
           `[iris-${surface}] Attribution gate stripped ${hits.length} unsupported claim(s): ${JSON.stringify(hits.map((h) => h.slice(0, 100)))}`,
         );
+        if (trace) trace.gates.push({ gate: 'attribution', action: 'stripped', detail: `Removed ${hits.length} unsupported agent-attribution claim(s) (no team-aware tool fired): ${JSON.stringify(hits.map((h) => h.slice(0, 80)))}` });
         assistantMessage = attrStripped;
       }
     }
@@ -537,6 +665,7 @@ export async function generateIrisReply(
         console.warn(
           `[iris-${surface}] Unprompted-topic gate stripped ${topicHits.length} section(s): ${JSON.stringify(topicHits)}`,
         );
+        if (trace) trace.gates.push({ gate: 'unprompted-topic', action: 'stripped', detail: `Removed ${topicHits.length} volunteered section(s) the owner didn't ask about: ${JSON.stringify(topicHits)}` });
         assistantMessage = cleaned;
       } else {
         console.warn(
@@ -623,6 +752,7 @@ export async function generateIrisReply(
       console.warn(
         `[iris-${surface}] Fabrication guard triggered. Phrases: ${JSON.stringify(fabricationHits)} | tools this turn: ${JSON.stringify(toolsUsed)}`,
       );
+      if (trace) trace.gates.push({ gate: 'fabrication-guard', action: 'retry-forced', detail: `"Going forward" / completion-claim phrasing with no persisting tool: ${JSON.stringify(fabricationHits)}. Forced a no-tools rewrite.` });
       // Inject a corrective system-style message and force a retry without
       // tools so the model produces an honest final reply.
       messages.push({ role: 'assistant', content: response.content });
@@ -698,6 +828,7 @@ export async function generateIrisReply(
       } else if (!critique.passes) {
         const highCount = critique.violations.filter((v) => v.severity === 'high').length;
         console.warn(`[iris-${surface}] Axis flagged ${critique.violations.length} violation(s) (${highCount} high): ${JSON.stringify(critique.violations.map((v) => `${v.severity}:${v.rule}`))}`);
+        if (trace) trace.gates.push({ gate: 'axis-critic', action: 'flagged', detail: `${critique.violations.length} violation(s) (${highCount} high): ${JSON.stringify(critique.violations.map((v) => `${v.severity}:${v.rule}`))}. Forcing one revision pass.` });
         // ONE revision pass — append critique as additional system
         // prompt content. NOT a fake user message (preserves trust
         // boundary). The model sees its own previous reply in messages
@@ -770,6 +901,7 @@ export async function generateIrisReply(
           const revisedHighCount = revisedCritique.violations.filter((v: any) => v.severity === 'high').length;
           if (revisedHighCount === 0) {
             console.log(`[iris-${surface}] Axis revision PASSED re-audit. original "${assistantMessage.slice(0, 80)}..." → revised "${revisedDraft.slice(0, 80)}..."`);
+            if (trace) trace.gates.push({ gate: 'axis-critic', action: 'revised', detail: `Revision passed re-audit (0 HIGH) — shipping the rewrite instead of the draft.` });
             assistantMessage = revisedDraft;
             textBlock = retryTextBlock;
           } else {
@@ -780,6 +912,7 @@ export async function generateIrisReply(
             // confused about which rule to honor, etc.). Loud log so we
             // can see how often this fails.
             console.error(`[iris-${surface}] Axis REVISION FAILED re-audit: ${revisedHighCount} HIGH still present. Shipping ORIGINAL draft. Original violations: ${JSON.stringify(critique.violations.map((v: any) => v.rule))}. Revised violations: ${JSON.stringify(revisedCritique.violations.map((v: any) => v.rule))}`);
+            if (trace) trace.gates.push({ gate: 'axis-critic', action: 're-audit-failed', detail: `Revision STILL had ${revisedHighCount} HIGH violation(s) — shipped the ORIGINAL draft. Revised violations: ${JSON.stringify(revisedCritique.violations.map((v: any) => v.rule))}` });
           }
         }
       } else if (critique.violations.length > 0) {
@@ -816,6 +949,7 @@ export async function generateIrisReply(
         ? `${trimmed}\n\n${block}`
         : block;
       console.log(`[iris-${surface}] Appended ${ownerConfirmations.length} canonical confirmation(s).`);
+      if (trace) trace.gates.push({ gate: 'state-confirmation', action: 'appended', detail: `Appended ${ownerConfirmations.length} canonical owner-facing confirmation(s) from persisting tool(s): ${JSON.stringify(ownerConfirmations.map((c) => c.slice(0, 80)))}` });
     }
 
     // NOTE: we don't push the assistant message to conversationHistory here.
@@ -824,7 +958,7 @@ export async function generateIrisReply(
     // keeps cron + reactive paths writing through the same code path, so
     // Iris's own outputs (including proactive sends) all land in her
     // memory without duplication.
-    await saveUserContext(user);
+    if (!skipPersistence) await saveUserContext(user);
 
     // 2026-05-23 — fire-and-forget per-turn ingest into behavioral RAG.
     // The rolling-summary indexer in behavioral-rag-refresh runs every
@@ -834,7 +968,7 @@ export async function generateIrisReply(
     // clarifications semantically. Detects correction-class turns via
     // simple owner-language patterns (no/not/wrong/incorrect/that's
     // not + person) so they get the is_correction flag for ranking.
-    void (async () => {
+    if (!skipPersistence) void (async () => {
       try {
         const { ingestConversationTurn } = await import('../../_lib/behavioral-rag-ingest');
         const isCorrection = /\b(no|not|wrong|incorrect|that'?s not|change|stop|don'?t)\b/i.test(text) &&
@@ -854,13 +988,26 @@ export async function generateIrisReply(
     const totalTokensIn = uncachedTokensIn + cacheWriteTokensIn + cacheReadTokensIn;
     const cachedPct = totalTokensIn > 0 ? Math.round((cacheReadTokensIn / totalTokensIn) * 100) : 0;
     const costUsd = estimateChatCost(uncachedTokensIn, cacheWriteTokensIn, cacheReadTokensIn, totalTokensOut);
+    if (trace) {
+      trace.iterations = iteration;
+      trace.tokens = {
+        uncachedIn: uncachedTokensIn,
+        cacheWriteIn: cacheWriteTokensIn,
+        cacheReadIn: cacheReadTokensIn,
+        totalOut: totalTokensOut,
+        cachedPct,
+      };
+      trace.costUsd = costUsd;
+      trace.durationMs = Date.now() - startedAt;
+      trace.finalReply = assistantMessage;
+    }
     console.log(
       `[iris-${surface}] effort=${effort} | iters=${iteration} | tokens: ${totalTokensIn}in/${totalTokensOut}out (uncached ${uncachedTokensIn}, write ${cacheWriteTokensIn}, read ${cacheReadTokensIn} — ${cachedPct}% hit) | tools: ${toolsUsed.length} | cost: $${costUsd.toFixed(4)}`,
     );
 
     // Persist this turn so the dashboard's "usage this month" includes
     // chat costs (which dominate iris-brain workloads).
-    void recordChatRun({
+    if (!skipPersistence) void recordChatRun({
       tenantPhone: user.phoneNumber,
       surface,
       modelUsed: SONNET_MODEL,
@@ -885,7 +1032,7 @@ export async function generateIrisReply(
     // correction twice. Cold-start mode boosts extraction in the first
     // 30 messages so newly-deployed tenants build up their operating
     // manual fast.
-    void (async () => {
+    if (!skipPersistence) void (async () => {
       try {
         const { mineDispositionFromTurn, isTenantInColdStart } = await import('../../_lib/disposition-mining');
         const isCold = await isTenantInColdStart(user.phoneNumber);
@@ -918,6 +1065,10 @@ export async function generateIrisReply(
     return assistantMessage;
   } catch (error: any) {
     console.error(`[iris-${surface}] Error:`, error);
+    if (trace) {
+      trace.error = (error?.message ?? String(error ?? 'unknown')).toString().slice(0, 500);
+      trace.durationMs = Date.now() - startedAt;
+    }
     // Surface the actual cause so the owner can see what failed instead of
     // a generic "connection issue" that hides every real bug. Strip stack
     // traces and cap length to keep WhatsApp responses readable. Real
