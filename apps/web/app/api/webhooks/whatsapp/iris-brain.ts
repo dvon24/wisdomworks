@@ -815,6 +815,15 @@ export async function generateIrisReply(
       const histForCritic = (user.conversationHistory ?? [])
         .slice(-6)
         .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content ?? '' }));
+      // Roster of DELEGABLE agents — everyone except Iris (team[0]) — so Axis
+      // can flag "should have delegated" (owner's request was in an agent's
+      // domain but Iris answered it herself) and "presented an agent's work
+      // that wasn't actually produced" (work framed as Coach's etc. with no
+      // delegate_to_agent call this turn).
+      const delegableTeam = (user.profile?.team ?? [])
+        .slice(1)
+        .filter((a: any) => a && typeof a.name === 'string' && a.name.trim().length > 0)
+        .map((a: any) => ({ name: a.name, role: a.role, description: a.description }));
       const critique = await critiqueResponse({
         surface: 'iris-chat',
         ownerMessage: text,
@@ -822,6 +831,7 @@ export async function generateIrisReply(
         recentTurns: histForCritic,
         toolsUsedThisTurn: toolsUsed,
         tenantPhone: user.phoneNumber,
+        team: delegableTeam,
       });
       accumulate({ input_tokens: critique.tokens_in, output_tokens: critique.tokens_out } as any);
       // Persist EVERY violation (high + medium + low) so the aggregation
@@ -903,6 +913,7 @@ export async function generateIrisReply(
               recentTurns: histForCritic,
               toolsUsedThisTurn: toolsUsed,
               tenantPhone: user.phoneNumber,
+              team: delegableTeam,
             });
             // Persist the re-audit result so we can see in axis_critiques
             // whether revisions are actually working (revision_attempted=false
