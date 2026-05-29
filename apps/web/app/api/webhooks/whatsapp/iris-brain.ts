@@ -225,7 +225,20 @@ async function callAnthropic(
   // Preserve container state across iterations so the model's Python
   // env doesn't reset each round-trip (containers TTL ~5min — matches
   // prompt cache).
-  if (containerId) {
+  //
+  // Only attach the container when the code-execution tool is actually
+  // present in THIS request (usePtc). Passing a container without the
+  // code_execution tool — which is what the Axis-critic revision pass and
+  // the forced-summary / fabrication-guard retries do, since they send
+  // tools:[] — makes the API reject the call:
+  //   "Container identifier can only be provided when using the code
+  //    execution tool"
+  // That error was thrown inside the Axis revision try/catch and swallowed
+  // as "non-blocking", silently shipping the ORIGINAL flagged draft. Net
+  // effect: the Axis critic's revision was disabled on every turn where
+  // Iris used PTC. Gating on usePtc fixes it without losing container
+  // reuse on the real PTC tool-loop iterations (which always send tools).
+  if (containerId && usePtc) {
     body.container = containerId;
   }
 
@@ -840,22 +853,33 @@ export async function generateIrisReply(
           stable: systemParts.stable + revisionAddendum,
           variable: systemParts.variable,
         };
-        // The conversation already has the draft as the most recent
-        // assistant message in iris-brain's loop. Push it explicitly
-        // here so the model sees what to revise.
-        const revisionMessages = [...messages];
-        // The final assistant message from the loop may already be in
-        // `messages` (pushed during tool_use iterations). If the LAST
-        // entry is the user's tool_results, we need to append the
-        // draft so the model has something to revise. Otherwise the
-        // assistant content is already there.
-        const lastMsg = revisionMessages[revisionMessages.length - 1];
-        if (!lastMsg || lastMsg.role !== 'assistant') {
-          revisionMessages.push({ role: 'assistant', content: assistantMessage });
-        }
-        // No tools on revision — the model already gathered evidence;
-        // we want a clean rewrite, not more tool calls.
-        const retryResp = await callAnthropic(apiKey, revisedSystemParts, revisionMessages, [], effort, containerId);
+        // Build a CLEAN, minimal revision conversation rather than replaying
+        // the full tool-laden `messages` array. Replaying `messages` dragged
+        // in the PTC (code_execution) tool_use / tool_result blocks, and the
+        // API refuses to continue a programmatic-tool-calling conversation
+        // with anything other than more tool_result blocks ("When responding
+        // to programmatic tool calling, only tool_result blocks are
+        // allowed"). It also caused container + assistant-prefill errors.
+        // Each was swallowed by the surrounding catch as "non-blocking",
+        // silently shipping the ORIGINAL flagged draft — so the revision had
+        // effectively never run on any PTC turn.
+        //
+        // The revision is a pure rewrite task. It needs only: the owner's
+        // message, the draft to fix, and a revise instruction. The draft
+        // already contains every fact gathered from the tools, and the audit
+        // feedback lives in revisedSystemParts (system block) — so the trust
+        // boundary holds and no tool plumbing is required. Ends on a user
+        // turn (no prefill error); carries no PTC blocks; needs no container.
+        const revisionMessages = [
+          { role: 'user', content: text },
+          { role: 'assistant', content: assistantMessage },
+          {
+            role: 'user',
+            content:
+              'Revise your previous reply to fix the issues described in the audit feedback above. Reply with ONLY the corrected message — no preamble, no apology, no explanation of what you changed.',
+          },
+        ];
+        const retryResp = await callAnthropic(apiKey, revisedSystemParts, revisionMessages, [], effort);
         accumulate(retryResp.usage);
         const retryTextBlock = retryResp.content.find((b: any) => b.type === 'text');
         if (retryTextBlock?.text && retryTextBlock.text.trim().length > 0) {
