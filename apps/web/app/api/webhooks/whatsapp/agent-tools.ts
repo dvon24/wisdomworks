@@ -2055,7 +2055,7 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
 const TOOL_DELEGATE_TO_AGENT: AnthropicTool = {
   name: 'delegate_to_agent',
   description:
-    "Hand a specific task to one of the user's named agents (Coach, Marcus, Mira, Riley, Alex, etc.) and get back their work product. THE FOUNDER AGENT PATTERN — when the owner asks for something that belongs in another agent's domain, you DELEGATE rather than doing it yourself. Workouts → Coach. P&L / financial summaries → Mira or Marcus. Scheduling → Riley. Code/repo work → Alex. The delegated agent runs with their own persona, persistent_facts, and role-scoped tools, returns their work to YOU, and you PRESENT it to the owner with attribution (\"Here's what Coach put together: ...\"). Examples: owner says \"what's my workout\" → delegate_to_agent(agentName: \"Coach\", task: \"Generate today's workout for Devon. Week 2 post-100k recovery. Today is Wednesday per his split — Back & Biceps.\"). Owner says \"draft a follow-up to Acme\" → delegate to the relevant agent. The tool returns the agent's response text + cost + duration. NEVER use this for trivial tasks you can answer in 1 sentence — only delegate when the answer requires the agent's role-specific expertise, persistent_facts, or tools. NEVER delegate to yourself (Iris is not in the delegate list). If the named agent doesn't exist on the team OR errors out, the tool returns a clear error — REPORT THE FAILURE to the owner honestly. Do NOT silently generate the missing agent's work product and present it as their output. If the owner explicitly asks you to substitute, do it with explicit attribution (\"here's one from me, not <Agent>\") so they know who actually produced the content.",
+    "Hand a specific task to one of the user's named agents (Coach, Marcus, Mira, Riley, Alex, etc.) and get back their work product. THE FOUNDER AGENT PATTERN — when the owner asks for something that belongs in another agent's domain, you DELEGATE rather than doing it yourself. Workouts → Coach. P&L / financial summaries → Mira or Marcus. Scheduling → Riley. Code/repo work → Alex. The delegated agent runs with their own persona, role-scoped tools (including the owner's per-agent tool grants), and a behavioral-memory briefing of what they've learned about the owner, returns their work to YOU, and you PRESENT it to the owner with attribution (\"Here's what Coach put together: ...\"). Examples: owner says \"what's my workout\" → delegate_to_agent(agentName: \"Coach\", task: \"Generate today's workout for Devon. Week 2 post-100k recovery. Today is Wednesday per his split — Back & Biceps.\"). Owner says \"draft a follow-up to Acme\" → delegate to the relevant agent. The tool returns the agent's response text + cost + duration. NEVER use this for trivial tasks you can answer in 1 sentence — only delegate when the answer requires the agent's role-specific expertise, behavioral memory, or tools. NEVER delegate to yourself (Iris is not in the delegate list). If the named agent doesn't exist on the team OR errors out, the tool returns a clear error — REPORT THE FAILURE to the owner honestly. Do NOT silently generate the missing agent's work product and present it as their output. If the owner explicitly asks you to substitute, do it with explicit attribution (\"here's one from me, not <Agent>\") so they know who actually produced the content.",
   input_schema: {
     type: 'object',
     properties: {
@@ -7594,9 +7594,17 @@ export async function executeTool(
         // canonical_role_slug lives on agent_configs; the chat-side
         // team object may not have it, so we look it up if needed.
         let canonicalRoleSlug: string | null = (targetAgent.canonical_role_slug ?? null);
+        // Per-agent config (extra_tools / disabled_tools / preferred_model)
+        // lives on agent_configs.config. The chat-side team object carries
+        // none of it, so fetch it whenever we can — NOT only when the slug is
+        // missing. Previously this block was gated on `!canonicalRoleSlug`, so
+        // a worker whose slug was already on the team JSON ran with role
+        // DEFAULT tools and the owner's add_tool_to_agent grants / disables
+        // were silently dropped — the worker was never role-complete.
+        let agentConfig: Record<string, any> = {};
         const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
         const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-        if (!canonicalRoleSlug && supaUrl && supaKey) {
+        if (supaUrl && supaKey) {
           try {
             const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
             const res = await fetch(
@@ -7606,16 +7614,62 @@ export async function executeTool(
             if (res.ok) {
               const rows = await res.json();
               if (rows[0]?.canonical_role_slug) canonicalRoleSlug = rows[0].canonical_role_slug;
+              if (rows[0]?.config && typeof rows[0].config === 'object') agentConfig = rows[0].config;
             }
           } catch {}
         }
-        const workerTools = getToolsForAgent(canonicalRoleSlug, connections as any[]).filter((t) => {
+        // Apply the owner's per-agent tool grants/disables, mirroring how
+        // lane-tick agents build their tools (agent-runtime.ts:1170-1176).
+        const extraTools: string[] = Array.isArray(agentConfig.extra_tools) ? agentConfig.extra_tools : [];
+        const disabledTools: string[] = Array.isArray(agentConfig.disabled_tools) ? agentConfig.disabled_tools : [];
+        const workerTools = getToolsForAgent(canonicalRoleSlug, connections as any[], {
+          extra_tools: extraTools,
+          disabled_tools: disabledTools,
+        }).filter((t) => {
           // Structural depth limit
           if (t.name === 'delegate_to_agent') return false;
           if (t.name === 'consult_manager') return false;
           if (t.name === 'dispatch_to_agents') return false;
           return true;
+        }).map((t) => {
+          // Force DIRECT tool calling for workers. The worker mini-loop
+          // below does NOT add the code_execution tool, send the PTC beta
+          // header, or thread the container_id across iterations the way the
+          // main callAnthropic does — so a worker tool that opts into PTC via
+          // `allowed_callers` puts the request into a half-PTC state and the
+          // API 400s with "container_id is required when there are pending
+          // tool uses generated by code execution with tools." Workers do
+          // small bounded tasks (4 iters / 1500 tokens) where PTC's token
+          // savings don't justify replicating container-threading here, so
+          // we strip allowed_callers and let the worker call tools directly.
+          if (Array.isArray((t as any).allowed_callers)) {
+            const { allowed_callers: _drop, ...rest } = t as any;
+            return rest;
+          }
+          return t;
         });
+
+        // Seed the worker with what it has LEARNED about this owner: a
+        // role-keyed slice of behavioral RAG (the same just-in-time briefing
+        // lane-tick agents get — agent-runtime.ts:1148-1157). This IS the
+        // agent's "persistent knowledge"; there is no separate persistent_facts
+        // store — behavioral RAG is the substrate. Lets a delegated worker act
+        // on what it knows about the owner instead of running blind. Non-
+        // blocking: a seed failure must never block the actual delegation.
+        let workerContextBlock = '';
+        try {
+          const { loadRecentContextForAgent } = await import('../../_lib/agent-behavioral-rag');
+          const wc = await loadRecentContextForAgent({
+            tenantPhone: user.phoneNumber,
+            agentName: targetAgent.name,
+            agentRole: targetAgent.role ?? 'Specialist',
+            agentDescription: targetAgent.description,
+            limit: 8,
+          });
+          if (wc.text) workerContextBlock = `\n\n${wc.text}`;
+        } catch (err) {
+          console.warn('[delegate_to_agent] behavioral-RAG seed failed (non-blocking):', err);
+        }
 
         // Worker system prompt — persona + task + work-product
         // constraint + capability-honesty constraint (from PRD FR23
@@ -7636,7 +7690,7 @@ export async function executeTool(
           '- IF YOU CAN\'T COMPLETE THE TASK, say so directly with the reason. Iris will fall back to handling it herself or surfacing the gap to the owner.',
           '',
           'Speak in first person as yourself. The output goes to Iris, who will present it to the owner with your attribution.',
-        ].filter(Boolean).join('\n');
+        ].filter(Boolean).join('\n') + workerContextBlock;
 
         // Mini tool loop — capped at 4 iterations for cost discipline.
         // 2026-05-28 — first live delegation test (Devon's 7:50 PM
@@ -7647,9 +7701,12 @@ export async function executeTool(
         // run iris-chat on. Cost per delegation ~3-5x Haiku but at
         // least the worker can actually call tools. Per-agent
         // preferred_model still wins if set.
-        const WORKER_MODEL = (targetAgent.preferred_model && typeof targetAgent.preferred_model === 'string')
-          ? targetAgent.preferred_model
-          : 'claude-sonnet-4-6';
+        const WORKER_MODEL =
+          (typeof agentConfig.preferred_model === 'string' && agentConfig.preferred_model)
+            ? agentConfig.preferred_model
+            : (targetAgent.preferred_model && typeof targetAgent.preferred_model === 'string')
+              ? targetAgent.preferred_model
+              : 'claude-sonnet-4-6';
         const MAX_WORKER_ITERATIONS = 4;
         const workerMessages: any[] = [{ role: 'user', content: task }];
         const workerToolsUsed: string[] = [];
