@@ -7512,26 +7512,17 @@ export async function executeTool(
         ].filter(Boolean).join('\n');
 
         try {
-          const res = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-              'x-api-key': apiKey,
-              'anthropic-version': '2023-06-01',
-              'content-type': 'application/json',
-            },
-            body: JSON.stringify({
-              model: 'claude-haiku-4-5-20251001',
-              max_tokens: 200,
-              system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
-              messages: [{ role: 'user', content: `Proposal: ${proposal}\n\nYour take?` }],
-            }),
+          const { callAnthropicJSON } = await import('../../_lib/anthropic-agent-loop');
+          const r = await callAnthropicJSON(apiKey, {
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 200,
+            system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
+            messages: [{ role: 'user', content: `Proposal: ${proposal}\n\nYour take?` }],
           });
-          if (!res.ok) {
-            const err = await res.json();
-            return { content: `${manager.name} consultation failed: ${JSON.stringify(err)}`, success: false };
+          if (!r.ok) {
+            return { content: `${manager.name} consultation failed: ${r.rawBody.slice(0, 200)}`, success: false };
           }
-          const data = await res.json();
-          const reply = data.content?.find((b: any) => b.type === 'text')?.text ?? '(no response)';
+          const reply = r.json?.content?.find((b: any) => b.type === 'text')?.text ?? '(no response)';
           return { content: `${manager.name} (${manager.role}) says:\n${reply}`, success: true };
         } catch (err) {
           return { content: `${manager.name} consultation error: ${err}`, success: false };
@@ -7708,92 +7699,51 @@ export async function executeTool(
               ? targetAgent.preferred_model
               : 'claude-sonnet-4-6';
         const MAX_WORKER_ITERATIONS = 4;
-        const workerMessages: any[] = [{ role: 'user', content: task }];
-        const workerToolsUsed: string[] = [];
-        let workerText = '';
-        let workerTokensIn = 0;
-        let workerTokensOut = 0;
-        let workerCacheRead = 0;
         const workerStarted = Date.now();
 
+        // Run the worker through the shared sub-agent loop. PTC is handled
+        // there (workers use direct calling — enablePtc:false), so this path
+        // can't reintroduce the container-threading 400. The _isDelegatedWorker
+        // flag marks the context so a worker calling a write tool isn't misread
+        // elsewhere as the owner acting.
+        const { runAgentToolLoop } = await import('../../_lib/anthropic-agent-loop');
+        const workerUser = { ...user, _isDelegatedWorker: true } as any;
+        let workerRun;
         try {
-          let iter = 0;
-          while (iter < MAX_WORKER_ITERATIONS) {
-            iter++;
-            const body: any = {
-              model: WORKER_MODEL,
-              max_tokens: 1500,
-              system: [{ type: 'text', text: workerSystem, cache_control: { type: 'ephemeral' } }],
-              messages: workerMessages,
-            };
-            if (workerTools.length > 0) {
-              body.tools = workerTools.map((t, i) =>
-                i === workerTools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
-              );
-            }
-            const res = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-              body: JSON.stringify(body),
-            });
-            if (!res.ok) {
-              const errBody = await res.text();
-              // 2026-05-28 — CRITICAL: do NOT instruct Iris to "fall
-              // back to doing the work yourself" on worker failure.
-              // That instruction caused the silent-substitution bug
-              // observed at 7:50 PM (owner asked "does Coach have my
-              // workout", Coach errored, Iris generated the workout
-              // herself inline as if it were Coach's output). That's
-              // failure mode #3 — the absent-agent's-job-inline pattern
-              // this whole epic was meant to eliminate.
-              //
-              // Correct shape: report the failure honestly, offer
-              // explicit substitution only if owner asks. NEVER
-              // generate the missing work product without explicit
-              // "this is me, not <Agent>" labeling.
-              console.error(`[delegate_to_agent] ${targetAgent.name} worker API failure: ${res.status} ${errBody.slice(0, 500)}`);
-              return {
-                content: `${targetAgent.name} could not generate a response — worker API returned ${res.status}. Raw error: ${errBody.slice(0, 200)}.\n\nDO NOT generate ${targetAgent.name}'s work product yourself and present it as their output. Report the failure to the owner. If they want you to substitute, do it ONLY with explicit attribution ("here's one from me, not ${targetAgent.name}") so they know the agent didn't actually produce it.`,
-                success: false,
-              };
-            }
-            const data = await res.json();
-            workerTokensIn += data.usage?.input_tokens ?? 0;
-            workerTokensOut += data.usage?.output_tokens ?? 0;
-            workerCacheRead += data.usage?.cache_read_input_tokens ?? 0;
-
-            const textBlocks = data.content?.filter((b: any) => b.type === 'text') ?? [];
-            const toolUseBlocks = data.content?.filter((b: any) => b.type === 'tool_use') ?? [];
-            const stopReason = data.stop_reason;
-
-            if (textBlocks.length > 0) {
-              workerText = textBlocks.map((b: any) => b.text).join('\n').trim();
-            }
-
-            if (stopReason === 'end_turn' || toolUseBlocks.length === 0) {
-              break;
-            }
-
-            // Execute tool calls + flag delegated-worker context so a
-            // worker calling a write tool can't be misread elsewhere.
-            workerMessages.push({ role: 'assistant', content: data.content });
-            const toolResults: any[] = [];
-            const workerUser = { ...user, _isDelegatedWorker: true } as any;
-            for (const block of toolUseBlocks) {
-              workerToolsUsed.push(block.name);
-              const result = await executeTool({ name: block.name, input: block.input }, connections, workerUser);
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: block.id,
-                content: result.content,
-                is_error: !result.success,
-              });
-            }
-            workerMessages.push({ role: 'user', content: toolResults });
-          }
+          workerRun = await runAgentToolLoop({
+            apiKey,
+            model: WORKER_MODEL,
+            system: workerSystem,
+            initialMessage: task,
+            tools: workerTools,
+            maxIterations: MAX_WORKER_ITERATIONS,
+            maxTokens: 1500,
+            connections,
+            userContext: workerUser,
+            enablePtc: false,
+          });
         } catch (err: any) {
           return { content: `${targetAgent.name} encountered an error: ${err?.message ?? String(err)}. Report this failure to the owner. Do NOT silently generate ${targetAgent.name}'s work product and present it as theirs.`, success: false };
         }
+        if (workerRun.apiError) {
+          // 2026-05-28 — CRITICAL: do NOT instruct Iris to "fall back to doing
+          // the work yourself" on worker failure. That caused the silent-
+          // substitution bug (owner asked "does Coach have my workout", Coach
+          // errored, Iris generated the workout herself as if it were Coach's
+          // output — failure mode #3 this epic exists to eliminate). Report
+          // honestly; substitute ONLY if the owner explicitly asks, with a
+          // "this is me, not <Agent>" label.
+          console.error(`[delegate_to_agent] ${targetAgent.name} worker API failure: ${workerRun.apiError.status} ${workerRun.apiError.rawBody.slice(0, 500)}`);
+          return {
+            content: `${targetAgent.name} could not generate a response — worker API returned ${workerRun.apiError.status}. Raw error: ${workerRun.apiError.rawBody.slice(0, 200)}.\n\nDO NOT generate ${targetAgent.name}'s work product yourself and present it as their output. Report the failure to the owner. If they want you to substitute, do it ONLY with explicit attribution ("here's one from me, not ${targetAgent.name}") so they know the agent didn't actually produce it.`,
+            success: false,
+          };
+        }
+        const workerText = workerRun.finalText;
+        const workerToolsUsed = workerRun.toolsUsed;
+        const workerTokensIn = workerRun.tokensIn;
+        const workerTokensOut = workerRun.tokensOut;
+        const workerCacheRead = workerRun.cacheRead;
 
         // Run the worker boundary gate. Strips unsupported completion
         // claims; flags capability-invention. RAW text stays in audit;
@@ -7927,26 +7877,17 @@ export async function executeTool(
                 'Reply in ≤ 60 words. No throat-clearing. No "as <role>, I think" — just say it.',
               ].filter(Boolean).join('\n');
               const question = perAgentQuestions[a.name] ?? `Trigger: ${trigger}\n\nYour take?`;
-              const res = await fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: {
-                  'x-api-key': apiKey,
-                  'anthropic-version': '2023-06-01',
-                  'content-type': 'application/json',
-                },
-                body: JSON.stringify({
-                  model: 'claude-haiku-4-5-20251001',
-                  max_tokens: 200,
-                  system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
-                  messages: [{ role: 'user', content: question }],
-                }),
+              const { callAnthropicJSON } = await import('../../_lib/anthropic-agent-loop');
+              const r = await callAnthropicJSON(apiKey, {
+                model: 'claude-haiku-4-5-20251001',
+                max_tokens: 200,
+                system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
+                messages: [{ role: 'user', content: question }],
               });
-              if (!res.ok) {
-                const err = await res.text().catch(() => '<no body>');
-                return { name: a.name, role: a.role, reply: `(${a.name} couldn't respond — ${res.status}: ${err.slice(0, 100)})`, ok: false };
+              if (!r.ok) {
+                return { name: a.name, role: a.role, reply: `(${a.name} couldn't respond — ${r.status}: ${r.rawBody.slice(0, 100)})`, ok: false };
               }
-              const data = await res.json();
-              const reply = data.content?.find((b: any) => b.type === 'text')?.text?.trim() ?? '(no response)';
+              const reply = r.json?.content?.find((b: any) => b.type === 'text')?.text?.trim() ?? '(no response)';
               return { name: a.name, role: a.role, reply, ok: true };
             } catch (err: any) {
               return { name: a.name, role: a.role, reply: `(${a.name} hit an error — ${err?.message ?? String(err)})`, ok: false };
