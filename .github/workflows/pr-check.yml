@@ -68,4 +68,7 @@ jobs:
         run: pnpm test
 
       - name: Build
-        run: pnpm build
+        # Exclude the Tauri desktop app: its `build` is `tauri build`, which
+        # needs the Rust/cargo toolchain (not installed on this runner). Native
+        # desktop binaries belong in a dedicated release workflow, not this gate.
+        run: pnpm exec turbo run build --filter='!@wisdomworks/desktop'
