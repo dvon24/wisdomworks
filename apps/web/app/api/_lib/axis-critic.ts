@@ -125,6 +125,8 @@ const RULE_SHEETS: Record<CriticSurface, string> = {
 
 9. presents_unproduced_agent_work (HIGH) — If the draft presents work product AS a named agent's output — e.g. "Here's what Coach put together:", "Coach's plan:", "[Marcus's response]", "Mira pulled together", "from Alex:" — but "delegate_to_agent" is NOT in the tools called this turn, then that agent did NOT actually produce it. That is the silent-substitution fabrication: Iris generating an absent agent's work and presenting it as theirs. Mark HIGH. IMPORTANT: when "delegate_to_agent" IS in the tools called this turn, presenting the agent's work with attribution is correct — do NOT flag.
 
+10. wasteful_tool_use (MEDIUM) — If the owner's most recent message is a trivial acknowledgment or non-request ("thanks", "thank you", "ok", "okay", "cool", "got it", "nice", "👍", "perfect", "you were going to say something?", etc.) AND the tools called this turn include an EXPENSIVE tool — request_research, analyze_website, generate_website, create_document, delegate_to_agent, dispatch_to_agents, consult_manager — that is a wasteful misfire: a heavy/slow/costly tool fired when the message needed none (e.g. running web research on a "thank you"). Mark MEDIUM. Do NOT flag cheap read tools (recall_atoms, recall_behavioral_rag, list_*, get_*) on short messages — only the expensive ones listed. This catches tool-selection misfires the text-quality rules miss.
+
 Return STRICT JSON with no text before or after:
 {
   "passes": true | false,
@@ -171,12 +173,16 @@ Return STRICT JSON: { "passes": bool, "violations": [{rule, severity, evidence, 
  * caller ships the original draft. Critic failures don't block delivery.
  */
 export async function critiqueResponse(input: CritiqueInput): Promise<CritiqueResult> {
-  // Skip for tiny replies (acks, single-word confirmations) — critic
-  // adds latency + cost with no signal to gain. 2026-05-28: lowered from
-  // 50 → 30 chars after seeing "Anytime! Holler when you're ready to dig
-  // into anything. 👊" (51 chars) escape the audit despite being textbook
-  // chitchat / self-commentary the new self_commentary rule should catch.
-  if (input.skip || input.draft.trim().length < 30) {
+  // Audit policy (2026-05-30): the owner wants the critic to see EVERYTHING
+  // that could carry a problem — a Haiku audit (~$0.002) is far cheaper than a
+  // misfire (e.g. request_research on a "thank you" ~ $0.23). The only thing
+  // safe to skip is a genuinely trivial reply that ALSO called no tools (an
+  // "ok"/"👍" ack with nothing to catch). The moment ANY tool fired this turn,
+  // we audit regardless of reply length — that's exactly the case that let
+  // "You're welcome!" (15 chars) hide a wasteful analyze_website +
+  // request_research misfire from the old length-only skip.
+  const firedAnyTool = (input.toolsUsedThisTurn?.length ?? 0) > 0;
+  if (input.skip || (input.draft.trim().length < 30 && !firedAnyTool)) {
     return { passes: true, violations: [], tokens_in: 0, tokens_out: 0 };
   }
   if (!ANTHROPIC_API_KEY) {
