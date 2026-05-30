@@ -84,6 +84,11 @@ export interface CritiqueInput {
    *  Without this, Axis runs free of charge as far as the dashboard
    *  knows, which is exactly the gap Devon flagged on 2026-05-27. */
   tenantPhone?: string;
+  /** Optional roster of DELEGABLE agents (everyone on the team except Iris
+   *  herself) so the critic can judge whether the owner's request belonged
+   *  in an agent's domain and whether work presented as an agent's was
+   *  actually produced by one. */
+  team?: Array<{ name: string; role?: string; description?: string }>;
 }
 
 /**
@@ -115,6 +120,10 @@ const RULE_SHEETS: Record<CriticSurface, string> = {
    Exception: if the owner's current message uses a pronoun (it/that/the email/etc) that can ONLY be resolved by looking back, the resolved-to topic is in scope. The test: is the prior topic referenced because the owner is pointing at it RIGHT NOW, or because Iris decided to bring it up?
 
 7. self_commentary (MEDIUM) — The draft contains apology theater or commentary about Iris's own behavior that the owner didn't ask for: "Won't happen again", "that's on me", "noted on staying on topic", "fair catch", "good point — I'll watch for that going forward". Even when sincere, these phrases consume the owner's attention without adding value. Acting differently IS the acknowledgment. Mark MEDIUM if such a phrase appears; HIGH if the entire reply is meta-commentary with no substantive answer.
+
+8. should_have_delegated (MEDIUM) — If the owner's request falls squarely in a DELEGABLE TEAM AGENT's domain (a workout / training plan → a Coach or trainer; a P&L / financial summary / budgeting → a finance agent; website / SEO / code / repo work → a web or dev agent; scheduling → a scheduler) AND the draft answers it with Iris's OWN substantive work product AND "delegate_to_agent" is NOT in the tools called this turn, mark this MEDIUM. The named agents exist to do their own domain work — Iris should delegate to them, not do it all herself. Do NOT flag trivial one-liners, clarifying questions, quick status answers, or requests no listed agent owns. Match against the DELEGABLE TEAM AGENTS list — if no agent covers the domain, there is no violation.
+
+9. presents_unproduced_agent_work (HIGH) — If the draft presents work product AS a named agent's output — e.g. "Here's what Coach put together:", "Coach's plan:", "[Marcus's response]", "Mira pulled together", "from Alex:" — but "delegate_to_agent" is NOT in the tools called this turn, then that agent did NOT actually produce it. That is the silent-substitution fabrication: Iris generating an absent agent's work and presenting it as theirs. Mark HIGH. IMPORTANT: when "delegate_to_agent" IS in the tools called this turn, presenting the agent's work with attribution is correct — do NOT flag.
 
 Return STRICT JSON with no text before or after:
 {
@@ -191,6 +200,13 @@ export async function critiqueResponse(input: CritiqueInput): Promise<CritiqueRe
 
 ${ruleSheet}`;
 
+  const team = input.team ?? [];
+  const teamBlock = team.length === 0
+    ? '(no delegable agents on this team)'
+    : team
+        .map((a) => `- ${a.name}${a.role ? ` — ${a.role}` : ''}${a.description ? `: ${a.description.slice(0, 120)}` : ''}`)
+        .join('\n');
+
   const userBlock = `OWNER'S MOST RECENT MESSAGE:
 "${input.ownerMessage.slice(0, 600)}"
 
@@ -199,6 +215,9 @@ ${recentTurnsTrimmed.length === 0 ? '(none)' : recentTurnsTrimmed.map((t) => `[$
 
 TOOLS CALLED THIS TURN BY GENERATOR:
 ${input.toolsUsedThisTurn.length === 0 ? '(none)' : input.toolsUsedThisTurn.join(', ')}
+
+DELEGABLE TEAM AGENTS (Iris can hand domain work to these via delegate_to_agent):
+${teamBlock}
 
 DRAFT RESPONSE TO AUDIT:
 """
@@ -271,11 +290,23 @@ Audit the draft and return JSON.`;
         fix: typeof v.fix === 'string' ? v.fix.slice(0, 300) : '',
       });
     }
+    // Deterministic guard for the two delegation rules. Whether an agent
+    // actually produced the work, and whether Iris delegated at all, is
+    // settled by toolsUsedThisTurn — NOT by the critic's reading of the prose
+    // (Haiku doesn't reliably honor the in-prompt "don't flag when
+    // delegate_to_agent fired" exclusion — observed false-positive 2026-05-29).
+    // If delegate_to_agent fired this turn, presenting the agent's work is
+    // legitimate and Iris DID delegate, so neither rule can apply.
+    const delegatedThisTurn = (input.toolsUsedThisTurn ?? []).includes('delegate_to_agent');
+    const guarded = delegatedThisTurn
+      ? clean.filter((v) => v.rule !== 'presents_unproduced_agent_work' && v.rule !== 'should_have_delegated')
+      : clean;
+
     // passes = true if NO high-severity violations
-    const hasHigh = clean.some((v) => v.severity === 'high');
+    const hasHigh = guarded.some((v) => v.severity === 'high');
     return {
       passes: !hasHigh,
-      violations: clean,
+      violations: guarded,
       tokens_in,
       tokens_out,
     };

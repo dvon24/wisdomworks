@@ -2055,7 +2055,7 @@ const TOOL_CONSULT_MANAGER: AnthropicTool = {
 const TOOL_DELEGATE_TO_AGENT: AnthropicTool = {
   name: 'delegate_to_agent',
   description:
-    "Hand a specific task to one of the user's named agents (Coach, Marcus, Mira, Riley, Alex, etc.) and get back their work product. THE FOUNDER AGENT PATTERN — when the owner asks for something that belongs in another agent's domain, you DELEGATE rather than doing it yourself. Workouts → Coach. P&L / financial summaries → Mira or Marcus. Scheduling → Riley. Code/repo work → Alex. The delegated agent runs with their own persona, persistent_facts, and role-scoped tools, returns their work to YOU, and you PRESENT it to the owner with attribution (\"Here's what Coach put together: ...\"). Examples: owner says \"what's my workout\" → delegate_to_agent(agentName: \"Coach\", task: \"Generate today's workout for Devon. Week 2 post-100k recovery. Today is Wednesday per his split — Back & Biceps.\"). Owner says \"draft a follow-up to Acme\" → delegate to the relevant agent. The tool returns the agent's response text + cost + duration. NEVER use this for trivial tasks you can answer in 1 sentence — only delegate when the answer requires the agent's role-specific expertise, persistent_facts, or tools. NEVER delegate to yourself (Iris is not in the delegate list). If the named agent doesn't exist on the team OR errors out, the tool returns a clear error — REPORT THE FAILURE to the owner honestly. Do NOT silently generate the missing agent's work product and present it as their output. If the owner explicitly asks you to substitute, do it with explicit attribution (\"here's one from me, not <Agent>\") so they know who actually produced the content.",
+    "Hand a specific task to one of the user's named agents (Coach, Marcus, Mira, Riley, Alex, etc.) and get back their work product. THE FOUNDER AGENT PATTERN — when the owner asks for something that belongs in another agent's domain, you DELEGATE rather than doing it yourself. Workouts → Coach. P&L / financial summaries → Mira or Marcus. Scheduling → Riley. Code/repo work → Alex. The delegated agent runs with their own persona, role-scoped tools (including the owner's per-agent tool grants), and a behavioral-memory briefing of what they've learned about the owner, returns their work to YOU, and you PRESENT it to the owner with attribution (\"Here's what Coach put together: ...\"). Examples: owner says \"what's my workout\" → delegate_to_agent(agentName: \"Coach\", task: \"Generate today's workout for Devon. Week 2 post-100k recovery. Today is Wednesday per his split — Back & Biceps.\"). Owner says \"draft a follow-up to Acme\" → delegate to the relevant agent. The tool returns the agent's response text + cost + duration. NEVER use this for trivial tasks you can answer in 1 sentence — only delegate when the answer requires the agent's role-specific expertise, behavioral memory, or tools. NEVER delegate to yourself (Iris is not in the delegate list). If the named agent doesn't exist on the team OR errors out, the tool returns a clear error — REPORT THE FAILURE to the owner honestly. Do NOT silently generate the missing agent's work product and present it as their output. If the owner explicitly asks you to substitute, do it with explicit attribution (\"here's one from me, not <Agent>\") so they know who actually produced the content.",
   input_schema: {
     type: 'object',
     properties: {
@@ -7512,26 +7512,17 @@ export async function executeTool(
         ].filter(Boolean).join('\n');
 
         try {
-          const res = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-              'x-api-key': apiKey,
-              'anthropic-version': '2023-06-01',
-              'content-type': 'application/json',
-            },
-            body: JSON.stringify({
-              model: 'claude-haiku-4-5-20251001',
-              max_tokens: 200,
-              system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
-              messages: [{ role: 'user', content: `Proposal: ${proposal}\n\nYour take?` }],
-            }),
+          const { callAnthropicJSON } = await import('../../_lib/anthropic-agent-loop');
+          const r = await callAnthropicJSON(apiKey, {
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 200,
+            system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
+            messages: [{ role: 'user', content: `Proposal: ${proposal}\n\nYour take?` }],
           });
-          if (!res.ok) {
-            const err = await res.json();
-            return { content: `${manager.name} consultation failed: ${JSON.stringify(err)}`, success: false };
+          if (!r.ok) {
+            return { content: `${manager.name} consultation failed: ${r.rawBody.slice(0, 200)}`, success: false };
           }
-          const data = await res.json();
-          const reply = data.content?.find((b: any) => b.type === 'text')?.text ?? '(no response)';
+          const reply = r.json?.content?.find((b: any) => b.type === 'text')?.text ?? '(no response)';
           return { content: `${manager.name} (${manager.role}) says:\n${reply}`, success: true };
         } catch (err) {
           return { content: `${manager.name} consultation error: ${err}`, success: false };
@@ -7594,9 +7585,17 @@ export async function executeTool(
         // canonical_role_slug lives on agent_configs; the chat-side
         // team object may not have it, so we look it up if needed.
         let canonicalRoleSlug: string | null = (targetAgent.canonical_role_slug ?? null);
+        // Per-agent config (extra_tools / disabled_tools / preferred_model)
+        // lives on agent_configs.config. The chat-side team object carries
+        // none of it, so fetch it whenever we can — NOT only when the slug is
+        // missing. Previously this block was gated on `!canonicalRoleSlug`, so
+        // a worker whose slug was already on the team JSON ran with role
+        // DEFAULT tools and the owner's add_tool_to_agent grants / disables
+        // were silently dropped — the worker was never role-complete.
+        let agentConfig: Record<string, any> = {};
         const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
         const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-        if (!canonicalRoleSlug && supaUrl && supaKey) {
+        if (supaUrl && supaKey) {
           try {
             const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
             const res = await fetch(
@@ -7606,16 +7605,62 @@ export async function executeTool(
             if (res.ok) {
               const rows = await res.json();
               if (rows[0]?.canonical_role_slug) canonicalRoleSlug = rows[0].canonical_role_slug;
+              if (rows[0]?.config && typeof rows[0].config === 'object') agentConfig = rows[0].config;
             }
           } catch {}
         }
-        const workerTools = getToolsForAgent(canonicalRoleSlug, connections as any[]).filter((t) => {
+        // Apply the owner's per-agent tool grants/disables, mirroring how
+        // lane-tick agents build their tools (agent-runtime.ts:1170-1176).
+        const extraTools: string[] = Array.isArray(agentConfig.extra_tools) ? agentConfig.extra_tools : [];
+        const disabledTools: string[] = Array.isArray(agentConfig.disabled_tools) ? agentConfig.disabled_tools : [];
+        const workerTools = getToolsForAgent(canonicalRoleSlug, connections as any[], {
+          extra_tools: extraTools,
+          disabled_tools: disabledTools,
+        }).filter((t) => {
           // Structural depth limit
           if (t.name === 'delegate_to_agent') return false;
           if (t.name === 'consult_manager') return false;
           if (t.name === 'dispatch_to_agents') return false;
           return true;
+        }).map((t) => {
+          // Force DIRECT tool calling for workers. The worker mini-loop
+          // below does NOT add the code_execution tool, send the PTC beta
+          // header, or thread the container_id across iterations the way the
+          // main callAnthropic does — so a worker tool that opts into PTC via
+          // `allowed_callers` puts the request into a half-PTC state and the
+          // API 400s with "container_id is required when there are pending
+          // tool uses generated by code execution with tools." Workers do
+          // small bounded tasks (4 iters / 1500 tokens) where PTC's token
+          // savings don't justify replicating container-threading here, so
+          // we strip allowed_callers and let the worker call tools directly.
+          if (Array.isArray((t as any).allowed_callers)) {
+            const { allowed_callers: _drop, ...rest } = t as any;
+            return rest;
+          }
+          return t;
         });
+
+        // Seed the worker with what it has LEARNED about this owner: a
+        // role-keyed slice of behavioral RAG (the same just-in-time briefing
+        // lane-tick agents get — agent-runtime.ts:1148-1157). This IS the
+        // agent's "persistent knowledge"; there is no separate persistent_facts
+        // store — behavioral RAG is the substrate. Lets a delegated worker act
+        // on what it knows about the owner instead of running blind. Non-
+        // blocking: a seed failure must never block the actual delegation.
+        let workerContextBlock = '';
+        try {
+          const { loadRecentContextForAgent } = await import('../../_lib/agent-behavioral-rag');
+          const wc = await loadRecentContextForAgent({
+            tenantPhone: user.phoneNumber,
+            agentName: targetAgent.name,
+            agentRole: targetAgent.role ?? 'Specialist',
+            agentDescription: targetAgent.description,
+            limit: 8,
+          });
+          if (wc.text) workerContextBlock = `\n\n${wc.text}`;
+        } catch (err) {
+          console.warn('[delegate_to_agent] behavioral-RAG seed failed (non-blocking):', err);
+        }
 
         // Worker system prompt — persona + task + work-product
         // constraint + capability-honesty constraint (from PRD FR23
@@ -7636,7 +7681,7 @@ export async function executeTool(
           '- IF YOU CAN\'T COMPLETE THE TASK, say so directly with the reason. Iris will fall back to handling it herself or surfacing the gap to the owner.',
           '',
           'Speak in first person as yourself. The output goes to Iris, who will present it to the owner with your attribution.',
-        ].filter(Boolean).join('\n');
+        ].filter(Boolean).join('\n') + workerContextBlock;
 
         // Mini tool loop — capped at 4 iterations for cost discipline.
         // 2026-05-28 — first live delegation test (Devon's 7:50 PM
@@ -7647,96 +7692,58 @@ export async function executeTool(
         // run iris-chat on. Cost per delegation ~3-5x Haiku but at
         // least the worker can actually call tools. Per-agent
         // preferred_model still wins if set.
-        const WORKER_MODEL = (targetAgent.preferred_model && typeof targetAgent.preferred_model === 'string')
-          ? targetAgent.preferred_model
-          : 'claude-sonnet-4-6';
+        const WORKER_MODEL =
+          (typeof agentConfig.preferred_model === 'string' && agentConfig.preferred_model)
+            ? agentConfig.preferred_model
+            : (targetAgent.preferred_model && typeof targetAgent.preferred_model === 'string')
+              ? targetAgent.preferred_model
+              : 'claude-sonnet-4-6';
         const MAX_WORKER_ITERATIONS = 4;
-        const workerMessages: any[] = [{ role: 'user', content: task }];
-        const workerToolsUsed: string[] = [];
-        let workerText = '';
-        let workerTokensIn = 0;
-        let workerTokensOut = 0;
-        let workerCacheRead = 0;
         const workerStarted = Date.now();
 
+        // Run the worker through the shared sub-agent loop. PTC is handled
+        // there (workers use direct calling — enablePtc:false), so this path
+        // can't reintroduce the container-threading 400. The _isDelegatedWorker
+        // flag marks the context so a worker calling a write tool isn't misread
+        // elsewhere as the owner acting.
+        const { runAgentToolLoop } = await import('../../_lib/anthropic-agent-loop');
+        const workerUser = { ...user, _isDelegatedWorker: true } as any;
+        let workerRun;
         try {
-          let iter = 0;
-          while (iter < MAX_WORKER_ITERATIONS) {
-            iter++;
-            const body: any = {
-              model: WORKER_MODEL,
-              max_tokens: 1500,
-              system: [{ type: 'text', text: workerSystem, cache_control: { type: 'ephemeral' } }],
-              messages: workerMessages,
-            };
-            if (workerTools.length > 0) {
-              body.tools = workerTools.map((t, i) =>
-                i === workerTools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
-              );
-            }
-            const res = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-              body: JSON.stringify(body),
-            });
-            if (!res.ok) {
-              const errBody = await res.text();
-              // 2026-05-28 — CRITICAL: do NOT instruct Iris to "fall
-              // back to doing the work yourself" on worker failure.
-              // That instruction caused the silent-substitution bug
-              // observed at 7:50 PM (owner asked "does Coach have my
-              // workout", Coach errored, Iris generated the workout
-              // herself inline as if it were Coach's output). That's
-              // failure mode #3 — the absent-agent's-job-inline pattern
-              // this whole epic was meant to eliminate.
-              //
-              // Correct shape: report the failure honestly, offer
-              // explicit substitution only if owner asks. NEVER
-              // generate the missing work product without explicit
-              // "this is me, not <Agent>" labeling.
-              console.error(`[delegate_to_agent] ${targetAgent.name} worker API failure: ${res.status} ${errBody.slice(0, 500)}`);
-              return {
-                content: `${targetAgent.name} could not generate a response — worker API returned ${res.status}. Raw error: ${errBody.slice(0, 200)}.\n\nDO NOT generate ${targetAgent.name}'s work product yourself and present it as their output. Report the failure to the owner. If they want you to substitute, do it ONLY with explicit attribution ("here's one from me, not ${targetAgent.name}") so they know the agent didn't actually produce it.`,
-                success: false,
-              };
-            }
-            const data = await res.json();
-            workerTokensIn += data.usage?.input_tokens ?? 0;
-            workerTokensOut += data.usage?.output_tokens ?? 0;
-            workerCacheRead += data.usage?.cache_read_input_tokens ?? 0;
-
-            const textBlocks = data.content?.filter((b: any) => b.type === 'text') ?? [];
-            const toolUseBlocks = data.content?.filter((b: any) => b.type === 'tool_use') ?? [];
-            const stopReason = data.stop_reason;
-
-            if (textBlocks.length > 0) {
-              workerText = textBlocks.map((b: any) => b.text).join('\n').trim();
-            }
-
-            if (stopReason === 'end_turn' || toolUseBlocks.length === 0) {
-              break;
-            }
-
-            // Execute tool calls + flag delegated-worker context so a
-            // worker calling a write tool can't be misread elsewhere.
-            workerMessages.push({ role: 'assistant', content: data.content });
-            const toolResults: any[] = [];
-            const workerUser = { ...user, _isDelegatedWorker: true } as any;
-            for (const block of toolUseBlocks) {
-              workerToolsUsed.push(block.name);
-              const result = await executeTool({ name: block.name, input: block.input }, connections, workerUser);
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: block.id,
-                content: result.content,
-                is_error: !result.success,
-              });
-            }
-            workerMessages.push({ role: 'user', content: toolResults });
-          }
+          workerRun = await runAgentToolLoop({
+            apiKey,
+            model: WORKER_MODEL,
+            system: workerSystem,
+            initialMessage: task,
+            tools: workerTools,
+            maxIterations: MAX_WORKER_ITERATIONS,
+            maxTokens: 1500,
+            connections,
+            userContext: workerUser,
+            enablePtc: false,
+          });
         } catch (err: any) {
           return { content: `${targetAgent.name} encountered an error: ${err?.message ?? String(err)}. Report this failure to the owner. Do NOT silently generate ${targetAgent.name}'s work product and present it as theirs.`, success: false };
         }
+        if (workerRun.apiError) {
+          // 2026-05-28 — CRITICAL: do NOT instruct Iris to "fall back to doing
+          // the work yourself" on worker failure. That caused the silent-
+          // substitution bug (owner asked "does Coach have my workout", Coach
+          // errored, Iris generated the workout herself as if it were Coach's
+          // output — failure mode #3 this epic exists to eliminate). Report
+          // honestly; substitute ONLY if the owner explicitly asks, with a
+          // "this is me, not <Agent>" label.
+          console.error(`[delegate_to_agent] ${targetAgent.name} worker API failure: ${workerRun.apiError.status} ${workerRun.apiError.rawBody.slice(0, 500)}`);
+          return {
+            content: `${targetAgent.name} could not generate a response — worker API returned ${workerRun.apiError.status}. Raw error: ${workerRun.apiError.rawBody.slice(0, 200)}.\n\nDO NOT generate ${targetAgent.name}'s work product yourself and present it as their output. Report the failure to the owner. If they want you to substitute, do it ONLY with explicit attribution ("here's one from me, not ${targetAgent.name}") so they know the agent didn't actually produce it.`,
+            success: false,
+          };
+        }
+        const workerText = workerRun.finalText;
+        const workerToolsUsed = workerRun.toolsUsed;
+        const workerTokensIn = workerRun.tokensIn;
+        const workerTokensOut = workerRun.tokensOut;
+        const workerCacheRead = workerRun.cacheRead;
 
         // Run the worker boundary gate. Strips unsupported completion
         // claims; flags capability-invention. RAW text stays in audit;
@@ -7870,26 +7877,17 @@ export async function executeTool(
                 'Reply in ≤ 60 words. No throat-clearing. No "as <role>, I think" — just say it.',
               ].filter(Boolean).join('\n');
               const question = perAgentQuestions[a.name] ?? `Trigger: ${trigger}\n\nYour take?`;
-              const res = await fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: {
-                  'x-api-key': apiKey,
-                  'anthropic-version': '2023-06-01',
-                  'content-type': 'application/json',
-                },
-                body: JSON.stringify({
-                  model: 'claude-haiku-4-5-20251001',
-                  max_tokens: 200,
-                  system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
-                  messages: [{ role: 'user', content: question }],
-                }),
+              const { callAnthropicJSON } = await import('../../_lib/anthropic-agent-loop');
+              const r = await callAnthropicJSON(apiKey, {
+                model: 'claude-haiku-4-5-20251001',
+                max_tokens: 200,
+                system: [{ type: 'text', text: personaLines, cache_control: { type: 'ephemeral' } }],
+                messages: [{ role: 'user', content: question }],
               });
-              if (!res.ok) {
-                const err = await res.text().catch(() => '<no body>');
-                return { name: a.name, role: a.role, reply: `(${a.name} couldn't respond — ${res.status}: ${err.slice(0, 100)})`, ok: false };
+              if (!r.ok) {
+                return { name: a.name, role: a.role, reply: `(${a.name} couldn't respond — ${r.status}: ${r.rawBody.slice(0, 100)})`, ok: false };
               }
-              const data = await res.json();
-              const reply = data.content?.find((b: any) => b.type === 'text')?.text?.trim() ?? '(no response)';
+              const reply = r.json?.content?.find((b: any) => b.type === 'text')?.text?.trim() ?? '(no response)';
               return { name: a.name, role: a.role, reply, ok: true };
             } catch (err: any) {
               return { name: a.name, role: a.role, reply: `(${a.name} hit an error — ${err?.message ?? String(err)})`, ok: false };
