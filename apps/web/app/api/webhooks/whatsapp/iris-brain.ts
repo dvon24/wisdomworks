@@ -347,6 +347,33 @@ export async function generateIrisReply(
     trace.systemVariableChars = systemParts.variable.length;
   }
 
+  // SPEND CAP (SPEC CAP-6) — when the tenant is over today's LLM spend cap,
+  // degrade to LEAN mode: defer the balloon-able tools (delegation, research,
+  // doc/site generation) and tell the model to answer directly. The owner
+  // still gets a reply (never hard-blocked) and the cheap Haiku audit still
+  // runs — only the expensive optional work is withheld until midnight UTC.
+  // Fail-open: any error here must not block the turn.
+  let expensiveToolsDeferred = false;
+  try {
+    const { getDailySpend, EXPENSIVE_TOOLS_DEFERRED_WHEN_CAPPED } = await import('../../_lib/spend-cap');
+    const spend = await getDailySpend(user.phoneNumber);
+    if (spend.over) {
+      expensiveToolsDeferred = true;
+      // Mutate the tools array in place so every loop iteration sees the
+      // reduced set (the const binding forbids reassignment, not mutation).
+      for (let i = tools.length - 1; i >= 0; i--) {
+        if (EXPENSIVE_TOOLS_DEFERRED_WHEN_CAPPED.has((tools[i] as any)?.name)) tools.splice(i, 1);
+      }
+      systemParts.variable += `\n\n⚠️ DAILY SPEND CAP REACHED ($${spend.spentUsd.toFixed(2)} of $${spend.capUsd.toFixed(2)}). Operate LEAN this turn: answer ${user.name} directly from what you already know. Do NOT delegate to agents, run research, analyze or generate websites, or generate documents — those tools are withheld until the cap resets at midnight UTC. If ${user.name} asks for one of those, say the daily spend cap is reached and offer to do it once it resets (or that they can raise the cap).`;
+      console.warn(`[iris-${surface}] spend cap reached ($${spend.spentUsd.toFixed(2)}/$${spend.capUsd.toFixed(2)}) — deferring expensive tools, lean mode.`);
+      if (trace) {
+        trace.gates.push({ gate: 'spend-cap', action: 'lean-mode', detail: `Over daily cap ($${spend.spentUsd.toFixed(2)}/$${spend.capUsd.toFixed(2)}) — deferred expensive tools, answer-direct note added.` });
+      }
+    }
+  } catch (capErr) {
+    console.warn(`[iris-${surface}] spend-cap check failed (non-blocking):`, capErr);
+  }
+
   // Accumulate token + tool usage across every Anthropic round-trip in the loop.
   // Per Anthropic's response schema:
   //   usage.input_tokens               = tokens AFTER the last cache breakpoint (uncached)
@@ -832,6 +859,7 @@ export async function generateIrisReply(
         toolsUsedThisTurn: toolsUsed,
         tenantPhone: user.phoneNumber,
         team: delegableTeam,
+        expensiveToolsDeferred,
       });
       accumulate({ input_tokens: critique.tokens_in, output_tokens: critique.tokens_out } as any);
       // Persist EVERY violation (high + medium + low) so the aggregation
@@ -914,6 +942,7 @@ export async function generateIrisReply(
               toolsUsedThisTurn: toolsUsed,
               tenantPhone: user.phoneNumber,
               team: delegableTeam,
+              expensiveToolsDeferred,
             });
             // Persist the re-audit result so we can see in axis_critiques
             // whether revisions are actually working (revision_attempted=false
