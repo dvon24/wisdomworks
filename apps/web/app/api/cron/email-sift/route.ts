@@ -782,8 +782,18 @@ async function storePendingDrafts(
   if (!rows.length) return;
 
   const profile = rows[0].profile ?? { preferences: {}, activeTopics: [] };
+  // Timestamps (2026-05-30): this rebuilds pendingEmailDrafts from the current
+  // inbox every run, so a naive createdAt would reset each cron. Carry
+  // firstSeenAt forward (matched by draft id) so the deck + aging can show how
+  // long a draft has ACTUALLY been pending; updatedAt marks the latest refresh;
+  // emailDate anchors to the underlying email's received time.
+  const prevDrafts: Array<{ id: string; firstSeenAt?: string; emailDate?: string }> =
+    Array.isArray(profile.pendingEmailDrafts) ? profile.pendingEmailDrafts : [];
+  const prevById = new Map(prevDrafts.map((d) => [d.id, d]));
+  const nowIso = new Date().toISOString();
   profile.pendingEmailDrafts = emails.map((e) => {
     const analyses = attachmentAnalyses?.get(e.id) ?? [];
+    const prev = prevById.get(e.id);
     return {
       id: e.id,
       from: e.from,
@@ -791,6 +801,9 @@ async function storePendingDrafts(
       draftReply: e.draftReply,
       classification: e.classification,
       lane: e.lane ?? 'orchestrator',
+      emailDate: e.date ?? prev?.emailDate ?? null,
+      firstSeenAt: prev?.firstSeenAt ?? nowIso,
+      updatedAt: nowIso,
       attachmentAnalyses: analyses.length > 0 ? analyses.map((a) => ({
         filename: a.filename,
         summary: a.analysis?.summary,
