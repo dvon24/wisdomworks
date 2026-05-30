@@ -22,7 +22,14 @@ import {
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 120;
+// 2026-05-30: was 120 and 504'd on 5/27. The internal HARD_DEADLINE_MS (50s)
+// only guards BETWEEN tenants, so a single tenant whose 6 sequential ingests
+// (esp. the uncapped ontology ingest, before the 0fa63b5 on_conflict fix)
+// overran ~120s got killed mid-run. Raising to 300 lets the in-flight tenant
+// finish while the between-tenant deadline still defers the rest — no 504.
+// Follow-up hardening: cap ingestOntology + check the deadline before each
+// ingest within a tenant (not just between tenants).
+export const maxDuration = 300;
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
