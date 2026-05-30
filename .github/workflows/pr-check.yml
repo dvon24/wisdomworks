@@ -41,6 +41,13 @@ jobs:
       DATABASE_URL: postgresql://postgres:testpassword@localhost:5432/wisdomworks_test
       NATS_URL: nats://localhost:4222
       AUTH_SECRET: ci-test-secret
+      # Dummy build-time secrets. `next build` collects page data by importing
+      # route modules, some of which construct SDK clients at module load (e.g.
+      # apps/website /api/checkout does `new Stripe(STRIPE_SECRET_KEY)`). The
+      # constructor only needs a non-empty string — no API calls happen during
+      # build. Vercel's deploy build passes because it has the real values.
+      STRIPE_SECRET_KEY: sk_test_ci_dummy
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: pk_test_ci_dummy
 
     steps:
       - name: Checkout
