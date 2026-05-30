@@ -21,7 +21,15 @@ import { uploadStyleReferenceVideo } from '../../_lib/style-video-storage';
 import { saveMarketingStyle } from '../../_lib/marketing-styles';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// 2026-05-30 incident: heavy owner turns (delegation worker loops ~20-34s +
+// PTC container latency + Axis critic) routinely exceeded 60s, so Vercel
+// killed the function with a 504 BEFORE any reply was sent or chat_run
+// written — the silent-drop the owner experienced. No JS catch runs on a
+// platform timeout, so this cap is the actual fix for that path. 300s is
+// within the plan ceiling (crons already run at 120s). The proper long-term
+// fix is to ACK Meta fast and run the brain async (see incident notes), but
+// this restores replies immediately.
+export const maxDuration = 300;
 
 const VERIFY_TOKEN = 'wisdomworks-whatsapp-verify';
 const GRAPH_API = 'https://graph.facebook.com/v25.0';
