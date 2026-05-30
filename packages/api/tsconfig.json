@@ -2,7 +2,13 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src"
+    "rootDir": "./src",
+    // src/ contains a vitest test file, so typecheck pulls in vitest/vite's
+    // type closure, which transitively references @types/node and suppresses
+    // TS's automatic inclusion of node's global index.d.ts (process/require).
+    // Pinning "node" here restores the node globals. Explicit imports (vitest,
+    // uuid) still resolve regardless of this list.
+    "types": ["node"]
   },
   "include": ["src/**/*"]
 }
