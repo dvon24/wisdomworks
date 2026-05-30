@@ -10,7 +10,7 @@
  * Languages: Auto-detects user language, responds in same language
  */
 
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { loadUserContext, type UserContext } from './context-store';
 import { generateIrisReply } from './iris-brain';
 import { claimMessage } from '../../_lib/message-idempotency';
@@ -79,6 +79,29 @@ async function sendWhatsAppReply(
   const { sendOwnerMessage } = await import('../../_lib/owner-message');
   const result = await sendOwnerMessage({ tenantPhone: to, body, source });
   return result.ok;
+}
+
+// Fast ACK: mark the owner's inbound message read + show a typing indicator,
+// so the now-backgrounded turn gives instant feedback instead of dead air
+// while the brain runs. Best-effort — never blocks or throws into the turn.
+async function markReadAndShowTyping(messageId: string): Promise<void> {
+  const phoneId = process.env.WHATSAPP_PHONE_ID;
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!phoneId || !accessToken) return;
+  try {
+    await fetch(`${GRAPH_API}/${phoneId}/messages`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+        typing_indicator: { type: 'text' },
+      }),
+    });
+  } catch (err) {
+    console.warn('[whatsapp] read/typing ack failed (non-blocking):', err);
+  }
 }
 
 
@@ -481,51 +504,34 @@ export async function POST(request: Request) {
       }
     })();
 
-    // Generate AI response with full context (shared brain — same path as Command Deck).
-    // 2026-05-30 incident fix: generateIrisReply can throw BEFORE its own
-    // internal try/catch (connection load, tool-list build, system-prompt
-    // build, context build all run first). Such a throw used to fall straight
-    // to the outer catch and return a silent HTTP 500 with NO reply — every
-    // owner text since 05:20 UTC 5/29 was claimed (idempotency) then dropped
-    // exactly this way. Catch it here and surface the error to the owner so a
-    // failure is visible (not a black hole) and the real error reaches us.
-    let agentResponse: string;
-    try {
-      agentResponse = await generateIrisReply(text, user, 'whatsapp');
-    } catch (brainErr: any) {
-      const detail = (brainErr?.message ?? String(brainErr ?? 'unknown')).toString().split('\n')[0].slice(0, 300);
-      console.error('[whatsapp-webhook] generateIrisReply threw (surfacing to owner):', brainErr);
-      agentResponse = `⚠️ I hit an error and couldn't finish that: ${detail}\n\nIt's logged — try again or rephrase. If this keeps happening, it's a bug to fix.`;
-    }
+    // 2026-05-30 async refactor (proper fix for the 504 silent-drop incident):
+    // ACK Meta instantly and run the brain OFF the request path. Heavy turns
+    // (delegation worker loops + PTC container latency + Axis critic) take
+    // 30-90s; processing them synchronously raced Vercel's function limit and
+    // 504-dropped messages with no reply. Now we mark the owner's message read
+    // + show typing for instant feedback, return 200 to Meta immediately (no
+    // retry pressure, no held connection), and run generateIrisReply in
+    // after() — delivering the reply via sendOwnerMessage (the canonical
+    // outbound pipeline, which also logs it to conversation_history). after()
+    // keeps the function alive up to maxDuration; a turn that somehow still
+    // exceeds it leaves the owner with the read/typing ack rather than the old
+    // total silence.
+    await markReadAndShowTyping(message.id);
 
-    // Send reply
-    const phoneId = process.env.WHATSAPP_PHONE_ID;
-    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-
-    if (phoneId && accessToken) {
-      const sendResult = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          to: from,
-          type: 'text',
-          text: { body: agentResponse },
-        }),
-      });
-
-      if (!sendResult.ok) {
-        const err = await sendResult.json();
-        console.error('[whatsapp] Send failed:', err);
-      } else {
-        console.log(`[whatsapp] Replied to ${name}`);
+    after(async () => {
+      try {
+        const agentResponse = await generateIrisReply(text, user, 'whatsapp');
+        await sendWhatsAppReply(from, agentResponse, 'iris');
+      } catch (brainErr: any) {
+        const detail = (brainErr?.message ?? String(brainErr ?? 'unknown')).toString().split('\n')[0].slice(0, 300);
+        console.error('[whatsapp-webhook] background brain threw (surfacing to owner):', brainErr);
+        try {
+          await sendWhatsAppReply(from, `⚠️ I hit an error and couldn't finish that: ${detail}\n\nIt's logged — try again or rephrase.`, 'iris');
+        } catch (sendErr) {
+          console.error('[whatsapp-webhook] background error reply also failed:', sendErr);
+        }
       }
-    } else {
-      console.error('[whatsapp-webhook] Cannot send reply — WHATSAPP_PHONE_ID or WHATSAPP_ACCESS_TOKEN is missing in this environment.');
-    }
+    });
 
     return NextResponse.json({ status: 'ok' });
   } catch (error: any) {
