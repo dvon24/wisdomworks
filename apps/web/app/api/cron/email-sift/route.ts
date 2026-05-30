@@ -470,7 +470,14 @@ async function classifyAndDraft(emails: EmailMessage[], tenantPhone?: string): P
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
+        // 2026-05-30: was 1500 — far too low. The classifier returns one rich
+        // JSON object per email (privacy + action + lane + draft + extracted),
+        // ~150-300 tokens each, so ~6-8 emails overflowed 1500 and the array
+        // truncated mid-object → JSON.parse died → the catch fell the WHOLE
+        // batch back to a mislabeled default (which nullified the engagement /
+        // trusted-sender signals). 8000 covers ~30 emails; the salvage-parse
+        // below is the safety net.
+        max_tokens: 8000,
         system: [
           {
             type: 'text',
@@ -535,7 +542,12 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
       }),
     });
 
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    if (!response.ok) {
+      // Capture the body so a 400 is diagnosable instead of an opaque status
+      // (the old `API error: 400` discarded the actual reason).
+      const errBody = await response.text().catch(() => '<no body>');
+      throw new Error(`API error: ${response.status} ${errBody.slice(0, 400)}`);
+    }
 
     const data = await response.json();
     // 2026-05-27 — record classifier's Sonnet cost. Runs every 30 min
@@ -559,8 +571,7 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
       })();
     }
     const text = data.content?.[0]?.text ?? '[]';
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    const results: {
+    type ClassifierResult = {
       index: number;
       classification: string;
       draftReply: string | null;
@@ -568,7 +579,30 @@ For "personal" or "uncertain" privacy mail, set lane to "orchestrator" (owner's 
       privacyConfidence?: number;
       lane?: string;
       extracted?: { people?: string[]; projects?: string[]; dates?: string[]; actionItems?: string[] } | null;
-    }[] = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+    };
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    let results: ClassifierResult[] = [];
+    if (jsonMatch) {
+      try {
+        results = JSON.parse(jsonMatch[0]);
+      } catch (parseErr: any) {
+        // Malformed/truncated classifier JSON. Don't lose the WHOLE batch (the
+        // old behavior fell every email back to a mislabeled default). Salvage
+        // every COMPLETE object by trimming to the last closing brace and
+        // re-closing the array — better to classify 8 of 10 than mislabel all.
+        const lastObj = jsonMatch[0].lastIndexOf('}');
+        if (lastObj > 0) {
+          try {
+            results = JSON.parse(jsonMatch[0].slice(0, lastObj + 1) + ']');
+            console.warn(`[email-sift] classifier JSON malformed — salvaged ${results.length} of ~${remaining.length} (trimmed to last complete object).`);
+          } catch {
+            console.error(`[email-sift] classifier JSON unparseable even after salvage (text len ${text.length}): ${parseErr?.message}`);
+          }
+        } else {
+          console.error(`[email-sift] classifier JSON unparseable, nothing salvageable (text len ${text.length}): ${parseErr?.message}`);
+        }
+      }
+    }
 
     // Build LLM verdicts keyed by email id (LLM indexes were 1..remaining.length).
     const llmVerdicts = new Map<string, EmailSummary>();
