@@ -21,7 +21,15 @@ import { uploadStyleReferenceVideo } from '../../_lib/style-video-storage';
 import { saveMarketingStyle } from '../../_lib/marketing-styles';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// 2026-05-30 incident: heavy owner turns (delegation worker loops ~20-34s +
+// PTC container latency + Axis critic) routinely exceeded 60s, so Vercel
+// killed the function with a 504 BEFORE any reply was sent or chat_run
+// written — the silent-drop the owner experienced. No JS catch runs on a
+// platform timeout, so this cap is the actual fix for that path. 300s is
+// within the plan ceiling (crons already run at 120s). The proper long-term
+// fix is to ACK Meta fast and run the brain async (see incident notes), but
+// this restores replies immediately.
+export const maxDuration = 300;
 
 const VERIFY_TOKEN = 'wisdomworks-whatsapp-verify';
 const GRAPH_API = 'https://graph.facebook.com/v25.0';
@@ -90,6 +98,9 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  // Hoisted so the outer catch can still reach the sender and surface a
+  // failure to the owner instead of returning a silent 500 black hole.
+  let senderForErrors: string | undefined;
   try {
     const rawBody = await request.text();
 
@@ -110,6 +121,7 @@ export async function POST(request: Request) {
     }
 
     const from = message.from;
+    senderForErrors = from;
     const messageType = message.type ?? (message.text ? 'text' : 'unknown');
     const text = sanitizeInput(message.text?.body ?? message.image?.caption ?? message.video?.caption ?? '');
     const name = sanitizeName(contact?.profile?.name ?? 'Customer');
@@ -469,8 +481,22 @@ export async function POST(request: Request) {
       }
     })();
 
-    // Generate AI response with full context (shared brain — same path as Command Deck)
-    const agentResponse = await generateIrisReply(text, user, 'whatsapp');
+    // Generate AI response with full context (shared brain — same path as Command Deck).
+    // 2026-05-30 incident fix: generateIrisReply can throw BEFORE its own
+    // internal try/catch (connection load, tool-list build, system-prompt
+    // build, context build all run first). Such a throw used to fall straight
+    // to the outer catch and return a silent HTTP 500 with NO reply — every
+    // owner text since 05:20 UTC 5/29 was claimed (idempotency) then dropped
+    // exactly this way. Catch it here and surface the error to the owner so a
+    // failure is visible (not a black hole) and the real error reaches us.
+    let agentResponse: string;
+    try {
+      agentResponse = await generateIrisReply(text, user, 'whatsapp');
+    } catch (brainErr: any) {
+      const detail = (brainErr?.message ?? String(brainErr ?? 'unknown')).toString().split('\n')[0].slice(0, 300);
+      console.error('[whatsapp-webhook] generateIrisReply threw (surfacing to owner):', brainErr);
+      agentResponse = `⚠️ I hit an error and couldn't finish that: ${detail}\n\nIt's logged — try again or rephrase. If this keeps happening, it's a bug to fix.`;
+    }
 
     // Send reply
     const phoneId = process.env.WHATSAPP_PHONE_ID;
@@ -497,11 +523,24 @@ export async function POST(request: Request) {
       } else {
         console.log(`[whatsapp] Replied to ${name}`);
       }
+    } else {
+      console.error('[whatsapp-webhook] Cannot send reply — WHATSAPP_PHONE_ID or WHATSAPP_ACCESS_TOKEN is missing in this environment.');
     }
 
     return NextResponse.json({ status: 'ok' });
-  } catch (error) {
+  } catch (error: any) {
     console.error('[whatsapp-webhook] Error:', error);
+    // Don't drop the turn into a silent 500. Best-effort: tell the owner
+    // something failed so a webhook-level throw is visible, not a black hole.
+    // `senderForErrors` is set as soon as we parse the inbound message.
+    if (senderForErrors) {
+      try {
+        const detail = (error?.message ?? String(error ?? 'unknown')).toString().split('\n')[0].slice(0, 200);
+        await sendWhatsAppReply(senderForErrors, `⚠️ Something went wrong on my end: ${detail}. It's logged — try again in a moment.`, 'iris');
+      } catch (sendErr) {
+        console.error('[whatsapp-webhook] fallback error reply also failed:', sendErr);
+      }
+    }
     return NextResponse.json({ status: 'error' }, { status: 500 });
   }
 }
