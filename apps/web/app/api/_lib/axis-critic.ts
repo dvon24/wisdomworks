@@ -84,6 +84,10 @@ export interface CritiqueInput {
    *  Without this, Axis runs free of charge as far as the dashboard
    *  knows, which is exactly the gap Devon flagged on 2026-05-27. */
   tenantPhone?: string;
+  /** Set true when expensive tools (notably delegate_to_agent) were withheld
+   *  this turn — e.g. spend-cap lean mode. Suppresses should_have_delegated:
+   *  Iris can't be faulted for not delegating when delegation was unavailable. */
+  expensiveToolsDeferred?: boolean;
   /** Optional roster of DELEGABLE agents (everyone on the team except Iris
    *  herself) so the critic can judge whether the owner's request belonged
    *  in an agent's domain and whether work presented as an agent's was
@@ -304,9 +308,15 @@ Audit the draft and return JSON.`;
     // If delegate_to_agent fired this turn, presenting the agent's work is
     // legitimate and Iris DID delegate, so neither rule can apply.
     const delegatedThisTurn = (input.toolsUsedThisTurn ?? []).includes('delegate_to_agent');
-    const guarded = delegatedThisTurn
-      ? clean.filter((v) => v.rule !== 'presents_unproduced_agent_work' && v.rule !== 'should_have_delegated')
-      : clean;
+    const cantDelegate = input.expensiveToolsDeferred === true; // delegation withheld (spend-cap lean mode)
+    const guarded = clean.filter((v) => {
+      // When Iris DID delegate, the substitution / should-have-delegated rules can't apply.
+      if (delegatedThisTurn && (v.rule === 'presents_unproduced_agent_work' || v.rule === 'should_have_delegated')) return false;
+      // When delegation was WITHHELD (e.g. spend-cap lean mode), don't fault her
+      // for not delegating — she literally couldn't this turn.
+      if (cantDelegate && v.rule === 'should_have_delegated') return false;
+      return true;
+    });
 
     // passes = true if NO high-severity violations
     const hasHigh = guarded.some((v) => v.severity === 'high');
