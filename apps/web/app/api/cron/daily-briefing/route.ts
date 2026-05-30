@@ -253,6 +253,20 @@ async function generateBriefing(user: any): Promise<string> {
     console.warn('[daily-briefing] context fetch failed:', err);
   }
 
+  // Oldest pending draft age (2026-05-30) — pendingEmailDrafts now carry a
+  // stable firstSeenAt, so the briefing can flag drafts that have been sitting
+  // unactioned. Only surfaced when >= 2 days old to avoid noise on fresh drafts.
+  const oldestDraftDays = pendingDrafts.length > 0
+    ? Math.max(
+        ...pendingDrafts.map((d: any) => {
+          const t = d.firstSeenAt ?? d.emailDate;
+          const ms = t ? now.getTime() - new Date(t).getTime() : 0;
+          return Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 86_400_000) : 0;
+        }),
+      )
+    : 0;
+  const draftAgeNote = oldestDraftDays >= 2 ? ` (oldest pending ${oldestDraftDays} days — flag if stale)` : '';
+
   // Build the UNIFIED schedule for today: native managed-calendar events +
   // connected calendar (from profile) + upcoming bookings. Then flag conflicts.
   let conflictsCount = 0;
@@ -352,7 +366,7 @@ ${runsSummary}
 Today's schedule (📝=native 📅=connected calendar 👥=customer booking):
 ${calendarSummary}${conflictsLine}${calendarNudge}
 
-Pending email drafts awaiting review: ${pendingDrafts.length}
+Pending email drafts awaiting review: ${pendingDrafts.length}${draftAgeNote}
 Uncertain email classifications to clarify: ${uncertainEmails.length}${weatherSummary}
 
 Generate the morning briefing. If there are schedule conflicts, lead with them — owners need to see overlaps before they get caught.${weatherSummary ? ' Include the local weather inline (high/low + condition + practical note like "bring a jacket" or "good day for X").' : ''}`;
