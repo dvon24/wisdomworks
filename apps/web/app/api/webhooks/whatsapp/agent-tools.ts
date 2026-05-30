@@ -7050,7 +7050,12 @@ export async function executeTool(
             return { content: `Couldn't find a manager named "${call.input.parentAgentName}". Top-level agents: ${team.map((a) => a.name).join(', ')}.`, success: false };
           }
           const sub = manager.subTeam ?? { count: 0, label: `${manager.name}'s team`, agents: [] };
-          sub.agents.push({ id: `${manager.id ?? manager.name?.toLowerCase()}-${id}`, name, role, tier });
+          // Idempotent: update an existing sub-agent of the same name rather
+          // than pushing a duplicate (same fix as the top-level push below).
+          const subEntry = { id: `${manager.id ?? manager.name?.toLowerCase()}-${id}`, name, role, tier };
+          const subExistingIdx = sub.agents.findIndex((a: any) => (a?.name ?? '').toLowerCase() === name.toLowerCase());
+          if (subExistingIdx >= 0) sub.agents[subExistingIdx] = { ...sub.agents[subExistingIdx], ...subEntry };
+          else sub.agents.push(subEntry);
           sub.count = sub.agents.length;
           manager.subTeam = sub;
           user.profile.team = team;
@@ -7086,7 +7091,17 @@ export async function executeTool(
           };
         }
 
-        team.push(newAgent as any);
+        // Idempotent on the chat-side team profile (the agent_configs side
+        // already look-then-writes above). Without this guard, repeated
+        // add_agent_to_team calls for the same name pushed duplicate entries
+        // into profile.team while skipping the DB insert — the "Mira ×6"
+        // divergence cleaned up 2026-05-30. Update in place, never duplicate.
+        const existingTeamIdx = team.findIndex((a) => (a?.name ?? '').toLowerCase() === name.toLowerCase());
+        if (existingTeamIdx >= 0) {
+          team[existingTeamIdx] = { ...team[existingTeamIdx], ...newAgent };
+        } else {
+          team.push(newAgent as any);
+        }
         user.profile.team = team;
         await saveUserContext(user);
         await persistAgent();
