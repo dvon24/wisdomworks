@@ -46,7 +46,21 @@ export interface CreateWorkflowResult {
   ok: boolean;
   workflow?: UserWorkflow;
   reason?: string;
+  /** True when an equivalent workflow already existed and we returned it
+   *  instead of inserting a duplicate (same schedule + same agent→tool steps). */
+  duplicate?: boolean;
   proposal_summary: string;
+}
+
+/** Dedup key: schedule + ordered agent→tool step sequence (arg VALUES are
+ *  ignored, so two genuinely-distinct flows that merely share a time still
+ *  differ). This is what catches "Coach → delegate_to_agent @ 13:00" created
+ *  twice across two turns. */
+function workflowSignature(cronExpr: string | null | undefined, steps: WorkflowStep[]): string {
+  const stepSig = (steps ?? [])
+    .map((s) => `${(s.agent ?? '').trim().toLowerCase()}→${(s.tool ?? '').trim().toLowerCase()}`)
+    .join('|');
+  return `${(cronExpr ?? 'on-demand').trim()}::${stepSig}`;
 }
 
 /**
@@ -80,6 +94,34 @@ export async function createUserWorkflow(args: {
   // dispatcher silently never firing because it can't compute next_run_at.
   if (args.cronExpr && !parseCronExpression(args.cronExpr)) {
     return { ok: false, reason: 'invalid_cron_expression', proposal_summary: '' };
+  }
+
+  // Dedup (2026-06-01): createUserWorkflow used to insert unconditionally, so
+  // near-identical workflows piled up (e.g. two "Coach → delegate_to_agent @
+  // 13:00 UTC" workouts created across two turns). Bail if a non-removed
+  // workflow already has the SAME schedule + SAME agent→tool step sequence;
+  // return the existing one so the caller can tell the owner instead of
+  // silently creating a twin.
+  try {
+    const existingRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/user_workflows?tenant_phone=eq.${cleanPhone}&status=neq.removed&select=id,name,status,cron_expr,steps`,
+      { headers: headers() },
+    );
+    if (existingRes.ok) {
+      const existing: UserWorkflow[] = await existingRes.json();
+      const proposedSig = workflowSignature(args.cronExpr ?? null, args.steps);
+      const dup = existing.find((w) => workflowSignature(w.cron_expr, w.steps ?? []) === proposedSig);
+      if (dup) {
+        return {
+          ok: true,
+          duplicate: true,
+          workflow: dup,
+          proposal_summary: `You already have "${dup.name}" [${dup.status}] on the same schedule (${args.cronExpr ?? 'on-demand'}) running the same steps — not creating a duplicate. Reply "tweak ${dup.name}" to change it, or "remove ${dup.name}" first if you want to recreate it.`,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[user-workflows] dedup pre-check failed (proceeding with create):', err);
   }
 
   const nextRun = args.cronExpr ? nextRunAfter(args.cronExpr, new Date()) : null;
