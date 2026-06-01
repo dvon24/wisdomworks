@@ -1100,6 +1100,14 @@ export async function generateIrisReply(
       try {
         const { mineDispositionFromTurn, isTenantInColdStart } = await import('../../_lib/disposition-mining');
         const isCold = await isTenantInColdStart(user.phoneNumber);
+        // Cost gate (audit 2026-06-01): mineDispositionFromTurn runs a full
+        // Sonnet extraction on EVERY owner turn and returns [] for most
+        // ("thanks", "ok", "got it"). Skip it unless the tenant is still in
+        // cold-start (building its operating manual) OR the message carries a
+        // correction/preference signal worth mining — saves a Sonnet call on
+        // the majority of turns with no learning lost.
+        const CORRECTION_SIGNAL = /\b(stop|don'?t|do not|never|always|from now on|going forward|instead|actually|i told you|i said|that'?s wrong|that'?s not|not what|no longer|prefer|quit|please don'?t|too much|annoying)\b/i;
+        if (!isCold && !CORRECTION_SIGNAL.test(text)) return;
         // Use the message just BEFORE the user's input as "what they're
         // reacting to". The last assistant message in conversationHistory
         // is the right anchor (we just removed our own assistant push

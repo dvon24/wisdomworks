@@ -17,6 +17,7 @@
  */
 
 import { redactPII } from '@wisdomworks/shared';
+import { resolveAgentModel } from './model-registry';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -991,7 +992,11 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
   const start = Date.now();
   const protocol = instance.metadata?.operating_protocol ?? {};
   const autonomy = protocol.autonomyLevel ?? 'L1';
-  const primaryModel = config.model_routing?.primary?.model ?? 'claude-haiku-4-5-20251001';
+  // Resolve through the registry: handles both the object shape ({primary:{model}},
+  // onboarding-era — upgrading deprecated IDs like claude-opus-4-20250514) and the
+  // bare-string shape ({primary:'Sonnet'}, admin/add_agent). Defaults to Sonnet 4.6,
+  // never Haiku (this tick passes tools, which Haiku 4.5 can't call).
+  const primaryModel = resolveAgentModel(config.model_routing);
 
   try {
     const ownLaneForCtx = config.config?.category;
