@@ -21,6 +21,34 @@ import { redactPII } from '@wisdomworks/shared';
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+/**
+ * Always returns a NON-EMPTY, useful error string. The common
+ * `err?.message ?? String(err)` records BLANK when an Error has an empty
+ * message (`??` only falls back on null/undefined, not '') — which is exactly
+ * why agent-tick failures surfaced in digests as "Alex failed:" / "Riley
+ * failed:" with no detail, hiding the real cause. Falls back through
+ * name / status / code / JSON snapshot so the failure is always diagnosable.
+ */
+function describeError(err: any): string {
+  if (err == null) return 'unknown error (null)';
+  if (typeof err === 'string') return err.trim() || 'unknown error (empty string)';
+  const msg = typeof err?.message === 'string' ? err.message.trim() : '';
+  if (msg) return err?.name && err.name !== 'Error' ? `${err.name}: ${msg}` : msg;
+  const parts: string[] = [];
+  if (err?.name) parts.push(String(err.name));
+  if (err?.status != null) parts.push(`status=${err.status}`);
+  if (err?.code != null) parts.push(`code=${err.code}`);
+  try {
+    const json = JSON.stringify(err);
+    if (json && json !== '{}') parts.push(json.slice(0, 300));
+  } catch {
+    /* non-serializable — fall through */
+  }
+  const s = String(err);
+  if (s && s !== '[object Object]') parts.push(s);
+  return parts.join(' ').trim() || 'unknown error (no message/name/serialization)';
+}
+
 interface AgentInstanceRow {
   id: string;
   tenant_phone: string;
@@ -1392,7 +1420,7 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
       trigger: 'tick',
       outcome: 'failed',
       duration_ms: Date.now() - start,
-      error: err?.message ?? String(err),
+      error: describeError(err),
       metadata: { autonomy, model_attempted: primaryModel },
     });
   }
