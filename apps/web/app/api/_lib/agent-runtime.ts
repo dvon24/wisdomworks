@@ -208,9 +208,15 @@ export async function computeCadence(tenantPhone: string): Promise<TickCadence> 
   const last = await lastUserActivity(tenantPhone);
   if (!last) return { minutes: 60, band: 'quiet', lastUserActivityMinAgo: -1 };
   const minAgo = (Date.now() - last.getTime()) / 60_000;
-  if (minAgo < 30) return { minutes: 5, band: 'active', lastUserActivityMinAgo: minAgo };
-  if (minAgo < 120) return { minutes: 10, band: 'recent', lastUserActivityMinAgo: minAgo };
-  if (minAgo < 360) return { minutes: 15, band: 'normal', lastUserActivityMinAgo: minAgo };
+  // 2026-06-01 cost cut (owner-approved): background ticks were every 5 min when
+  // active — far more than the owner needs. Floor raised to 30 min for active/recent
+  // and 60 for normal. This is the BACKGROUND agent tick only; the owner's WhatsApp
+  // chat replies are a separate, un-throttled path and stay realtime. ~6x fewer
+  // ticks → large drop in agent-tick model + cache-write spend (the 5-min cadence
+  // exactly matched the cache TTL, so every tick paid cache-WRITE prices).
+  if (minAgo < 30) return { minutes: 30, band: 'active', lastUserActivityMinAgo: minAgo };
+  if (minAgo < 120) return { minutes: 30, band: 'recent', lastUserActivityMinAgo: minAgo };
+  if (minAgo < 360) return { minutes: 60, band: 'normal', lastUserActivityMinAgo: minAgo };
   if (minAgo < 1440) return { minutes: 60, band: 'quiet', lastUserActivityMinAgo: minAgo };
   return { minutes: 240, band: 'asleep', lastUserActivityMinAgo: minAgo };
 }
