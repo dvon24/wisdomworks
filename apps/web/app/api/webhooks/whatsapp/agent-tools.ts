@@ -7685,6 +7685,11 @@ export async function executeTool(
           targetAgent.description ? `Your remit: ${targetAgent.description}` : '',
           `Business context: ${user.businessName ?? 'this business'} (${user.businessType ?? 'unknown industry'}).`,
           `Owner: ${user.name}.`,
+          // 2026-06-02: workers had no date anchor, so Coach inferred "today"
+          // from a stale recalled atom ("May 19, Week 1 post-100k") on the 3pm
+          // workout workflow. Inject the real Berlin-local date + forbid
+          // trusting recalled dates.
+          `Today is ${new Date().toLocaleDateString('en-US', { timeZone: 'Europe/Berlin', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} (Europe/Berlin). Use THIS as today's date — do NOT infer the date from recalled notes/atoms, which may be stale.`,
           '',
           'YOU ARE A DELEGATED WORKER. Iris (the personal assistant) handed you ONE task. Complete it and return your work product.',
           '',
