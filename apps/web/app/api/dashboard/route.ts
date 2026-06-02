@@ -269,9 +269,14 @@ export async function GET(request: Request) {
       byParent.set(key, list);
     }
     const tierFromConfig = (cfg: any): 'Opus' | 'Sonnet' | 'Haiku' => {
-      const primary = (cfg?.model_routing?.primary ?? '').toString().toLowerCase();
-      if (primary.includes('opus')) return 'Opus';
-      if (primary.includes('haiku')) return 'Haiku';
+      // Handle both model_routing shapes: object {primary:{model}} (onboarding-era)
+      // and bare string {primary:'Sonnet'} (admin/add_agent). The old code did
+      // `(primary ?? '').toString()` which stringified the object to
+      // "[object Object]" and mis-badged every onboarding agent as Sonnet.
+      const p = cfg?.model_routing?.primary;
+      const s = String((p && typeof p === 'object' ? p.model : p) ?? '').toLowerCase();
+      if (s.includes('opus')) return 'Opus';
+      if (s.includes('haiku')) return 'Haiku';
       return 'Sonnet';
     };
     const buildAgent = (cfg: any) => {
