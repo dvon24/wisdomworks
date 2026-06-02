@@ -7732,7 +7732,10 @@ export async function executeTool(
             initialMessage: task,
             tools: workerTools,
             maxIterations: MAX_WORKER_ITERATIONS,
-            maxTokens: 1500,
+            // 2026-06-02: was 1500, which truncated long worker outputs like a
+            // full workout (warm-up + blocks + sets/reps/rest tables). 3000
+            // gives room to deliver the complete result in one message.
+            maxTokens: 3000,
             connections,
             userContext: workerUser,
             enablePtc: false,

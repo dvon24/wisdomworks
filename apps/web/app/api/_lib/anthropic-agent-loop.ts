@@ -197,5 +197,35 @@ export async function runAgentToolLoop(p: AgentToolLoopParams): Promise<AgentToo
     messages.push({ role: 'user', content: toolResults });
   }
 
+  // Force a final answer if we exhausted maxIterations while the model was
+  // STILL mid-tool-use. Otherwise finalText is a stale early turn — e.g. a
+  // worker that spent all its iterations calling tools (recall_atoms,
+  // list_my_schedule, …) and never synthesized, leaving only its opening
+  // "let me pull X before building…" preamble. That bug delivered the
+  // PREAMBLE instead of the actual workout on the scheduled Coach workflow
+  // (2026-06-02). One extra call with NO tools makes the model answer from
+  // what it already gathered. Only fires on iteration exhaustion → minimal cost.
+  if (stopReason === 'tool_use' && hasTools && messages.length > 0) {
+    const finalBody: any = {
+      model: p.model,
+      max_tokens: p.maxTokens,
+      system: [{ type: 'text', text: p.system, cache_control: { type: 'ephemeral' } }],
+      messages,
+    };
+    const fr = await callAnthropicJSON(p.apiKey, finalBody, undefined);
+    if (fr.ok) {
+      tokensIn += fr.json?.usage?.input_tokens ?? 0;
+      tokensOut += fr.json?.usage?.output_tokens ?? 0;
+      cacheRead += fr.json?.usage?.cache_read_input_tokens ?? 0;
+      const ftext = (fr.json?.content ?? [])
+        .filter((b: any) => b.type === 'text')
+        .map((b: any) => b.text)
+        .join('\n')
+        .trim();
+      if (ftext) finalText = ftext;
+      stopReason = fr.json?.stop_reason ?? stopReason;
+    }
+  }
+
   return { finalText, toolsUsed, tokensIn, tokensOut, cacheRead, stopReason, apiError: null };
 }
