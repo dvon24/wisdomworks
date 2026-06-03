@@ -6647,7 +6647,7 @@ export async function executeTool(
         const extraTags: string[] = Array.isArray(call.input.tags)
           ? call.input.tags.map(String).map((t) => t.toLowerCase().trim()).filter(Boolean)
           : [];
-        const laneTags: string[] = [];
+        const scopeTags: string[] = [];
         const matchedAgents: string[] = [];
         if (scopeNames.length && SUPABASE_URL && SUPABASE_KEY) {
           try {
@@ -6655,25 +6655,31 @@ export async function executeTool(
               .map((n) => `agent_name.ilike.${encodeURIComponent(n)}`)
               .join(',');
             const cfgRes = await fetch(
-              `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&or=(${orFilter})&select=agent_name,config`,
+              `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&or=(${orFilter})&select=agent_name`,
               { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
             );
             if (cfgRes.ok) {
-              const cfgs: Array<{ agent_name: string; config: { category?: string } | null }> = await cfgRes.json();
+              const cfgs: Array<{ agent_name: string }> = await cfgRes.json();
               for (const c of cfgs) {
-                const lane = c.config?.category;
-                if (lane && typeof lane === 'string') {
-                  laneTags.push(lane.toLowerCase());
-                  matchedAgents.push(c.agent_name);
-                }
+                if (!c.agent_name) continue;
+                // Tag with the agent's NAME (lowercased) — the reliable per-agent
+                // key. A 2026-06-03 live audit showed real teams carry null or
+                // generic role-type categories (Coach=null, Marcus='analytics'),
+                // NOT domain lanes, so resolving scope to config.category yielded
+                // no tag and the fact fell back to GLOBAL — the exact leak. The
+                // name always exists. recent_atoms_for_prompt excludes an atom
+                // from any agent whose lane != this tag, so a name-tagged atom is
+                // hidden from every other lane'd agent.
+                scopeTags.push(c.agent_name.toLowerCase());
+                matchedAgents.push(c.agent_name);
               }
             }
           } catch (err) {
             console.warn('[remember_this] scope resolution failed:', err);
           }
         }
-        const scopeRequestedButUnresolved = scopeNames.length > 0 && laneTags.length === 0;
-        const tags = Array.from(new Set([...laneTags, ...extraTags]));
+        const scopeRequestedButUnresolved = scopeNames.length > 0 && scopeTags.length === 0;
+        const tags = Array.from(new Set([...scopeTags, ...extraTags]));
 
         const id = await upsertAtom({
           tenantPhone: cleanPhone,
