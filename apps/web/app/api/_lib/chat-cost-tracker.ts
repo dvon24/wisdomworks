@@ -74,7 +74,14 @@ interface ModelPricing {
 
 const PRICING: Record<string, ModelPricing> = {
   'claude-sonnet-4-6': { in: 3, out: 15, cacheRead: 0.30, cacheWrite: 3.75 },
+  // Opus 4.8 is the LIVE Opus (model-registry.ts). It was MISSING here, so
+  // estimateLlmCost fell back to Sonnet and undercounted every Opus call ~5x.
+  // Conservative Anthropic list ($15/$75); confirm vs the actual invoice.
+  'claude-opus-4-8': { in: 15, out: 75, cacheRead: 1.50, cacheWrite: 18.75 },
   'claude-opus-4-7': { in: 15, out: 75, cacheRead: 1.50, cacheWrite: 18.75 },
+  // Previous-gen IDs — historical chat_runs rows still reference these.
+  'claude-opus-4-20250514': { in: 15, out: 75, cacheRead: 1.50, cacheWrite: 18.75 },
+  'claude-sonnet-4-20250514': { in: 3, out: 15, cacheRead: 0.30, cacheWrite: 3.75 },
   // Haiku 4.5 — used by axis-critic for fast/cheap audits.
   'claude-haiku-4-5-20251001': { in: 1, out: 5, cacheRead: 0.10, cacheWrite: 1.25 },
   'claude-haiku-4-5': { in: 1, out: 5, cacheRead: 0.10, cacheWrite: 1.25 },

@@ -19,11 +19,18 @@ interface ModelPrice {
   cachedInPerMillion: number;
 }
 
+// CONSERVATIVE canonical $/M-token prices, kept in sync with chat-cost-tracker.ts
+// PRICING (TODO: consolidate both into model-registry.ts so they can't drift again).
+// Aligned 2026-06-03: this table previously had STALE Haiku ($0.25/$1.25 — that's
+// Haiku 3) and Opus-4.7 ($5/$25) values disagreeing ~4x/3x with chat-cost-tracker,
+// and NEITHER table listed the LIVE Opus 4.8 → Opus undercounted ~5x. Confirm Haiku
+// 4.5 + Opus 4.8 against the actual Anthropic invoice.
 const MODEL_PRICES: Record<string, ModelPrice> = {
-  // Current generation (4.6/4.7). Opus 4.7 is 3× cheaper than Opus 4.
-  'claude-opus-4-7': { inPerMillion: 5, outPerMillion: 25, cachedInPerMillion: 0.5 },
+  'claude-opus-4-8': { inPerMillion: 15, outPerMillion: 75, cachedInPerMillion: 1.5 },
+  'claude-opus-4-7': { inPerMillion: 15, outPerMillion: 75, cachedInPerMillion: 1.5 },
   'claude-sonnet-4-6': { inPerMillion: 3, outPerMillion: 15, cachedInPerMillion: 0.3 },
-  'claude-haiku-4-5-20251001': { inPerMillion: 0.25, outPerMillion: 1.25, cachedInPerMillion: 0.025 },
+  'claude-haiku-4-5-20251001': { inPerMillion: 1, outPerMillion: 5, cachedInPerMillion: 0.1 },
+  'claude-haiku-4-5': { inPerMillion: 1, outPerMillion: 5, cachedInPerMillion: 0.1 },
   // Previous generation — kept for historical chat_runs rows that reference these IDs.
   'claude-opus-4-20250514': { inPerMillion: 15, outPerMillion: 75, cachedInPerMillion: 1.5 },
   'claude-sonnet-4-20250514': { inPerMillion: 3, outPerMillion: 15, cachedInPerMillion: 0.3 },
@@ -34,7 +41,7 @@ const FALLBACK_PRICE: ModelPrice = { inPerMillion: 3, outPerMillion: 15, cachedI
 function priceFor(model: string): ModelPrice {
   if (!model) return FALLBACK_PRICE;
   if (MODEL_PRICES[model]) return MODEL_PRICES[model];
-  if (/opus/i.test(model)) return MODEL_PRICES['claude-opus-4-7']!;
+  if (/opus/i.test(model)) return MODEL_PRICES['claude-opus-4-8']!;
   if (/haiku/i.test(model)) return MODEL_PRICES['claude-haiku-4-5-20251001']!;
   return FALLBACK_PRICE;
 }
