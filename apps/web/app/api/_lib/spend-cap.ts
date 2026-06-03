@@ -69,6 +69,32 @@ export async function getDailySpend(tenantPhone: string): Promise<SpendStatus> {
     return { spentUsd: 0, capUsd, over: false };
   }
 
+  // 2026-06-03: agent ticks log to agent_runs (tokens only, NO cost_usd) and
+  // never hit chat_runs — so the cap was blind to the LARGEST background cost
+  // surface (the bug Devon hit: real spend ~$5-13/day, cap saw only ~$2/day of
+  // chat). Add agent_runs spend, derived from tokens. chat_runs and agent_runs
+  // are DISJOINT sources, so summing both does NOT double-count. Input is
+  // treated as uncached (a slight OVER-estimate) — the safe direction for a cap.
+  try {
+    const arRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/agent_runs?tenant_phone=eq.${clean}&started_at=gte.${dayStart.toISOString()}&select=tokens_in,tokens_out,model_used`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+    );
+    if (arRes.ok) {
+      const { estimateLlmCost } = await import('./chat-cost-tracker');
+      const arRows: Array<{ tokens_in: number | null; tokens_out: number | null; model_used: string | null }> = await arRes.json();
+      for (const r of arRows) {
+        spentUsd += estimateLlmCost({
+          model: r.model_used ?? 'claude-sonnet-4-6',
+          uncachedIn: Number(r.tokens_in) || 0,
+          tokensOut: Number(r.tokens_out) || 0,
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('[spend-cap] agent_runs spend query failed (chat_runs still counted):', err);
+  }
+
   const status: SpendStatus = { spentUsd, capUsd, over: spentUsd >= capUsd };
   cache.set(clean, { status, at: now });
   return status;
