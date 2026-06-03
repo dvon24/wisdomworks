@@ -38,6 +38,8 @@ export type LlmSurface =
   | 'disposition-mining' | 'axis-critic' | 'axis-critic-revision'
   // Workflow / agent surfaces
   | 'workflow-step' | 'agent-tick'
+  // Customer-facing (SMB framework — a customer texts the business; cost is the tenant's)
+  | 'customer-reply'
   // Content generators
   | 'marketing-drafts' | 'email-followup' | 'research' | 'document-analysis' | 'photo-analysis'
   // Knowledge layer
