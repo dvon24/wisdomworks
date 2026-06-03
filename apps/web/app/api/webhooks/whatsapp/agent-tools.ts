@@ -1000,13 +1000,14 @@ const TOOL_ARCHIVE_ATOM: AnthropicTool = {
 const TOOL_REMEMBER_THIS: AnthropicTool = {
   name: 'remember_this',
   description:
-    "Explicitly remember something the owner just told you, with owner_confirmed=true. Use when the owner makes a clear declarative statement worth durable storage ('we don't email after 7pm', 'my main competitor is X', 'my goal this quarter is Y'). IMPORTANT TAG RULES: always include 'general' in tags if this fact applies to ALL agents (not just one lane). For platform-level statements about what isn't built / is on the roadmap, include 'known_gap' or 'platform' or 'roadmap' so every agent stops flagging it as missing.",
+    "Explicitly remember something the owner just told you, with owner_confirmed=true. Use when the owner makes a clear declarative statement worth durable storage.\n\nSCOPE THE FACT TO WHO ACTUALLY NEEDS IT — this is important. A fact belongs to ONE agent's domain far more often than to all of them. The owner's diet/health → only the fitness/wellness agent. A bookkeeping rule → only the finance agent. A brand-voice note → only marketing. Set `scope` to those agent name(s) (e.g. scope:[\"Coach\"]) and a web/SEO agent will never see the owner's cholesterol. Only OMIT scope for genuinely cross-cutting facts every agent must honor — operational rules ('we don't email after 7pm'), the main competitor, a company-wide quarterly goal. When unsure whether a fact is universal, prefer scoping it: a too-narrow fact is invisible to one agent; a too-broad personal fact erodes the owner's trust in every other agent. For platform-level statements about what isn't built / is on the roadmap, add 'known_gap'/'platform'/'roadmap' to tags so every agent stops flagging it as missing.",
   input_schema: {
     type: 'object',
     properties: {
       kind: { type: 'string', enum: ['competitor', 'goal', 'preference', 'constraint', 'person', 'event', 'fact'] },
       content: { type: 'string', description: 'Third-person factual statement — e.g. "Owner does not want emails sent after 7pm local time."' },
-      tags: { type: 'array', items: { type: 'string' }, description: "Lowercase tags for filtering. ALWAYS include 'general' if the fact applies platform-wide (most do). For roadmap/known-gap items: 'known_gap', 'roadmap', 'platform'. For lane-specific facts: the lane name (operations / marketing / etc.)." },
+      scope: { type: 'array', items: { type: 'string' }, description: "Agent name(s) this fact belongs to, e.g. [\"Coach\"] or [\"Marcus\",\"Mira\"]. The fact will ONLY be visible to those agents (resolved to their lanes server-side). OMIT for facts every agent must honor (operational rules, company goals, the main competitor)." },
+      tags: { type: 'array', items: { type: 'string' }, description: "Optional extra lowercase tags. For roadmap/known-gap items: 'known_gap', 'roadmap', 'platform'. You normally don't need this — use `scope` to target agents. Do NOT add 'general' to force-broadcast a personal fact." },
     },
     required: ['kind', 'content'],
   },
@@ -6633,6 +6634,53 @@ export async function executeTool(
         const content = String(call.input.content ?? '').trim();
         if (!content) return { content: 'Missing content.', success: false };
         const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+
+        // Scope resolution: agent name(s) -> their lane categories, which is
+        // what recent_atoms_for_prompt matches on (p_lane = ANY(tags)). Scoping
+        // a fact to ["Coach"] tags it with the wellness lane so ONLY that agent
+        // loads it — a web/SEO agent never sees the owner's diet. Omitting scope
+        // leaves it untagged = universal (the right default for operational
+        // rules and company goals).
+        const scopeNames: string[] = Array.isArray(call.input.scope)
+          ? call.input.scope.map(String).map((s) => s.trim()).filter(Boolean)
+          : [];
+        const extraTags: string[] = Array.isArray(call.input.tags)
+          ? call.input.tags.map(String).map((t) => t.toLowerCase().trim()).filter(Boolean)
+          : [];
+        const scopeTags: string[] = [];
+        const matchedAgents: string[] = [];
+        if (scopeNames.length && SUPABASE_URL && SUPABASE_KEY) {
+          try {
+            const orFilter = scopeNames
+              .map((n) => `agent_name.ilike.${encodeURIComponent(n)}`)
+              .join(',');
+            const cfgRes = await fetch(
+              `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&or=(${orFilter})&select=agent_name`,
+              { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+            );
+            if (cfgRes.ok) {
+              const cfgs: Array<{ agent_name: string }> = await cfgRes.json();
+              for (const c of cfgs) {
+                if (!c.agent_name) continue;
+                // Tag with the agent's NAME (lowercased) — the reliable per-agent
+                // key. A 2026-06-03 live audit showed real teams carry null or
+                // generic role-type categories (Coach=null, Marcus='analytics'),
+                // NOT domain lanes, so resolving scope to config.category yielded
+                // no tag and the fact fell back to GLOBAL — the exact leak. The
+                // name always exists. recent_atoms_for_prompt excludes an atom
+                // from any agent whose lane != this tag, so a name-tagged atom is
+                // hidden from every other lane'd agent.
+                scopeTags.push(c.agent_name.toLowerCase());
+                matchedAgents.push(c.agent_name);
+              }
+            }
+          } catch (err) {
+            console.warn('[remember_this] scope resolution failed:', err);
+          }
+        }
+        const scopeRequestedButUnresolved = scopeNames.length > 0 && scopeTags.length === 0;
+        const tags = Array.from(new Set([...scopeTags, ...extraTags]));
+
         const id = await upsertAtom({
           tenantPhone: cleanPhone,
           kind,
@@ -6640,15 +6688,30 @@ export async function executeTool(
           source: 'owner_confirmed',
           confidence: 1.0,
           ownerConfirmed: true,
-          tags: Array.isArray(call.input.tags) ? call.input.tags.map(String) : [],
+          tags,
         });
-        return id
-          ? {
-              content: `Got it. Every agent will know: "${content.slice(0, 100)}".`,
-              success: true,
-              owner_confirmation: `Saved to memory (${kind}): "${content.slice(0, 100)}${content.length > 100 ? '…' : ''}". All agents now have access.`,
-            }
-          : { content: 'Could not save.', success: false };
+        if (!id) return { content: 'Could not save.', success: false };
+
+        const snippet = `${content.slice(0, 100)}${content.length > 100 ? '…' : ''}`;
+        if (matchedAgents.length) {
+          return {
+            content: `Got it. ${matchedAgents.join(', ')} will use this: "${content.slice(0, 100)}".`,
+            success: true,
+            owner_confirmation: `Saved (${kind}): "${snippet}". Scoped to ${matchedAgents.join(', ')} — other agents won't see it.`,
+          };
+        }
+        if (scopeRequestedButUnresolved) {
+          return {
+            content: `Saved, but I couldn't match the agent(s) you named (${scopeNames.join(', ')}), so it's shared with all agents for now.`,
+            success: true,
+            owner_confirmation: `Saved (${kind}): "${snippet}". I couldn't match ${scopeNames.join(', ')}, so it's shared with all agents — tell me the exact agent name to narrow it.`,
+          };
+        }
+        return {
+          content: `Got it. Saved for all agents: "${content.slice(0, 100)}".`,
+          success: true,
+          owner_confirmation: `Saved (${kind}): "${snippet}". Shared with all agents.`,
+        };
       }
 
       case 'request_research': {
