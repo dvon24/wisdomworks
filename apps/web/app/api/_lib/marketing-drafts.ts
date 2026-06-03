@@ -518,6 +518,22 @@ Rules:
     });
     if (!res.ok) return [];
     const data = await res.json();
+    // 2026-06-03 — record marketing concept-gen Sonnet cost so the spend cap +
+    // command deck see it (it was an invisible background LLM surface).
+    void (async () => {
+      try {
+        const { recordLlmCall } = await import('./chat-cost-tracker');
+        await recordLlmCall({
+          tenantPhone: cleanPhone,
+          surface: 'marketing-drafts',
+          model: 'claude-sonnet-4-6',
+          tokensIn: data.usage?.input_tokens ?? 0,
+          tokensOut: data.usage?.output_tokens ?? 0,
+          cachedTokensIn: data.usage?.cache_read_input_tokens ?? 0,
+          toolsUsed: [],
+        });
+      } catch {}
+    })();
     const text = data.content?.[0]?.text ?? '';
     const jsonStart = text.indexOf('{');
     const jsonEnd = text.lastIndexOf('}');

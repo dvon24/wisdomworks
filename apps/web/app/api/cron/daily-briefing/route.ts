@@ -113,6 +113,22 @@ export async function GET(request: Request) {
                 });
                 if (revRes.ok) {
                   const revData = await revRes.json();
+                  // 2026-06-03 — record the Axis REVISION sub-call cost. The main
+                  // generator is recorded below; this 2nd call was invisible.
+                  void (async () => {
+                    try {
+                      const { recordLlmCall } = await import('../../_lib/chat-cost-tracker');
+                      await recordLlmCall({
+                        tenantPhone: user.phone_number,
+                        surface: 'daily-briefing',
+                        model: 'claude-sonnet-4-6',
+                        tokensIn: revData.usage?.input_tokens ?? 0,
+                        tokensOut: revData.usage?.output_tokens ?? 0,
+                        cachedTokensIn: revData.usage?.cache_read_input_tokens ?? 0,
+                        toolsUsed: [],
+                      });
+                    } catch {}
+                  })();
                   const revText = revData.content?.[0]?.text;
                   if (revText && revText.trim().length > 30) {
                     auditedBriefing = revText.trim();
