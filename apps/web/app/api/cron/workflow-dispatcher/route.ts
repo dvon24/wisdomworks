@@ -48,6 +48,8 @@ interface DueWorkflow {
   tenant_phone: string;
   name: string;
   cron_expr: string | null;
+  /** IANA tz (e.g. 'Europe/Berlin'); null/absent → schedule interpreted in UTC. */
+  timezone: string | null;
   steps: any[];
   consecutive_failures: number;
 }
@@ -61,7 +63,7 @@ async function fetchDueWorkflows(now: Date): Promise<DueWorkflow[]> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
   try {
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/user_workflows?status=eq.active&next_run_at=lte.${encodeURIComponent(now.toISOString())}&select=id,tenant_phone,name,cron_expr,steps,consecutive_failures`,
+      `${SUPABASE_URL}/rest/v1/user_workflows?status=eq.active&next_run_at=lte.${encodeURIComponent(now.toISOString())}&select=*`,
       { headers: supaHeaders() },
     );
     if (!res.ok) return [];
@@ -204,7 +206,7 @@ export async function GET(request: Request) {
       });
 
       // Compute next run from cron expression (or null for on-demand).
-      const next = wf.cron_expr ? nextRunAfter(wf.cron_expr, new Date()) : null;
+      const next = wf.cron_expr ? nextRunAfter(wf.cron_expr, new Date(), wf.timezone ?? undefined) : null;
 
       // Track consecutive failures so we can auto-pause workflows that
       // are failing chronically (e.g. lost OAuth token). Resets on
@@ -331,7 +333,7 @@ export async function GET(request: Request) {
       // Increment failure counter on uncaught errors too — they still
       // count toward auto-pause.
       const newCount = (wf.consecutive_failures ?? 0) + 1;
-      await recordRun(wf.id, 'failed', err?.message ?? String(err), wf.cron_expr ? nextRunAfter(wf.cron_expr, new Date()) : null, newCount);
+      await recordRun(wf.id, 'failed', err?.message ?? String(err), wf.cron_expr ? nextRunAfter(wf.cron_expr, new Date(), wf.timezone ?? undefined) : null, newCount);
       if (newCount === AUTO_PAUSE_FAILURE_THRESHOLD) {
         await autoPauseWorkflow(wf.id, err?.message ?? String(err));
         await enqueueWorkflowNotice(
