@@ -29,14 +29,20 @@ export interface SendSmsResult {
 export async function sendSms(input: {
   to: string;
   body: string;
+  /** Sender number. Defaults to env. For multi-tenant CUSTOMER replies pass the
+   *  business's own number (the inbound `To`) so the reply comes from the right
+   *  line, not a shared global number. */
+  from?: string;
 }): Promise<SendSmsResult> {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const fromNumber = process.env.TWILIO_FROM_NUMBER;
+  // Accept an explicit per-call from (business number) first, then either env
+  // name — TWILIO_FROM_NUMBER or TWILIO_PHONE_NUMBER (both appear in the wild).
+  const fromNumber = input.from ?? process.env.TWILIO_FROM_NUMBER ?? process.env.TWILIO_PHONE_NUMBER;
   if (!accountSid || !authToken || !fromNumber) {
     return {
       ok: false,
-      error: 'Twilio SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER required in Vercel env).',
+      error: 'Twilio SMS not configured (need TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and a from number: TWILIO_FROM_NUMBER/TWILIO_PHONE_NUMBER env or an explicit from).',
     };
   }
 
