@@ -781,6 +781,55 @@ export const GENERIC_SMALL_BUSINESS: VerticalTemplate = {
   },
 };
 
+/** Homeschool / tutoring — weekly curriculum, lesson scheduling, progress notes.
+ *  Agent role strings are chosen to resolve through inferRoleSlug:
+ *  "Curriculum Planner" -> tutor, "Lesson Scheduler" -> scheduler. */
+export const HOMESCHOOL_TEMPLATE: VerticalTemplate = {
+  matches: ['homeschool', 'home_school', 'homeschooling', 'tutoring', 'tutor', 'teacher', 'educator', 'curriculum', 'co_op', 'esl'],
+  label: 'Homeschool / Tutoring',
+  tagline: 'Weekly curriculum, lesson scheduling, and progress — handled',
+  emoji: '📚',
+  onboardingPills: [
+    'Homeschooling 2 kids',
+    'Private tutor, ~10 students',
+    'Co-op curriculum lead',
+    'Online ESL tutor',
+  ],
+  defaultAgents: [
+    IRIS_ORCHESTRATOR,
+    { role: 'Curriculum Planner', name: 'Curriculum Planner', tier: 'Sonnet', required: true, lane: 'specialist',
+      description: 'Weekly lesson plans and curriculum aligned to each student level and recent progress', channels: ['whatsapp', 'sms', 'email'] },
+    { role: 'Lesson Scheduler', name: 'Lesson Scheduler', tier: 'Sonnet', required: true, lane: 'scheduler',
+      description: 'Schedules lessons; texts the student (or parent) day-before reminders; avoids conflicts across students', channels: ['whatsapp', 'sms', 'email'] },
+    { role: 'Tutor', name: 'Progress & Reports', tier: 'Sonnet', required: false, lane: 'specialist',
+      description: 'Tracks each student progress and drafts a weekly summary, delivered to the student phone or parent email', channels: ['whatsapp', 'sms', 'email'] },
+  ],
+  recommendedTools: [
+    { id: 'google_calendar', label: 'Google Calendar', why: 'Lesson scheduling and conflict detection' },
+    { id: 'sms', label: 'SMS (text)', why: 'Text lesson reminders, prompts, and the weekly plan straight to a student or parent phone' },
+    { id: 'email', label: 'Email', why: 'Send weekly curriculum and progress notes to parents' },
+    { id: 'google_drive', label: 'Google Drive', why: 'Store and share curriculum docs and worksheets' },
+  ],
+  sampleWorkflows: [
+    { content: 'Every Sunday evening, generate next week curriculum/lesson plan for the owner to review', tags: ['workflow', 'curriculum', 'homeschool'] },
+    { content: 'Day before each lesson, text the student (or parent) a reminder with what to prepare', tags: ['workflow', 'scheduling', 'homeschool'] },
+    { content: 'Send the weekly plan to each student via text, or to the parent via email', tags: ['workflow', 'curriculum', 'homeschool'] },
+    { content: 'End of week, draft a short progress note per student for the parent', tags: ['workflow', 'progress', 'homeschool'] },
+  ],
+  commonConstraints: [
+    { content: 'Keep all student data private; never share one family progress with another family', tags: ['policy', 'homeschool', 'general'] },
+    { content: 'Curriculum must match each student stated grade level and learning goals', tags: ['policy', 'homeschool', 'education'] },
+  ],
+  commonGoals: [
+    { content: 'Keep every student on a consistent weekly cadence with prepared materials', tags: ['business_goal', 'homeschool', 'general'] },
+    { content: 'Give parents clear, regular visibility into their child progress', tags: ['business_goal', 'homeschool', 'education'] },
+  ],
+  laneHints: {
+    specialist: 'Align curriculum to each student level; keep families data separate; surface a plan for the owner to review, do not auto-send to parents without approval',
+    scheduler: 'Lesson scheduling and day-before reminders; avoid double-booking across students',
+  },
+};
+
 export const VERTICAL_TEMPLATES: VerticalTemplate[] = [
   ELECTRICIAN_TEMPLATE,
   HVAC_PLUMBING_TEMPLATE,
@@ -792,6 +841,7 @@ export const VERTICAL_TEMPLATES: VerticalTemplate[] = [
   REAL_ESTATE_TEMPLATE,
   CONSULTING_TEMPLATE,
   PROFESSIONAL_SERVICES_VERTICAL,
+  HOMESCHOOL_TEMPLATE,
   GENERIC_SMALL_BUSINESS,
 ];
 
