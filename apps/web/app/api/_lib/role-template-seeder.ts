@@ -24,7 +24,7 @@
  */
 
 import { nextRunAfter } from './cron-next';
-import { getAgentCanonicalRole } from './role-catalog';
+import { getAgentCanonicalRole, setAgentCanonicalRole } from './role-catalog';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -50,40 +50,76 @@ interface RoleTemplate {
  * unknown roles return null so the seeder is a no-op rather than guessing
  * incorrectly. Add new mappings as new roles ship.
  */
+/**
+ * Map a free-text agent_role (or agent name) to a canonical role_slug that
+ * EXISTS in agent_role_catalog. Returns null when nothing matches confidently
+ * — the caller then leaves the agent unbound and surfaces it (the "can't ship
+ * mute" visibility) rather than guessing wrong.
+ *
+ * Every returned slug MUST be a real catalog row (verified 2026-06-03 against
+ * the 30-row catalog). Order matters — specific compound phrases first, then
+ * single keywords. Notable corrections 2026-06-03:
+ *   - developer/engineer/au7o → 'web-developer' (was 'au7o-dev', which has no
+ *     catalog row — its templates were folded into web-developer).
+ *   - finance/bookkeeping split: 'bookkeeper' vs 'financial-advisor' are
+ *     distinct catalog roles; 'finance' (orphan) folds into financial-advisor.
+ *   - operations-manager is its OWN complete role now — no longer lumped into
+ *     financial-advisor.
+ */
 export function inferRoleSlug(agentRole: string | undefined | null): string | null {
   if (!agentRole) return null;
   const r = agentRole.toLowerCase().trim();
+  const has = (...kw: string[]) => kw.some((k) => r.includes(k));
 
-  // Order matters — more specific matches first.
-  if (r.includes('auditor') || r.includes('runtime monitor')) return 'runtime-auditor';
-  if (r.includes('personal assistant') || r.includes('orchestrator')) return 'personal-assistant';
+  // ── Platform / coordination ──
+  if (has('auditor', 'runtime monitor')) return 'runtime-auditor';
+  // "Personal AI Assistant", "Personal Assistant", "Executive Assistant" — the
+  // 'assistant' + (personal|executive) pair catches infixes like "AI".
+  if (has('personal assistant', 'orchestrator', 'chief of staff', 'executive assistant') || (r.includes('assistant') && (r.includes('personal') || r.includes('executive')))) return 'personal-assistant';
+  if (has('scheduler', 'schedul', 'coordinator', 'calendar manager', 'booking')) return 'scheduler';
 
-  // Au7o / project / engineering work
-  if (r.includes('au7o') || r.includes('project lead') || r.includes('engineer') || r.includes('developer') || r.includes('devops')) return 'au7o-dev';
+  // ── Technical ──
+  if (has('ux', 'ui design', 'product design', 'designer')) return 'ux-designer';
+  if (has('web developer', 'developer', 'engineer', 'devops', 'au7o', 'programmer', 'full stack', 'frontend', 'backend', 'software')) return 'web-developer';
 
-  // Scheduling / executive coordination
-  if (r.includes('schedul') || r.includes('coordinator') || r.includes('executive assistant')) return 'scheduler';
+  // ── Finance (most specific first) ──
+  if (has('bookkeep', 'accounts payable', 'accounts receivable')) return 'bookkeeper';
+  if (has('operations manager', 'ops manager', 'operations lead') || r === 'operations' || r === 'ops') return 'operations-manager';
+  if (has('financial advisor', 'finance manager', 'cfo', 'controller', 'accountant', 'personal finance') || r === 'finance' || (r.includes('financ') && r.includes('advis'))) return 'financial-advisor';
 
-  // Finance / bookkeeping (Mira-style)
-  if (r.includes('bookkeep') || r.includes('personal finance') || r === 'finance') return 'finance';
+  // ── Marketing / content / writing ──
+  if (has('content creator', 'influencer', 'video creator', 'creator')) return 'content-creator';
+  if (has('marketing', 'social media', 'brand manager', 'growth')) return 'marketing-manager';
+  if (has('copywriter', 'writer', 'author', 'blogger')) return 'writer';
+  if (has('editor', 'proofread')) return 'editor';
 
-  // Financial advisor / operations / finance manager — broadest financial bucket.
-  // Operations Manager + Financial Advisor + Finance Lead all share the same
-  // canonical routines (P&L, AR scan, monthly burn) so they share templates.
-  // Specialise later if real differences emerge.
-  if (
-    r.includes('financial advisor') ||
-    (r.includes('financ') && r.includes('advis')) ||
-    r.includes('operations manager') ||
-    r.includes('ops manager') ||
-    r === 'operations' ||
-    r === 'ops' ||
-    r.includes('finance manager') ||
-    r.includes('cfo') ||
-    r.includes('controller')
-  ) {
-    return 'financial-advisor';
-  }
+  // ── People-facing ops ──
+  if (has('customer service', 'customer support', 'customer success', 'support agent', 'help desk', 'concierge')) return 'customer-service';
+  if (has('recruiter', 'talent', 'hiring', 'human resources') || r === 'hr') return 'recruiter';
+  if (has('real estate', 'realtor', 'property')) return 'real-estate-agent';
+  if (has('consultant', 'strategist', 'advisor')) return 'consultant';
+
+  // ── Project management ──
+  if (has('freelance')) return 'freelancer-pm';
+  if (has('project manager', 'program manager', 'scrum', 'delivery manager')) return 'project-manager';
+
+  // ── Health / wellness (specific coach types before generic) ──
+  if (has('personal trainer', 'fitness coach', 'strength coach', 'trainer')) return 'personal-trainer';
+  if (has('nutritionist', 'dietician', 'dietitian', 'nutrition')) return 'nutritionist';
+  if (has('meal plan', 'meal prep')) return 'meal-planner';
+  if (has('grocery', 'shopping list')) return 'grocery-planner';
+  if (has('sleep')) return 'sleep-coach';
+  if (has('medication', 'pharmacy', 'prescription', 'meds')) return 'medication-tracker';
+  if (has('fitness log', 'workout log', 'activity track')) return 'fitness-logger';
+  if (has('language coach', 'language tutor', 'esl')) return 'language-coach';
+  if (has('life coach', 'wellness coach', 'mindfulness', 'habit')) return 'life-coach';
+
+  // ── Education ──
+  if (has('tutor', 'teacher', 'homeschool', 'curriculum', 'instructor', 'education')) return 'tutor';
+
+  // ── Lifestyle ──
+  if (has('travel', 'trip', 'itinerary')) return 'travel-planner';
+  if (has('household', 'home manager', 'house manager')) return 'household-manager';
 
   return null;
 }
@@ -256,4 +292,93 @@ export async function seedRoleTemplatesForAgent(args: {
 function workflowName(agentName: string, tpl: RoleTemplate): string {
   const slug = agentName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   return `${slug}-${tpl.name_suffix}`;
+}
+
+export interface BindSeedAgentResult {
+  agent_name: string;
+  agent_role: string;
+  role_slug: string | null;
+  bound: boolean;
+  workflows_created: number;
+  matched: boolean;
+}
+
+export interface BindSeedReport {
+  tenant_phone: string;
+  agents: BindSeedAgentResult[];
+  bound_count: number;
+  workflows_created: number;
+  unmatched: string[];
+  summary: string;
+}
+
+/**
+ * Bind every agent on a tenant to a canonical catalog role and seed its day-1
+ * routines. This is the launch-critical onboarding wire (GAP 1 — the deploy
+ * path never bound agents to the catalog or seeded routines) AND the self-heal
+ * for legacy agents created before binding existed (GAP 6 — agents added via
+ * WhatsApp/backfill/provision_axis with canonical_role_slug=null, e.g. a
+ * tenant's pre-existing Coach/Mira).
+ *
+ * Reuses the in-app pieces (inferRoleSlug + setAgentCanonicalRole +
+ * seedRoleTemplatesForAgent) so there's ONE source of role logic. Idempotent:
+ * an already-bound agent isn't re-bound, and seeding skips workflows that
+ * already exist. Agents whose role can't be resolved to a catalog slug are
+ * returned in `unmatched` (NOT silently skipped) so the caller can surface
+ * them — the "no agent ships mute, and if one might, we say so" guarantee.
+ */
+export async function bindAndSeedTenantAgents(tenantPhone: string): Promise<BindSeedReport> {
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  const base: BindSeedReport = { tenant_phone: cleanPhone, agents: [], bound_count: 0, workflows_created: 0, unmatched: [], summary: 'no agents' };
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ...base, summary: 'supabase not configured' };
+
+  let configs: Array<{ agent_name: string; agent_role: string | null; canonical_role_slug: string | null }> = [];
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${cleanPhone}&status=neq.removed&select=agent_name,agent_role,canonical_role_slug`,
+      { headers: headers() },
+    );
+    if (res.ok) configs = await res.json();
+    else return { ...base, summary: `load failed: ${res.status}` };
+  } catch (err) {
+    console.warn('[bind-seed] load agent_configs failed:', err);
+    return { ...base, summary: 'load failed' };
+  }
+
+  const agents: BindSeedAgentResult[] = [];
+  const unmatched: string[] = [];
+  let boundCount = 0;
+  let workflowsCreated = 0;
+
+  for (const c of configs) {
+    const role = c.agent_role ?? '';
+    // Prefer an already-set slug; else resolve from the role string, then name.
+    const slug = c.canonical_role_slug ?? inferRoleSlug(role) ?? inferRoleSlug(c.agent_name);
+    if (!slug) {
+      unmatched.push(c.agent_name);
+      agents.push({ agent_name: c.agent_name, agent_role: role, role_slug: null, bound: false, workflows_created: 0, matched: false });
+      continue;
+    }
+    let bound = !!c.canonical_role_slug;
+    if (!c.canonical_role_slug) {
+      const r = await setAgentCanonicalRole({ tenantPhone: cleanPhone, agentName: c.agent_name, canonicalRoleSlug: slug });
+      bound = r.ok;
+      if (r.ok) boundCount++;
+      else console.warn(`[bind-seed] bind ${c.agent_name} -> ${slug} failed: ${r.reason}`);
+    }
+    // Idempotent re-seed (skips existing workflows) so newly-added role
+    // templates also reach already-bound agents.
+    const seed = await seedRoleTemplatesForAgent({ tenantPhone: cleanPhone, agentName: c.agent_name, agentRole: role, canonicalRoleSlug: slug });
+    workflowsCreated += seed.workflows_created;
+    agents.push({ agent_name: c.agent_name, agent_role: role, role_slug: slug, bound, workflows_created: seed.workflows_created, matched: true });
+  }
+
+  return {
+    tenant_phone: cleanPhone,
+    agents,
+    bound_count: boundCount,
+    workflows_created: workflowsCreated,
+    unmatched,
+    summary: `${configs.length} agents — ${boundCount} newly bound, ${workflowsCreated} routines seeded${unmatched.length ? `, ${unmatched.length} UNMATCHED: ${unmatched.join(', ')}` : ''}`,
+  };
 }

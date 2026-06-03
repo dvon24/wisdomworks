@@ -381,6 +381,33 @@ async function persistEpic1Pipeline(
     const derivedAgents = deriveAgentConfigs(spec, structured ?? {});
     await saveAgentConfigs(supabaseUrl, supabaseKey, cleanPhone, derivedAgents);
 
+    // 2026-06-03 — THE BINDING WIRE (GAP 1). saveAgentConfigs persists the
+    // agents but does NOT bind them to a catalog role or seed day-1 routines,
+    // so fresh agents shipped canonical_role_slug=null + mute. The role logic +
+    // seeder live in the web app, so trigger them there (passing the shared
+    // service key for internal auth — reliable, not best-effort). Non-fatal:
+    // onboarding still completes if this hiccups; the same endpoint can be
+    // re-run for a tenant to self-heal. The report's `unmatched` surfaces any
+    // role that didn't resolve to a catalog slug.
+    try {
+      const seedRes = await fetch(
+        `${process.env.NEXT_PUBLIC_APP_BASE_URL ?? 'https://wisdomworks.vercel.app'}/api/admin/seed-onboarding-agents`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${supabaseKey}` },
+          body: JSON.stringify({ phone: cleanPhone }),
+        },
+      );
+      if (seedRes.ok) {
+        const rep = await seedRes.json().catch(() => null);
+        if (rep) console.log(`[deploy-complete] agent binding/seed: ${rep.summary}`);
+      } else {
+        console.warn('[deploy-complete] agent binding/seed endpoint returned', seedRes.status);
+      }
+    } catch (err) {
+      console.warn('[deploy-complete] agent binding/seed trigger failed (non-fatal):', err);
+    }
+
     // Discovery: fetch real connections, enrich integrations, write docs entity
     const connections = await loadConnections(supabaseUrl, supabaseKey, cleanPhone);
     const discovery = runAxisDiscovery(spec, structured ?? {}, connections, derivedAgents);
