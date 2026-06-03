@@ -238,13 +238,12 @@ export async function computeCadence(tenantPhone: string): Promise<TickCadence> 
   if (!last) return { minutes: 60, band: 'quiet', lastUserActivityMinAgo: -1 };
   const minAgo = (Date.now() - last.getTime()) / 60_000;
   // 2026-06-01 cost cut (owner-approved): background ticks were every 5 min when
-  // active — far more than the owner needs. Floor raised to 30 min for active/recent
-  // and 60 for normal. This is the BACKGROUND agent tick only; the owner's WhatsApp
-  // chat replies are a separate, un-throttled path and stay realtime. ~6x fewer
-  // ticks → large drop in agent-tick model + cache-write spend (the 5-min cadence
-  // exactly matched the cache TTL, so every tick paid cache-WRITE prices).
-  if (minAgo < 30) return { minutes: 30, band: 'active', lastUserActivityMinAgo: minAgo };
-  if (minAgo < 120) return { minutes: 30, band: 'recent', lastUserActivityMinAgo: minAgo };
+  // active — far more than the owner needs. 2026-06-03 (owner-approved): floor
+  // raised again 30 → 45 min for active/recent (measured tick spend was ~$1.76/day;
+  // this trims it further with no felt loss — the owner's WhatsApp chat replies are
+  // a separate, un-throttled, realtime path). normal/quiet stay 60, asleep 240.
+  if (minAgo < 30) return { minutes: 45, band: 'active', lastUserActivityMinAgo: minAgo };
+  if (minAgo < 120) return { minutes: 45, band: 'recent', lastUserActivityMinAgo: minAgo };
   if (minAgo < 360) return { minutes: 60, band: 'normal', lastUserActivityMinAgo: minAgo };
   if (minAgo < 1440) return { minutes: 60, band: 'quiet', lastUserActivityMinAgo: minAgo };
   return { minutes: 240, band: 'asleep', lastUserActivityMinAgo: minAgo };
@@ -1033,6 +1032,29 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
   const primaryModel = resolveAgentModel(config.model_routing);
 
   try {
+    // COST GUARD #0 — daily spend-cap gate (proactivity-degrade, 2026-06-03).
+    // Background ticks are OPTIONAL proactive work. When the tenant is over
+    // today's spend cap, skip the LLM tick entirely rather than burn balloon-
+    // able tokens. Ticks pass tools, which Haiku 4.5 can't call, so the safe
+    // degrade is to SKIP (not downgrade the model). The owner's direct WhatsApp
+    // replies are a separate, un-gated, realtime path. Fail-open (an infra
+    // hiccup in the cap query treats the tenant as under cap). Checked first so
+    // we don't even pay for context assembly when capped.
+    const { isOverDailyCap } = await import('./spend-cap');
+    if (await isOverDailyCap(instance.tenant_phone)) {
+      await logRun({
+        tenant_phone: instance.tenant_phone,
+        agent_instance_id: instance.id,
+        trigger: 'tick',
+        phase: 'observe',
+        outcome: 'no_op',
+        duration_ms: Date.now() - start,
+        output_summary: `${config.agent_name} held this tick — tenant is over today's spend cap, so proactive agent work is paused until the daily reset. Owner chat is unaffected.`,
+        metadata: { autonomy, cost_guard: 'over_daily_cap' },
+      });
+      return;
+    }
+
     const ownLaneForCtx = config.config?.category;
     const ctx = await loadTickContext(instance.tenant_phone, instance.id, ownLaneForCtx, config.id);
 
