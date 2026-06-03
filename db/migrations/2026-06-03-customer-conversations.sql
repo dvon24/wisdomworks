@@ -56,7 +56,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_customer_conv_open
   WHERE status = 'open';
 
 -- Tenant isolation: one business's customers are never visible to another.
--- Reuses the project-wide helper (db/migrations/2026-05-14d-rls-tenant-isolation.sql).
-SELECT _enable_tenant_rls('customer_conversations');
+-- Inlined (NOT _enable_tenant_rls): that helper is DROPped at the end of
+-- 2026-05-14d-rls-tenant-isolation.sql, so it isn't callable from later
+-- migrations. app_tenant_phone() IS permanent (CREATE OR REPLACE, never
+-- dropped), so we reproduce exactly what the helper did. The app uses the
+-- service-role key (bypasses RLS); this enforces isolation on any anon/JWT path.
+ALTER TABLE customer_conversations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS customer_conversations_tenant_isolation ON customer_conversations;
+CREATE POLICY customer_conversations_tenant_isolation ON customer_conversations
+  FOR ALL TO authenticated, anon
+  USING (tenant_phone = app_tenant_phone())
+  WITH CHECK (tenant_phone = app_tenant_phone());
 
 SELECT 'customer_conversations ready (SMB customer framework step 1)' AS status;
