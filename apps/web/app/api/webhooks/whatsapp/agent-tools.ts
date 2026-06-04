@@ -7761,6 +7761,7 @@ export async function executeTool(
           '- DO NOT CLAIM COMPLETED PERSISTENCE. Don\'t say "I\'ve scheduled" / "added to your plan" / "set you to X mode" unless you actually called a tool that persists that state THIS run.',
           '- STAY IN ROLE. If the task is outside your domain, return a short note saying so — don\'t guess.',
           '- NO META-COMMENTARY. Don\'t add "let me know if you need adjustments" / "happy to refine" / closers. Iris handles owner-facing framing; you produce the artifact.',
+          '- OPEN WITH THE ARTIFACT — NO PREAMBLE. The owner sees your output directly. Do NOT begin by restating the task or context ("Good, I have what I need", "Today is Thursday, which puts you at Week 2...", "Recovery context:..."). Start with the deliverable itself (the workout\'s first line, the summary, the draft body). Context-restatement preamble is internal thinking — keep it out of the output.',
           '- IF YOU CAN\'T COMPLETE THE TASK, say so directly with the reason. Iris will fall back to handling it herself or surfacing the gap to the owner.',
           '',
           'Speak in first person as yourself. The output goes to Iris, who will present it to the owner with your attribution.',
@@ -7869,8 +7870,11 @@ export async function executeTool(
         // text + the actual worker name we resolved), NOT from any
         // narration Iris might produce. Closes the Mia-reborn
         // fabrication shape.
-        const confirmationPreview = gate.gated_text.slice(0, 100).replace(/\n+/g, ' ');
-        const owner_confirmation = `Delegated to ${targetAgent.name} → ${confirmationPreview}${gate.gated_text.length > 100 ? '...' : ''}`;
+        // Structural confirmation ONLY — do not echo the worker's text. It
+        // duplicated `content` and leaked the worker's opening preamble into the
+        // owner-facing "✓ Delegated to →" line. The work product travels in
+        // `content`; this is just the proof-of-delegation marker.
+        const owner_confirmation = `Delegated to ${targetAgent.name}`;
 
         return {
           content: `[${targetAgent.name}'s response]\n${gate.gated_text}`,
