@@ -256,6 +256,7 @@ export async function generateCustomerReply(input: {
   ];
 
   let replyText = FALLBACK;
+  let usageIn = 0, usageOut = 0, cachedIn = 0;
   try {
     for (let i = 0; i < MAX_ITERS; i++) {
       const lastTurn = i === MAX_ITERS - 1;
@@ -273,6 +274,9 @@ export async function generateCustomerReply(input: {
       });
       if (!res.ok) break;
       const data = await res.json();
+      usageIn += data.usage?.input_tokens ?? 0;
+      usageOut += data.usage?.output_tokens ?? 0;
+      cachedIn += data.usage?.cache_read_input_tokens ?? 0;
       const blocks = data.content ?? [];
       const text = blocks.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim();
       const toolUses = blocks.filter((b: any) => b.type === 'tool_use');
@@ -289,6 +293,26 @@ export async function generateCustomerReply(input: {
     }
   } catch (err) {
     console.warn('[customer-reply] exception:', err);
+  }
+
+  // Record the customer turn's spend UNDER THE TENANT so the per-tenant daily
+  // spend cap + deck see it — a customer lane is the tenant's cost. Fire-and-
+  // forget so it never delays the reply.
+  if (usageIn > 0 || usageOut > 0) {
+    void (async () => {
+      try {
+        const { recordLlmCall } = await import('./chat-cost-tracker');
+        await recordLlmCall({
+          tenantPhone: input.tenantPhone,
+          surface: 'customer-reply',
+          model: CUSTOMER_MODEL,
+          tokensIn: usageIn,
+          tokensOut: usageOut,
+          cachedTokensIn: cachedIn,
+          toolsUsed: [],
+        });
+      } catch {}
+    })();
   }
 
   const updated: CustomerMessage[] = [
