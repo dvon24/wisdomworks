@@ -107,6 +107,31 @@ export async function enqueueNotification(args: EnqueueArgs): Promise<string | n
     }
   }
 
+  // Dedup against an EXISTING pending notification for the same source (or, if
+  // no source_id, the same kind+title). Crons that re-scan the same inbox/
+  // thread every run (email-sift every 30 min) were re-enqueuing the same item,
+  // stacking duplicates in the queue + every briefing — the 2026-06-04
+  // "5 near-duplicate Sherisse tasks / 3 Crystal reminders / multiple draft
+  // versions" pile-up. Return the existing id so the caller still gets a handle.
+  try {
+    const dedupFilter = args.sourceId
+      ? `&source_id=eq.${encodeURIComponent(args.sourceId)}`
+      : `&source_id=is.null&kind=eq.${encodeURIComponent(args.kind)}&title=eq.${encodeURIComponent(args.title.slice(0, 200))}`;
+    const dupRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/notification_queue?tenant_phone=eq.${encodeURIComponent(args.tenantPhone)}&status=eq.pending${dedupFilter}&select=id&limit=1`,
+      { headers: headers() },
+    );
+    if (dupRes.ok) {
+      const dup = await dupRes.json();
+      if (dup[0]?.id) {
+        console.log(`[notifications] deduped "${args.title.slice(0, 60)}" — already pending (${args.sourceId ? `source_id=${args.sourceId}` : 'kind+title'})`);
+        return dup[0].id;
+      }
+    }
+  } catch (err) {
+    console.warn('[notifications] dedup check failed (continuing):', err);
+  }
+
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/notification_queue`, {
       method: 'POST',
