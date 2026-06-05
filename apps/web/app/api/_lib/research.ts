@@ -17,6 +17,14 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
 const TAVILY_URL = 'https://api.tavily.com/search';
 
+// Single flip-point for the Anthropic server-tool versions. The basic versions
+// need NO code-execution tool. To get DYNAMIC FILTERING (Claude writes code to
+// trim results before they hit context — cheaper + more accurate), bump these
+// to 'web_search_20260209' / 'web_fetch_20260209' AND enable the code-execution
+// tool (Console toggle + container wiring). Opus 4.8 + Sonnet 4.6 support it.
+const WEB_SEARCH_TOOL_VERSION = 'web_search_20250305';
+const WEB_FETCH_TOOL_VERSION = 'web_fetch_20250910';
+
 const headers = () => ({
   apikey: SUPABASE_KEY!,
   Authorization: `Bearer ${SUPABASE_KEY}`,
@@ -237,7 +245,7 @@ Hard rules:
         model: 'claude-sonnet-4-6',
         max_tokens: 4000,
         system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+        tools: [{ type: WEB_SEARCH_TOOL_VERSION, name: 'web_search', max_uses: 3 }],
         messages: [{ role: 'user', content: userPrompt }],
       }),
     });
@@ -323,7 +331,7 @@ export async function webSearch(query: string, opts?: { maxUses?: number }): Pro
         model: 'claude-sonnet-4-6',
         max_tokens: 1500,
         system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
+        tools: [{ type: WEB_SEARCH_TOOL_VERSION, name: 'web_search', max_uses: maxUses }],
         messages: [{ role: 'user', content: q }],
       }),
     });
@@ -380,6 +388,107 @@ async function webSearchTavily(query: string): Promise<WebSearchResult> {
       ? `Top results:\n${search.results.slice(0, 4).map((r, i) => `${i + 1}. ${r.title} — ${stripCitations(r.content).slice(0, 160)}`).join('\n')}`
       : 'No results found.';
   return { answer, sources, searchesUsed: 1, tokensUsed: 0, tokensIn: 0, tokensOut: 0 };
+}
+
+export interface WebFetchResult {
+  content: string;
+  url: string;
+  sources: { url: string; title: string }[];
+  fetched: boolean;
+  tokensIn: number;
+  tokensOut: number;
+  tokensUsed: number;
+  error?: string;
+}
+
+/**
+ * Read a specific URL or PDF and answer about it — backs the `read_url` agent
+ * tool. Anthropic web_fetch server tool, one-shot. The URL is passed in the
+ * user message so it's in-context (web_fetch only fetches URLs already in the
+ * conversation — it can't construct one, which is the main exfiltration guard).
+ *
+ * No per-fetch surcharge (unlike web_search's $10/1k) — you pay only for the
+ * tokens the fetched content adds, so max_content_tokens caps a runaway PDF.
+ */
+export async function webFetch(url: string, opts?: { instruction?: string; maxContentTokens?: number }): Promise<WebFetchResult> {
+  const u = (url ?? '').trim();
+  const empty: WebFetchResult = { content: '', url: u, sources: [], fetched: false, tokensIn: 0, tokensOut: 0, tokensUsed: 0 };
+  if (!/^https?:\/\//i.test(u)) return { ...empty, error: 'Provide a full http(s) URL.' };
+  if (u.length > 250) return { ...empty, error: 'URL too long (max 250 chars).' };
+  if (!ANTHROPIC_API_KEY) return { ...empty, error: 'ANTHROPIC_API_KEY not set' };
+
+  const instruction = (opts?.instruction ?? '').trim();
+  const maxContentTokens = Math.max(2000, Math.min(opts?.maxContentTokens ?? 50000, 120000));
+
+  const system = `You read the web page or PDF the user points you at and answer about it. Use the web_fetch tool to retrieve it, then respond concretely and specifically, grounded in the ACTUAL content (numbers, names, dates, direct quotes). If the user asked for something specific — a price, a section, a yes/no — give exactly that. If the page can't be fetched or is empty, say so plainly; never invent its contents.`;
+
+  const userPrompt = instruction
+    ? `${instruction}\n\nURL: ${u}`
+    : `Fetch this page and summarize its key points: ${u}`;
+
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 2000,
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        tools: [{
+          type: WEB_FETCH_TOOL_VERSION,
+          name: 'web_fetch',
+          max_uses: 3,
+          citations: { enabled: true },
+          max_content_tokens: maxContentTokens,
+        }],
+        messages: [{ role: 'user', content: userPrompt }],
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return { ...empty, error: `Anthropic web_fetch ${res.status}: ${errText.slice(0, 200)}. Enable Web fetch in the Claude Console (claude.com/settings → tools/privacy).` };
+    }
+
+    const data = await res.json();
+    const content: any[] = data.content ?? [];
+    const tokensIn = data.usage?.input_tokens ?? 0;
+    const tokensOut = data.usage?.output_tokens ?? 0;
+    const tokensUsed = tokensIn + tokensOut;
+
+    let fetched = false;
+    let fetchError: string | null = null;
+    const sources: { url: string; title: string }[] = [];
+    const seen = new Set<string>();
+    for (const block of content) {
+      if (block.type !== 'web_fetch_tool_result') continue;
+      const c = block.content;
+      if (c?.type === 'web_fetch_result') {
+        fetched = true;
+        const fu = String(c.url ?? u);
+        const title = String(c.content?.title ?? fu);
+        if (fu && !seen.has(fu)) { seen.add(fu); sources.push({ url: fu, title }); }
+      } else if (c?.type === 'web_fetch_tool_error') {
+        fetchError = String(c.error_code ?? 'fetch_error');
+      }
+    }
+
+    const answer = stripCitations(content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')).slice(0, 4000);
+
+    if (fetchError && !fetched) {
+      return { ...empty, error: `Couldn't fetch the page (${fetchError}).`, tokensIn, tokensOut, tokensUsed };
+    }
+    if (!answer) {
+      return { ...empty, fetched, error: 'No readable content extracted from the page.', tokensIn, tokensOut, tokensUsed };
+    }
+    return { content: answer, url: u, sources: sources.slice(0, 5), fetched, tokensIn, tokensOut, tokensUsed };
+  } catch (err: any) {
+    return { ...empty, error: err?.message ?? String(err) };
+  }
 }
 
 /**

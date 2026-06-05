@@ -126,7 +126,7 @@ import {
   fetchGitHubTree,
   fetchVercelDeployments,
 } from '../../_lib/project-sync';
-import { enqueueResearch, loadPendingResearch, processResearchRequest, webSearch, type ResearchKind } from '../../_lib/research';
+import { enqueueResearch, loadPendingResearch, processResearchRequest, webSearch, webFetch, type ResearchKind } from '../../_lib/research';
 import { dismissPendingNotifications } from '../../_lib/notifications';
 import {
   generateWordDoc,
@@ -2647,6 +2647,20 @@ const TOOL_WEB_SEARCH: AnthropicTool = {
   },
 };
 
+const TOOL_READ_URL: AnthropicTool = {
+  name: 'read_url',
+  description:
+    "Read a SPECIFIC web page or PDF and answer about it. Use when the owner gives you a link ('summarize this: https://...', 'what does this article say'), or to read a page you found via web_search (e.g. open the top result to get the actual price). Pass `url` (must be a full http(s) link that appeared in the conversation or in search results — you can't make one up) and optionally `instruction` for what to extract ('the pricing', 'their refund policy', 'a 3-bullet summary'). Returns the content grounded in the real page, with sources. Use web_search to FIND things; use read_url to READ a known link.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'Full http(s) URL of the page or PDF to read.' },
+      instruction: { type: 'string', description: "Optional — what to extract or the question to answer about the page. Defaults to a key-points summary." },
+    },
+    required: ['url'],
+  },
+};
+
 export function buildToolList(
   connections: OAuthConnection[],
   options: { ownerPhone?: string } = {},
@@ -2687,6 +2701,7 @@ export function buildToolList(
   tools.push(TOOL_GET_MY_SPEND);
   tools.push(TOOL_DISMISS_TASKS);
   tools.push(TOOL_WEB_SEARCH);
+  tools.push(TOOL_READ_URL);
   tools.push(TOOL_GET_SPEND_BREAKDOWN);
   tools.push(TOOL_GET_CHANNEL_LINK_CODE);
   tools.push(TOOL_ISSUE_DECK_LOGIN);
@@ -3127,6 +3142,7 @@ export function getToolsForAgent(
     TOOL_GET_WEATHER,
     TOOL_LIST_KNOWN_PEOPLE,
     TOOL_WEB_SEARCH,
+    TOOL_READ_URL,
   ];
 
   switch (slug) {
@@ -6773,6 +6789,35 @@ export async function executeTool(
           }
         }
         return { content: lines.join('\n').trim() || 'No results found.', success: true };
+      }
+
+      case 'read_url': {
+        const url = String(call.input.url ?? '').trim();
+        if (!url) return { content: 'Need a URL to read.', success: false };
+        const instruction = call.input.instruction ? String(call.input.instruction).trim() : undefined;
+        const result = await webFetch(url, { instruction });
+        // web_fetch has no per-fetch surcharge, but the fetched content + synthesis
+        // burn tokens — attribute them to the tenant's daily spend.
+        if (user && result.tokensUsed > 0) {
+          const { recordLlmCall } = await import('../../_lib/chat-cost-tracker');
+          void recordLlmCall({
+            tenantPhone: user.phoneNumber,
+            surface: 'document-analysis',
+            model: 'claude-sonnet-4-6',
+            tokensIn: result.tokensIn,
+            tokensOut: result.tokensOut,
+            toolsUsed: ['read_url'],
+            userPreview: (instruction ? `${instruction} — ` : '') + url.slice(0, 100),
+          });
+        }
+        if (result.error && !result.content) {
+          return { content: `Couldn't read that URL: ${result.error}`, success: false };
+        }
+        const lines = [result.content.trim()];
+        if (result.sources.length > 0) {
+          lines.push('', `Source: ${result.sources[0]!.url}`);
+        }
+        return { content: lines.join('\n').trim() || 'No readable content found.', success: true };
       }
 
       case 'dismiss_tasks': {
