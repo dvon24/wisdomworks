@@ -208,15 +208,20 @@ async function processCustomer(
     console.warn('[email-sift] engagement seed failed (non-blocking):', err);
   }
 
-  // Story 2.16 Phase 2a — email data capture framework. Folds the same
-  // extracted entities into knowledge_atoms (fast in-prompt context),
-  // enriches known_people for recurring senders (frequency + topics),
-  // and emits business_insights for high-signal items (overdue invoices,
-  // contract renewals, urgent emails). Same code path serves Gmail,
-  // Outlook, Yahoo, and generic IMAP since they all flow through here.
+  // Story 2.16 Phase 2a — email data capture framework. Folds extracted
+  // entities into knowledge_atoms, enriches known_people, emits
+  // business_insights. Same path serves Gmail/Outlook/Yahoo/IMAP.
+  //
+  // 2026-06-05 (Devon: "I don't want spam — only the emails I respond to"):
+  // gate capture to ACTIONABLE mail (needs_response / urgent) instead of ALL
+  // business mail. Receipts, invoices, newsletters, and automated
+  // notifications classify as 'informational' — they were minting a durable
+  // atom EACH (a live backfill dry-run found 1000+ atoms, 56% near-duplicate
+  // receipts/job-postings/invoices), flooding the SOP layer + the embedding
+  // spend. Only emails the owner would actually respond to now reach memory.
   try {
     const { captureEmailDataForLearning } = await import('../../_lib/email-data-capture');
-    const capture = await captureEmailDataForLearning(conn.phone_number, businessOnly);
+    const capture = await captureEmailDataForLearning(conn.phone_number, actionable);
     if (capture.atoms > 0 || capture.people > 0 || capture.insights > 0) {
       console.log(`[email-sift] data capture for ${conn.phone_number}: ${capture.atoms} atoms, ${capture.people} known_people, ${capture.insights} insights`);
     }
