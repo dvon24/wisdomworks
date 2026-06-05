@@ -283,6 +283,105 @@ function stripCitations(text: string): string {
     .trim();
 }
 
+export interface WebSearchResult {
+  answer: string;
+  sources: { url: string; title: string }[];
+  searchesUsed: number;
+  tokensUsed: number;
+  tokensIn: number;
+  tokensOut: number;
+  error?: string;
+}
+
+/**
+ * Lean, in-turn web search backing the `web_search` agent tool. Unlike
+ * runResearch (a heavy owner-framed brief + approval-queue entry), this is a
+ * fast one-shot with NEUTRAL framing so any agent gets a straight answer —
+ * Alex pricing a part, Marcus checking a tax rate, Iris confirming a fact.
+ * Anthropic native web_search first; Tavily fallback when configured.
+ */
+export async function webSearch(query: string, opts?: { maxUses?: number }): Promise<WebSearchResult> {
+  const empty: WebSearchResult = { answer: '', sources: [], searchesUsed: 0, tokensUsed: 0, tokensIn: 0, tokensOut: 0 };
+  const q = (query ?? '').trim();
+  if (!q) return { ...empty, error: 'empty query' };
+  if (!ANTHROPIC_API_KEY) {
+    return TAVILY_API_KEY ? webSearchTavily(q) : { ...empty, error: 'ANTHROPIC_API_KEY not set' };
+  }
+  const maxUses = Math.max(1, Math.min(opts?.maxUses ?? 3, 5));
+
+  const system = `You search the live web and give a direct, current answer. You have web_search available — USE IT (up to ${maxUses} searches) for anything time-sensitive: prices, availability, news, specs, hours, current facts. Then answer in 2-5 sentences, concrete and specific (numbers, dates, names). Don't speculate beyond what the results support; if the web doesn't settle it, say so plainly. Output only your answer — sources are tracked separately.`;
+
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1500,
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
+        messages: [{ role: 'user', content: q }],
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      if (TAVILY_API_KEY) return webSearchTavily(q);
+      return { ...empty, error: `Anthropic native ${res.status}: ${errText.slice(0, 200)}. Enable Web search in Claude Console (claude.com/settings → tools) or set TAVILY_API_KEY.` };
+    }
+
+    const data = await res.json();
+    const content: any[] = data.content ?? [];
+    const searchesUsed = data.usage?.server_tool_use?.web_search_requests ?? content.filter((c) => c.type === 'server_tool_use' && c.name === 'web_search').length;
+    const answer = stripCitations(content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')).slice(0, 2000);
+
+    const sources: { url: string; title: string }[] = [];
+    const seen = new Set<string>();
+    for (const block of content) {
+      if (block.type === 'web_search_tool_result' && Array.isArray(block.content)) {
+        for (const r of block.content) {
+          if (r?.type === 'web_search_result' && r.url && !seen.has(r.url)) {
+            seen.add(r.url);
+            sources.push({ url: r.url, title: String(r.title ?? r.url) });
+          }
+        }
+      }
+    }
+    const tokensIn = data.usage?.input_tokens ?? 0;
+    const tokensOut = data.usage?.output_tokens ?? 0;
+    const tokensUsed = tokensIn + tokensOut;
+
+    if (!answer && sources.length === 0) {
+      if (TAVILY_API_KEY) return webSearchTavily(q);
+      return { ...empty, searchesUsed, tokensUsed, tokensIn, tokensOut, error: 'No answer returned from web search.' };
+    }
+    return { answer, sources: sources.slice(0, 6), searchesUsed, tokensUsed, tokensIn, tokensOut };
+  } catch (err: any) {
+    if (TAVILY_API_KEY) {
+      try { return await webSearchTavily(q); } catch { /* fall through */ }
+    }
+    return { ...empty, error: err?.message ?? String(err) };
+  }
+}
+
+/** Tavily fallback for webSearch: search → use Tavily's auto-answer (or top
+ * result snippets) verbatim. No extra LLM synthesis — keeps it cheap. */
+async function webSearchTavily(query: string): Promise<WebSearchResult> {
+  const search = await tavilySearch(query, { depth: 'basic', maxResults: 6 });
+  if (search.error) return { answer: '', sources: [], searchesUsed: 0, tokensUsed: 0, tokensIn: 0, tokensOut: 0, error: search.error };
+  const sources = search.results.slice(0, 6).map((r) => ({ url: r.url, title: r.title }));
+  const answer = search.answer
+    ? stripCitations(search.answer).slice(0, 2000)
+    : sources.length
+      ? `Top results:\n${search.results.slice(0, 4).map((r, i) => `${i + 1}. ${r.title} — ${stripCitations(r.content).slice(0, 160)}`).join('\n')}`
+      : 'No results found.';
+  return { answer, sources, searchesUsed: 1, tokensUsed: 0, tokensIn: 0, tokensOut: 0 };
+}
+
 /**
  * Run a research query. Provider preference:
  *   1. Anthropic native web_search (preferred — no extra API key, native citations)

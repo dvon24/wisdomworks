@@ -126,7 +126,8 @@ import {
   fetchGitHubTree,
   fetchVercelDeployments,
 } from '../../_lib/project-sync';
-import { enqueueResearch, loadPendingResearch, processResearchRequest, type ResearchKind } from '../../_lib/research';
+import { enqueueResearch, loadPendingResearch, processResearchRequest, webSearch, type ResearchKind } from '../../_lib/research';
+import { dismissPendingNotifications } from '../../_lib/notifications';
 import {
   generateWordDoc,
   generatePowerPoint,
@@ -2620,6 +2621,32 @@ const TOOL_CONNECT_SERVICE: AnthropicTool = {
 
 // ─── Tool Selection — gate by what the user has connected ───
 
+const TOOL_DISMISS_TASKS: AnthropicTool = {
+  name: 'dismiss_tasks',
+  description:
+    "Remove items from the owner's task/notification queue — the pending items surfaced in morning briefings and digests. Use when the owner says 'remove the duplicate Sherisse tasks', 'clear the Crystal reminders', 'dismiss those', 'delete the invoice items'. Pass `topic` to match items whose title or body contains it. Pass all:true ONLY when the owner explicitly says to clear everything. Items are marked dismissed (recoverable, not hard-deleted). Returns how many were cleared so you confirm honestly.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      topic: { type: 'string', description: "Keyword to match in the item title/body, e.g. 'Sherisse', 'Crystal', 'invoice', 'duplicate'. Required unless clearing all." },
+      all: { type: 'boolean', description: 'Clear ALL pending queue items. Only when the owner explicitly asks to clear everything.' },
+    },
+  },
+};
+
+const TOOL_WEB_SEARCH: AnthropicTool = {
+  name: 'web_search',
+  description:
+    "Search the live web and get back current results (titles, snippets, sources). Use when answering needs information you don't have — current prices, news, competitor/company facts, product specs, 'what is X', anything time-sensitive or outside your memory. Returns a concise synthesis with sources. Prefer this over guessing or citing stale numbers from memory. Keep queries specific (e.g. '2015 Challenger SRT 392 front brake rotor price' not 'car parts').",
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'The search query — specific and focused.' },
+    },
+    required: ['query'],
+  },
+};
+
 export function buildToolList(
   connections: OAuthConnection[],
   options: { ownerPhone?: string } = {},
@@ -2658,6 +2685,8 @@ export function buildToolList(
   tools.push(TOOL_GET_PROJECT_STATUS);
   tools.push(TOOL_LIST_ALL_PROJECTS);
   tools.push(TOOL_GET_MY_SPEND);
+  tools.push(TOOL_DISMISS_TASKS);
+  tools.push(TOOL_WEB_SEARCH);
   tools.push(TOOL_GET_SPEND_BREAKDOWN);
   tools.push(TOOL_GET_CHANNEL_LINK_CODE);
   tools.push(TOOL_ISSUE_DECK_LOGIN);
@@ -3088,7 +3117,8 @@ export function getToolsForAgent(
   const hasQuickBooks = conns.some((c) => c.provider === 'quickbooks');
   const hasMeta = conns.some((c) => c.provider === 'meta');
 
-  // Default tools every agent gets — memory + awareness, no side effects.
+  // Default tools every agent gets — memory + awareness + live web search,
+  // no side effects.
   const tools: AnthropicTool[] = [
     TOOL_RECALL_ATOMS,
     TOOL_QUERY_KB,
@@ -3096,6 +3126,7 @@ export function getToolsForAgent(
     TOOL_LIST_MY_TEAM,
     TOOL_GET_WEATHER,
     TOOL_LIST_KNOWN_PEOPLE,
+    TOOL_WEB_SEARCH,
   ];
 
   switch (slug) {
@@ -6712,6 +6743,51 @@ export async function executeTool(
           success: true,
           owner_confirmation: `Saved (${kind}): "${snippet}". Shared with all agents.`,
         };
+      }
+
+      case 'web_search': {
+        const query = String(call.input.query ?? '').trim();
+        if (!query) return { content: 'Need a search query.', success: false };
+        const result = await webSearch(query, { maxUses: 3 });
+        // Attribute the (billable) search call to the tenant's daily spend.
+        if (user && result.tokensUsed > 0) {
+          const { recordLlmCall } = await import('../../_lib/chat-cost-tracker');
+          void recordLlmCall({
+            tenantPhone: user.phoneNumber,
+            surface: 'research',
+            model: 'claude-sonnet-4-6',
+            tokensIn: result.tokensIn,
+            tokensOut: result.tokensOut,
+            toolsUsed: ['web_search'],
+            userPreview: query.slice(0, 120),
+          });
+        }
+        if (result.error && !result.answer) {
+          return { content: `Web search failed: ${result.error}`, success: false };
+        }
+        const lines = [result.answer.trim()];
+        if (result.sources.length > 0) {
+          lines.push('', 'Sources:');
+          for (const s of result.sources.slice(0, 5)) {
+            lines.push(`• ${s.title} — ${s.url}`);
+          }
+        }
+        return { content: lines.join('\n').trim() || 'No results found.', success: true };
+      }
+
+      case 'dismiss_tasks': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const topic = call.input.topic ? String(call.input.topic).trim() : undefined;
+        const all = call.input.all === true;
+        if (!topic && !all) {
+          return { content: 'Tell me which tasks to clear — a topic to match, or say "all" to clear everything pending.', success: false };
+        }
+        const res = await dismissPendingNotifications({ tenantPhone: user.phoneNumber, match: topic, all });
+        if (res.dismissed === 0) {
+          return { content: topic ? `Nothing pending matched "${topic}".` : 'Nothing pending to clear.', success: true };
+        }
+        const preview = res.titles.length ? ` (${res.titles.slice(0, 4).join('; ')}${res.titles.length > 4 ? '…' : ''})` : '';
+        return { content: `Cleared ${res.dismissed} pending task${res.dismissed === 1 ? '' : 's'}${topic ? ` matching "${topic}"` : ''}${preview}.`, success: true };
       }
 
       case 'request_research': {
