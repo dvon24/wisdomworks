@@ -26,7 +26,7 @@ const sb = () => ({
   'Content-Type': 'application/json',
 });
 
-const SIM_THRESHOLD = 0.88; // matches the upsert RPC's semantic threshold
+const SIM_THRESHOLD = 0.78; // matches the upsert RPC (retuned 0.88→0.78, validated 2026-06-05 on real phrasings)
 
 interface AtomRow {
   id: string;
