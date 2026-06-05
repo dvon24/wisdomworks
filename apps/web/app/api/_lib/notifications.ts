@@ -195,6 +195,45 @@ export async function markDelivered(ids: string[], deliveredInMessageId?: string
   }
 }
 
+/**
+ * Dismiss pending notifications — the "remove these tasks" capability. Matches
+ * pending items whose title/body contains `match`, or ALL pending when `all`.
+ * Sets status='dismissed' (recoverable). Returns the count + dismissed titles
+ * so Iris can confirm what was cleared. Backs the dismiss_tasks tool — the gap
+ * Devon hit ("I don't have a task-delete tool").
+ */
+export async function dismissPendingNotifications(args: {
+  tenantPhone: string;
+  match?: string;
+  all?: boolean;
+}): Promise<{ dismissed: number; titles: string[] }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { dismissed: 0, titles: [] };
+  const cleanPhone = args.tenantPhone.replace(/[\s\-+()]/g, '');
+  const match = args.match?.trim();
+  if (!match && !args.all) return { dismissed: 0, titles: [] };
+  let filter = `tenant_phone=eq.${encodeURIComponent(cleanPhone)}&status=eq.pending`;
+  if (match) {
+    const m = encodeURIComponent(`*${match}*`);
+    filter += `&or=(title.ilike.${m},body.ilike.${m})`;
+  }
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/notification_queue?${filter}`, {
+      method: 'PATCH',
+      headers: { ...headers(), Prefer: 'return=representation' },
+      body: JSON.stringify({ status: 'dismissed' }),
+    });
+    if (!res.ok) {
+      console.warn('[notifications] dismiss failed:', res.status, (await res.text()).slice(0, 200));
+      return { dismissed: 0, titles: [] };
+    }
+    const rows = await res.json();
+    return { dismissed: rows.length, titles: rows.map((r: any) => r.title).filter(Boolean).slice(0, 10) };
+  } catch (err) {
+    console.warn('[notifications] dismiss exception:', err);
+    return { dismissed: 0, titles: [] };
+  }
+}
+
 export async function expireStaleNotifications(): Promise<number> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return 0;
   try {

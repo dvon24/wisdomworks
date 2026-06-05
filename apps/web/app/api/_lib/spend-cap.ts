@@ -110,6 +110,8 @@ export async function isOverDailyCap(tenantPhone: string): Promise<boolean> {
  *  still answer from what she knows. */
 export const EXPENSIVE_TOOLS_DEFERRED_WHEN_CAPPED = new Set<string>([
   'request_research',
+  'web_search',
+  'read_url',
   'analyze_website',
   'generate_website',
   'create_document',
