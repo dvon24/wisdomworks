@@ -46,6 +46,20 @@ export async function upsertAtom(args: {
   metadata?: any;
 }): Promise<string | null> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+
+  // Embed the content so upsert_knowledge_atom can SEMANTICALLY dedup — collapse
+  // varied phrasings of the same fact/goal that the lexical prefix match misses
+  // (the SOP/behavioral-RAG pile-up). Best-effort: if embedding fails or there's
+  // no OpenAI key, pass null and the RPC falls back to lexical dedup.
+  let embedding: number[] | null = null;
+  try {
+    const { embedText } = await import('./embeddings');
+    const r = await embedText(args.content.slice(0, 600));
+    embedding = r.embedding ?? null;
+  } catch (err) {
+    console.warn('[atoms] embed for dedup failed (lexical fallback):', err);
+  }
+
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_knowledge_atom`, {
       method: 'POST',
@@ -60,6 +74,9 @@ export async function upsertAtom(args: {
         p_owner_confirmed: !!args.ownerConfirmed,
         p_tags: args.tags ?? [],
         p_metadata: args.metadata ?? {},
+        // pgvector input format '[f1,f2,...]' — reliably cast to vector(1536)
+        // through PostgREST (a raw JSON array is finicky to bind).
+        p_embedding: embedding ? `[${embedding.join(',')}]` : null,
       }),
     });
     if (!res.ok) {
