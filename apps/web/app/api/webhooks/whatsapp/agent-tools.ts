@@ -7657,6 +7657,36 @@ export async function executeTool(
           return { content: `${targetAgent.name} is offline (no API key). Report this to the owner; do NOT silently generate ${targetAgent.name}'s work product yourself.`, success: false };
         }
 
+        // RECENT-DELEGATION DEDUP. If the SAME task was just delegated to the
+        // SAME agent (within ~10 min), reuse that result instead of running the
+        // worker again. Stops the "owner asks twice in a row → two different
+        // workouts" double-delivery (2026-06-05 transcript) and saves a worker
+        // run. Keyed by tenant + agent + normalized task signature.
+        const delegCleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
+        const taskSig = task.toLowerCase().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
+        if (SUPABASE_URL && SUPABASE_KEY) {
+          try {
+            const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+            const recentRes = await fetch(
+              `${SUPABASE_URL}/rest/v1/recent_delegations?tenant_phone=eq.${encodeURIComponent(delegCleanPhone)}&agent_name=eq.${encodeURIComponent(targetAgent.name)}&task_sig=eq.${encodeURIComponent(taskSig)}&created_at=gte.${since}&order=created_at.desc&limit=1&select=result_text`,
+              { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+            );
+            if (recentRes.ok) {
+              const rows = await recentRes.json();
+              if (rows[0]?.result_text) {
+                return {
+                  content: `[${targetAgent.name}'s response]\n${rows[0].result_text}`,
+                  success: true,
+                  owner_confirmation: `Delegated to ${targetAgent.name} (reused — just generated this)`,
+                  data: { worker_name: targetAgent.name, reused: true },
+                };
+              }
+            }
+          } catch (err) {
+            console.warn('[delegate_to_agent] recent-delegation check failed (continuing):', err);
+          }
+        }
+
         // Build worker tools. Role-scoped via getToolsForAgent +
         // FILTER OUT delegate_to_agent + consult_manager so the worker
         // can't recurse (structural depth limit at 1).
@@ -7875,6 +7905,24 @@ export async function executeTool(
         // owner-facing "✓ Delegated to →" line. The work product travels in
         // `content`; this is just the proof-of-delegation marker.
         const owner_confirmation = `Delegated to ${targetAgent.name}`;
+
+        // Cache this result for the recent-delegation dedup above, and prune
+        // this tenant's stale rows (>24h) opportunistically. Fire-and-forget.
+        if (SUPABASE_URL && SUPABASE_KEY && gate.gated_text) {
+          void (async () => {
+            try {
+              await fetch(`${SUPABASE_URL}/rest/v1/recent_delegations`, {
+                method: 'POST',
+                headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+                body: JSON.stringify({ tenant_phone: delegCleanPhone, agent_name: targetAgent.name, task_sig: taskSig, result_text: gate.gated_text.slice(0, 8000) }),
+              });
+              const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+              await fetch(`${SUPABASE_URL}/rest/v1/recent_delegations?tenant_phone=eq.${encodeURIComponent(delegCleanPhone)}&created_at=lt.${cutoff}`, {
+                method: 'DELETE', headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, Prefer: 'return=minimal' },
+              });
+            } catch {}
+          })();
+        }
 
         return {
           content: `[${targetAgent.name}'s response]\n${gate.gated_text}`,
