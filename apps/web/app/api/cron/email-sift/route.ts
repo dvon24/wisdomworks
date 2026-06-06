@@ -18,6 +18,7 @@ import { logSample, buildFewShotExamples, buildProfessionalContext } from '../..
 import { getSenderRules, matchSenderRule, classifyByRule } from '../../_lib/sender-rules';
 import { recordClassifiedForEngagement, buildEngagementContext } from '../../_lib/email-engagement';
 import { getTopContacts, renderTrustedContactsForClassifier } from '../../_lib/email-intelligence';
+import { isDuplicateOfAny } from '../../_lib/task-dedup';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -248,14 +249,33 @@ async function processCustomer(
  */
 async function mapExtractionsToOntology(tenantPhone: string, emails: EmailSummary[]): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return;
+
+  // The UNIQUE(tenant_phone, entity_type, name) constraint only stops EXACT-name
+  // task dups, but the classifier rephrases the same task across emails (Devon
+  // 2026-06-06: the same lecture appeared 4×, a PR + an invoice 2× each). Load
+  // the existing task queue so new action-items dedup against it FUZZILY.
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  let existingTaskNames: string[] = [];
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/ontology_entities?tenant_phone=eq.${cleanPhone}&entity_type=eq.task&select=name&order=created_at.desc&limit=200`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } },
+    );
+    if (res.ok) existingTaskNames = (await res.json()).map((r: any) => r.name).filter(Boolean);
+  } catch { /* dedup is best-effort — never block extraction */ }
+
   const entities: any[] = [];
   const seen = new Set<string>();
+  const addedTaskNames: string[] = [];
   const add = (entity_type: string, name: string, metadata: Record<string, unknown> = {}) => {
     const trimmed = (name || '').trim();
     if (!trimmed) return;
     const key = `${entity_type}:${trimmed.toLowerCase()}`;
     if (seen.has(key)) return;
+    // Tasks: skip near-duplicates already in the queue or earlier in this batch.
+    if (entity_type === 'task' && isDuplicateOfAny(trimmed, [...existingTaskNames, ...addedTaskNames])) return;
     seen.add(key);
+    if (entity_type === 'task') addedTaskNames.push(trimmed);
     entities.push({ entity_type, name: trimmed.slice(0, 200), metadata, source: 'agent_inferred' });
   };
   for (const e of emails) {
