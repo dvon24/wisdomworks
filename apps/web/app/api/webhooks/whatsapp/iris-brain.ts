@@ -19,6 +19,7 @@ import {
 import { buildSystemPromptParts } from './system-prompt';
 import { buildToolList, executeTool, type ToolCall } from './agent-tools';
 import { recordChatRun } from '../../_lib/chat-cost-tracker';
+import { guardDelegationClaim, stripClaimSentences } from '../../_lib/fabrication-guard';
 
 // ─────────────────────────────────────────────────────────────────────────
 // DEBUG TRACE
@@ -808,11 +809,40 @@ export async function generateIrisReply(
         textBlock = retryTextBlock;
         const retryHits = detectFabrication(assistantMessage);
         if (retryHits.length > 0) {
-          // Retry also fabricated — log but let through. Don't infinite-loop.
+          // Retry ALSO fabricated. Don't ship the lie — deterministically strip
+          // the offending sentence(s) instead of letting it through. No third
+          // model call (cheap, and correct when the tenant is over the cap).
+          const { cleaned, removed } = stripClaimSentences(assistantMessage, FABRICATION_PATTERNS);
+          assistantMessage = cleaned.length > 0
+            ? cleaned
+            : "Got it — noted. (I can't make that a standing/recurring change myself right now; want me to set up a workflow for it?)";
           console.error(
-            `[iris-${surface}] Fabrication guard RETRY ALSO FABRICATED. Phrases: ${JSON.stringify(retryHits)}. Letting through but flagging.`,
+            `[iris-${surface}] Fabrication guard RETRY ALSO FABRICATED — stripped ${removed.length} claim sentence(s) deterministically instead of shipping. Phrases: ${JSON.stringify(retryHits)}`,
           );
+          if (trace) trace.gates.push({ gate: 'fabrication-guard', action: 'stripped-after-retry', detail: `Retry re-fabricated; removed ${removed.length} sentence(s): ${JSON.stringify(removed)}` });
         }
+      }
+    }
+
+    // ── Delegation-claim deterministic guard (2026-06-06) ────────────────────
+    // If the reply CLAIMS a handoff but delegate_to_agent did NOT fire this
+    // turn, strip the fabricated sentence(s) + append one honest, cap-aware
+    // line. Ground-truth gated (the tool-call log) so the model's intent can't
+    // override it — unlike the lean-mode prompt note, which it did on
+    // 2026-06-06. No extra model call (correct when over the spend cap). Runs
+    // BEFORE the Axis critic so the critic audits the already-honest reply.
+    {
+      const delegationGuard = guardDelegationClaim({
+        message: assistantMessage,
+        delegatedThisTurn: toolsUsed.includes('delegate_to_agent'),
+        capped: expensiveToolsDeferred,
+      });
+      if (delegationGuard.removed.length > 0) {
+        assistantMessage = delegationGuard.message;
+        console.warn(
+          `[iris-${surface}] Delegation guard stripped ${delegationGuard.removed.length} fabricated handoff claim(s) — delegate_to_agent did NOT fire (capped=${expensiveToolsDeferred}). Removed: ${JSON.stringify(delegationGuard.removed)}`,
+        );
+        if (trace) trace.gates.push({ gate: 'delegation-guard', action: 'stripped', detail: `Removed ${delegationGuard.removed.length} handoff claim(s) with no delegate_to_agent call${expensiveToolsDeferred ? ' (over spend cap)' : ''}: ${JSON.stringify(delegationGuard.removed)}` });
       }
     }
 
