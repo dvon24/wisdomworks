@@ -265,7 +265,10 @@ export async function GET(request: Request) {
         // the learning loop. Non-blocking — ships original on critic
         // failure.
         // ──────────────────────────────────────────────────────────────
-        let auditedContent = lastOk.output_preview;
+        // Deliver the FULL output, never the 500-char storage preview (the
+        // 2026-06-06 truncated-scratchpad leak). Fall back to the preview only
+        // if full_content is somehow absent.
+        let auditedContent = lastOk.full_content ?? lastOk.output_preview;
         try {
           const { critiqueResponse, persistCritique } = await import('../../_lib/axis-critic');
           const critique = await critiqueResponse({
@@ -273,7 +276,7 @@ export async function GET(request: Request) {
             // content goes to the owner the same way Iris does. Workflow-
             // specific rule sheet can be added later if patterns diverge.
             ownerMessage: `Workflow "${wf.name}" content (proactive cron — no specific owner question this turn).`,
-            draft: lastOk.output_preview,
+            draft: auditedContent,
             recentTurns: [],
             toolsUsedThisTurn: execResult.step_outcomes.map((o: any) => o.tool).filter(Boolean),
             tenantPhone: wf.tenant_phone,
@@ -283,7 +286,7 @@ export async function GET(request: Request) {
             surface: 'iris-chat',
             critique,
             sourceMessage: `workflow:${wf.name}`,
-            draft: lastOk.output_preview,
+            draft: auditedContent,
             revisionAttempted: false, // Workflow content revision needs
             // re-running the underlying tool — too expensive for
             // surface gain. Log + ship + tune the workflow's prompt.

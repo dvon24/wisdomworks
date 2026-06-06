@@ -542,13 +542,14 @@ const TOOL_CHECK_AGENT_HEALTH: AnthropicTool = {
 const TOOL_CREATE_WORKFLOW: AnthropicTool = {
   name: 'create_workflow',
   description:
-    "Persist a recurring or on-demand workflow the owner described in plain English. Use when the owner asks for something to happen every day/week/Monday/morning, or asks you to 'save' / 'set up' a multi-step routine. Translate their request into a concrete steps[] array — each step is { agent, tool, args }. Steps run sequentially; output of step N is available to step N+1 as the {previous} or {previous.field} template. Workflows land in pending_approval — the dispatcher cron only fires after the owner explicitly approves. After calling this tool, surface the proposal_summary VERBATIM to the owner and ask them to reply 'approve <name>' to activate. CRON FORMAT: standard 5-field (minute hour dom month dow). Examples: '0 8 * * 1' = Monday 8am UTC, '0 9 * * *' = daily 9am UTC, '*/30 * * * *' = every 30 min. Pass null for on-demand-only workflows. Never invent a workflow store outside this tool — this IS the user-defined workflow surface.",
+    "Persist a recurring or on-demand workflow the owner described in plain English. Use when the owner asks for something to happen every day/week/Monday/morning/at a specific time, or asks you to 'save' / 'set up' / 'make sure I get' a routine. Translate their request into a concrete steps[] array — each step is { agent, tool, args }. Steps run sequentially; output of step N is available to step N+1 as the {previous} or {previous.field} template.\n\nACTIVATION — IMPORTANT: When the OWNER directly asks for this ('I want my workout at 7am', 'send me the P&L every Monday', 'make sure I get X daily'), set activate:true — their request IS the approval, so it persists AND goes live immediately; confirm it's active. ONLY omit activate (leaving it pending_approval) when YOU are proactively PROPOSING a workflow the owner did not explicitly request — then surface the proposal_summary and ask them to reply 'approve <name>'. To stop one later the owner just says 'pause <name>' or 'delete <name>'.\n\nCRON FORMAT: standard 5-field (minute hour dom month dow), UTC. Examples: '0 7 * * *' = daily 7am UTC, '0 8 * * 1' = Monday 8am UTC, '*/30 * * * *' = every 30 min. Pass null for on-demand-only workflows. Never invent a workflow store outside this tool — this IS the user-defined workflow surface.",
   input_schema: {
     type: 'object',
     properties: {
       name: { type: 'string', description: "Short kebab-case identifier ('monday-pnl-brief', 'weekly-client-checkin'). Used to reference the workflow later." },
       description: { type: 'string', description: "Human-readable summary of what the workflow does. Echoes back to the owner." },
       cron_expr: { type: 'string', description: "5-field cron string for recurring runs, OR null for on-demand. UTC only." },
+      activate: { type: 'boolean', description: "Set TRUE when the owner directly requested this (their ask IS the approval) → creates it ACTIVE and live immediately. Omit/false ONLY for workflows you're proposing that the owner didn't explicitly ask for → pending_approval." },
       steps: {
         type: 'array',
         description: "Ordered list of steps. Each step invokes ONE tool. The output of each step is fed to the next via {previous} or {previous.field} template substitution in args.",
@@ -3893,6 +3894,7 @@ export async function executeTool(
           description: call.input.description,
           cronExpr: call.input.cron_expr ?? null,
           steps: Array.isArray(call.input.steps) ? call.input.steps : [],
+          activate: call.input.activate === true,
         });
         if (!result.ok) return { content: `Couldn't create workflow: ${result.reason}`, success: false };
         return {
