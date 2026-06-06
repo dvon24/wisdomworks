@@ -38,7 +38,7 @@ import { listPendingFollowups, markFollowupSent, markFollowupDeclined } from '..
 import { decryptToken, redactPII } from '@wisdomworks/shared';
 import { setMute, clearMute, isMuted, formatMuteUntil } from '../../_lib/mute-state';
 import { definePerson, listKnownPeople, forgetPerson } from '../../_lib/known-people';
-import { listAllAtoms, archiveAtom, confirmAtom, upsertAtom, type AtomKind } from '../../_lib/knowledge-atoms';
+import { listAllAtoms, archiveAtom, confirmAtom, upsertAtom, upsertAtomWithReason, type AtomKind } from '../../_lib/knowledge-atoms';
 import { computeMonthlyUsage, evaluateBudget } from '../../_lib/usage-tracker';
 import { createLinkCode, type Channel } from '../../_lib/messaging-adapters';
 import { signSessionToken } from '../../_lib/api-auth';
@@ -6728,7 +6728,7 @@ export async function executeTool(
         const scopeRequestedButUnresolved = scopeNames.length > 0 && scopeTags.length === 0;
         const tags = Array.from(new Set([...scopeTags, ...extraTags]));
 
-        const id = await upsertAtom({
+        const saveResult = await upsertAtomWithReason({
           tenantPhone: cleanPhone,
           kind,
           content,
@@ -6737,7 +6737,17 @@ export async function executeTool(
           ownerConfirmed: true,
           tags,
         });
-        if (!id) return { content: 'Could not save.', success: false };
+        if (!saveResult.id) {
+          // Surface the REAL reason. remember_this is NOT a spend-capped tool,
+          // so a failure here is a memory/system issue — give the model the
+          // truth + an explicit instruction not to invent a cause (a bare
+          // "Could not save" once led Iris to blame the spend cap).
+          return {
+            content: `The save didn't go through — ${saveResult.error ?? 'unknown error'}. Tell ${user.name} plainly that saving failed and you'll retry; this is a memory/system issue, NOT a spend limit. Do NOT claim it was saved, and do NOT guess the cause.`,
+            success: false,
+          };
+        }
+        const id = saveResult.id;
 
         const snippet = `${content.slice(0, 100)}${content.length > 100 ? '…' : ''}`;
         if (matchedAgents.length) {

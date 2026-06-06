@@ -34,7 +34,7 @@ export interface KnowledgeAtom {
 
 // ─── CRUD ─────────────────────────────────────────────────────────────────
 
-export async function upsertAtom(args: {
+export interface UpsertAtomArgs {
   tenantPhone: string;
   kind: AtomKind;
   content: string;
@@ -44,8 +44,22 @@ export async function upsertAtom(args: {
   ownerConfirmed?: boolean;
   tags?: string[];
   metadata?: any;
-}): Promise<string | null> {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+}
+
+/** Result of a save attempt. `error` carries the REAL reason on failure so the
+ *  caller can report it honestly instead of guessing (a bare null once let Iris
+ *  misattribute a save failure to the spend cap — see fabrication-guard). */
+export interface UpsertAtomResult {
+  id: string | null;
+  error: string | null;
+}
+
+/**
+ * Save an atom and return the id OR a concrete failure reason. Embedding is
+ * best-effort (lexical fallback) and never the cause of a failure.
+ */
+export async function upsertAtomWithReason(args: UpsertAtomArgs): Promise<UpsertAtomResult> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { id: null, error: 'memory store not configured' };
 
   // Embed the content so upsert_knowledge_atom can SEMANTICALLY dedup — collapse
   // varied phrasings of the same fact/goal that the lexical prefix match misses
@@ -80,14 +94,26 @@ export async function upsertAtom(args: {
       }),
     });
     if (!res.ok) {
-      console.warn(`[atoms] upsert failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
-      return null;
+      const body = (await res.text()).slice(0, 300);
+      console.warn(`[atoms] upsert failed: ${res.status} ${body}`);
+      // Map known RPC failures to a clean, owner-safe reason.
+      const error = /too short/i.test(body)
+        ? 'the note was too short to save'
+        : `the memory store returned an error (${res.status})`;
+      return { id: null, error };
     }
-    return (await res.text()).replace(/"/g, '').trim() || null;
-  } catch (err) {
+    const id = (await res.text()).replace(/"/g, '').trim() || null;
+    return { id, error: id ? null : 'the save returned no id' };
+  } catch (err: any) {
     console.warn('[atoms] upsert exception:', err);
-    return null;
+    return { id: null, error: `the save failed (${(err?.message ?? String(err)).slice(0, 120)})` };
   }
+}
+
+/** Back-compat thin wrapper — returns just the id (null on failure). Callers
+ *  that need the failure reason should use upsertAtomWithReason. */
+export async function upsertAtom(args: UpsertAtomArgs): Promise<string | null> {
+  return (await upsertAtomWithReason(args)).id;
 }
 
 export async function recentAtomsForPrompt(tenantPhone: string, lane?: string, limit = 15): Promise<KnowledgeAtom[]> {
