@@ -44,8 +44,13 @@ export interface StepOutcome {
   agent?: string;
   tool: string;
   success: boolean;
-  /** Truncated to 500 chars for storage; full output stays in agent_runs. */
+  /** Truncated to 500 chars for STORAGE/observability only — NEVER deliver this
+   *  to the owner (2026-06-06: the 500-char preview shipped a worker's truncated
+   *  reasoning scratchpad as the "workout"). */
   output_preview: string;
+  /** Full untruncated tool output — THE deliverable. The dispatcher delivers
+   *  full_content, not output_preview. Set on successful steps only. */
+  full_content?: string;
   error?: string;
 }
 
@@ -218,6 +223,13 @@ export async function executeWorkflow(args: {
     }
 
     const resolvedArgs = substituteTemplates(step.args ?? {}, priorContent, priorData);
+    // Scheduled output is delivered to the owner VERBATIM — make delegated
+    // workers lead with the finished artifact, never their reasoning scratchpad
+    // (2026-06-06: a Coach workflow shipped "I have enough. Key facts
+    // confirmed…" instead of the workout).
+    if (step.tool === 'delegate_to_agent' && resolvedArgs && typeof (resolvedArgs as any).task === 'string') {
+      (resolvedArgs as any).task += '\n\nIMPORTANT: Your response is delivered to the owner verbatim. Begin with the finished result itself (e.g. the workout). Do NOT include reasoning, planning notes, or phrases like "I have enough" or "Key facts confirmed".';
+    }
     const call: ToolCall = { name: step.tool, input: resolvedArgs };
 
     let result: ToolResult;
@@ -259,6 +271,7 @@ export async function executeWorkflow(args: {
       tool: step.tool,
       success: result.success,
       output_preview: (result.content ?? '').slice(0, 500),
+      full_content: result.success ? (result.content ?? '') : undefined,
       error: result.success ? undefined : (result.content ?? '').slice(0, 500),
     });
 

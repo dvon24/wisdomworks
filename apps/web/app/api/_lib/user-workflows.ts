@@ -74,6 +74,11 @@ export async function createUserWorkflow(args: {
   description?: string;
   cronExpr?: string | null;
   steps: WorkflowStep[];
+  /** When true, create the workflow ACTIVE immediately — for when the OWNER
+   *  directly asked for it ("I want my workout at 7am"); their request IS the
+   *  approval. When false/omitted, lands in pending_approval for an explicit
+   *  approve step (use for workflows an AGENT proposed, not owner-stated). */
+  activate?: boolean;
 }): Promise<CreateWorkflowResult> {
   if (!SUPABASE_URL || !SUPABASE_KEY) {
     return { ok: false, reason: 'supabase_not_configured', proposal_summary: '' };
@@ -136,7 +141,7 @@ export async function createUserWorkflow(args: {
         description: args.description ?? null,
         cron_expr: args.cronExpr ?? null,
         steps: args.steps,
-        status: 'pending_approval',
+        status: args.activate ? 'active' : 'pending_approval',
         next_run_at: nextRun?.toISOString() ?? null,
       }),
     });
@@ -154,10 +159,13 @@ export async function createUserWorkflow(args: {
       ? `every "${args.cronExpr}"${nextRun ? `, first run ${nextRun.toISOString().slice(0, 16).replace('T', ' ')} UTC` : ''}`
       : 'on-demand only (no schedule)';
 
+    const summary = args.activate
+      ? `Workflow "${name}" is set up and ACTIVE — it'll run automatically. Schedule: ${scheduleDesc}. Steps: ${stepsDesc}. Say "pause ${name}" or "delete ${name}" anytime to stop it.`
+      : `Workflow "${name}" created in pending_approval state. Schedule: ${scheduleDesc}. Steps: ${stepsDesc}. Reply "approve ${name}" to activate, or "tweak ${name}" to adjust.`;
     return {
       ok: true,
       workflow: created,
-      proposal_summary: `Workflow "${name}" created in pending_approval state. Schedule: ${scheduleDesc}. Steps: ${stepsDesc}. Reply "approve ${name}" to activate, or "tweak ${name}" to adjust.`,
+      proposal_summary: summary,
     };
   } catch (err: any) {
     return { ok: false, reason: err?.message ?? String(err), proposal_summary: '' };
