@@ -2074,6 +2074,27 @@ const TOOL_DELEGATE_TO_AGENT: AnthropicTool = {
   },
 };
 
+export const TOOL_QUEUE_DELEGATION: AnthropicTool = {
+  name: 'queue_delegation',
+  description:
+    "Queue a delegation to run LATER — for when live delegation is unavailable because the daily spend limit is reached. Same inputs as delegate_to_agent (agentName + task), but instead of running the agent now, it SAVES the request and runs it automatically the moment the budget resets (midnight UTC), then the owner gets the result. Use this ONLY when you've been told delegation is withheld this turn (spend cap reached). Tell the owner plainly that it's QUEUED — not done — and that they can say 'run it now' to override the cap and run it immediately. NEVER imply the agent has already done the work.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentName: { type: 'string', description: "Exact name of the agent to delegate to (must match a name on the team)." },
+      task: { type: 'string', description: "Plain-English task brief with all the context the agent needs." },
+    },
+    required: ['agentName', 'task'],
+  },
+};
+
+const TOOL_RUN_QUEUED_DELEGATIONS: AnthropicTool = {
+  name: 'run_queued_delegations',
+  description:
+    "Run the owner's QUEUED delegations right now, overriding the daily spend cap (the owner is explicitly choosing to spend past it). Use ONLY when the owner clearly says to run/override the queued work — 'run it now', 'go ahead and run the queued one', 'override the cap'. Returns each agent's result. If nothing is queued, it says so.",
+  input_schema: { type: 'object', properties: {} },
+};
+
 // ─── Package 3 — promotion candidates (unified trust model) ────────────
 
 const TOOL_LIST_PROMOTION_CANDIDATES: AnthropicTool = {
@@ -2702,6 +2723,7 @@ export function buildToolList(
   tools.push(TOOL_DISMISS_TASKS);
   tools.push(TOOL_WEB_SEARCH);
   tools.push(TOOL_READ_URL);
+  tools.push(TOOL_RUN_QUEUED_DELEGATIONS);
   tools.push(TOOL_GET_SPEND_BREAKDOWN);
   tools.push(TOOL_GET_CHANNEL_LINK_CODE);
   tools.push(TOOL_ISSUE_DECK_LOGIN);
@@ -6768,6 +6790,40 @@ export async function executeTool(
           content: `Got it. Saved for all agents: "${content.slice(0, 100)}".`,
           success: true,
           owner_confirmation: `Saved (${kind}): "${snippet}". Shared with all agents.`,
+        };
+      }
+
+      case 'queue_delegation': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const agentName = String(call.input.agentName ?? '').trim();
+        const task = String(call.input.task ?? '').trim();
+        if (!agentName || !task) return { content: 'Need both agentName and task to queue.', success: false };
+        const { enqueueDeferredDelegation } = await import('../../_lib/deferred-delegations');
+        const q = await enqueueDeferredDelegation({ tenantPhone: user.phoneNumber, targetAgent: agentName, task });
+        if (!q.id) {
+          return { content: `Couldn't queue that (system error). Tell ${user.name} plainly it was NOT queued — don't claim it was.`, success: false };
+        }
+        return {
+          content: `Queued for ${agentName} — it'll run automatically when the daily budget resets (midnight UTC). ${q.pendingCount} task${q.pendingCount === 1 ? '' : 's'} now queued. Tell ${user.name} it's QUEUED, not done yet, and that they can say "run it now" to run it immediately (overriding the cap). Do NOT imply ${agentName} has already done the work.`,
+          success: true,
+        };
+      }
+
+      case 'run_queued_delegations': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const { loadPendingDeferred, runOneDeferred } = await import('../../_lib/deferred-delegations');
+        const pending = await loadPendingDeferred(user.phoneNumber, 10);
+        if (pending.length === 0) return { content: 'Nothing is queued right now.', success: true };
+        const lines: string[] = [];
+        for (const row of pending) {
+          const r = await runOneDeferred(row, { executeTool, connections, user });
+          lines.push(r.ok
+            ? `From ${row.target_agent}:\n${r.content.slice(0, 700)}`
+            : `⚠️ ${row.target_agent} couldn't complete it: ${r.content.slice(0, 200)}`);
+        }
+        return {
+          content: `Ran ${pending.length} queued delegation${pending.length === 1 ? '' : 's'} (spend cap overridden at the owner's request):\n\n${lines.join('\n\n')}`,
+          success: true,
         };
       }
 

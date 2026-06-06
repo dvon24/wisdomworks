@@ -47,6 +47,7 @@ export type OwnerMessageSource =
   | 'webhook-image'
   | 'webhook-video'
   | 'workflow'
+  | 'deferred-delegation'
   | 'manual';
 
 export interface SendOwnerMessageInput {

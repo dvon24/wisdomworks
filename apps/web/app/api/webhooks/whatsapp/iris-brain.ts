@@ -17,7 +17,7 @@ import {
   type UserContext,
 } from './context-store';
 import { buildSystemPromptParts } from './system-prompt';
-import { buildToolList, executeTool, type ToolCall } from './agent-tools';
+import { buildToolList, executeTool, TOOL_QUEUE_DELEGATION, type ToolCall } from './agent-tools';
 import { recordChatRun } from '../../_lib/chat-cost-tracker';
 import { guardDelegationClaim, stripClaimSentences } from '../../_lib/fabrication-guard';
 
@@ -365,7 +365,12 @@ export async function generateIrisReply(
       for (let i = tools.length - 1; i >= 0; i--) {
         if (EXPENSIVE_TOOLS_DEFERRED_WHEN_CAPPED.has((tools[i] as any)?.name)) tools.splice(i, 1);
       }
-      systemParts.variable += `\n\n⚠️ DAILY SPEND CAP REACHED ($${spend.spentUsd.toFixed(2)} of $${spend.capUsd.toFixed(2)}). Operate LEAN this turn: answer ${user.name} directly from what you already know. Do NOT delegate to agents, run research, analyze or generate websites, or generate documents — those tools are withheld until the cap resets at midnight UTC. If ${user.name} asks for one of those, say the daily spend cap is reached and offer to do it once it resets (or that they can raise the cap).`;
+      // Recovery door: with live delegation withheld, hand Iris queue_delegation
+      // so a domain task becomes a QUEUED handoff (auto-runs at cap reset) rather
+      // than a dead-end or a fabricated "passing to Coach now". run_queued_
+      // delegations (the owner override) is already in the base tool list.
+      if (!tools.some((t) => (t as any)?.name === 'queue_delegation')) tools.push(TOOL_QUEUE_DELEGATION);
+      systemParts.variable += `\n\n⚠️ DAILY SPEND CAP REACHED ($${spend.spentUsd.toFixed(2)} of $${spend.capUsd.toFixed(2)}). Operate LEAN this turn: answer ${user.name} directly from what you already know. Live delegation, research, website analysis/generation, and document generation are withheld until the cap resets at midnight UTC.\n• If ${user.name} asks for an agent task (a workout, a P&L, code work, etc.), use queue_delegation — it SAVES the request and runs the agent automatically at reset. Tell ${user.name} it's QUEUED (not done) and that they can say "run it now" to override the cap.\n• NEVER say you delegated, "passed it to" an agent, or that work is done when you only queued it — say exactly what's true: queued, or can't do it right now.`;
       console.warn(`[iris-${surface}] spend cap reached ($${spend.spentUsd.toFixed(2)}/$${spend.capUsd.toFixed(2)}) — deferring expensive tools, lean mode.`);
       if (trace) {
         trace.gates.push({ gate: 'spend-cap', action: 'lean-mode', detail: `Over daily cap ($${spend.spentUsd.toFixed(2)}/$${spend.capUsd.toFixed(2)}) — deferred expensive tools, answer-direct note added.` });
