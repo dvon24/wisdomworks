@@ -58,6 +58,12 @@ export interface ChatRunRecord {
   durationMs: number;
   userMessagePreview?: string;
   assistantReplyPreview?: string;
+  /** Anti-fabrication guards that fired this turn (e.g. 'delegation-guard',
+   *  'fabrication-guard', 'attribution'). Empty/absent = none fired. */
+  guardsFired?: string[];
+  /** True if expensive tools were withheld this turn (over the daily spend
+   *  cap). The denominator for gate_fired_rate on tool-absent turns. */
+  capped?: boolean;
 }
 
 // ─── Pricing (USD per million tokens) ────────────────────────────────────
@@ -148,6 +154,25 @@ export async function recordLlmCall(args: {
   });
 }
 
+/** Merge PII-redaction telemetry + the anti-fabrication guard signal into the
+ *  chat_runs.metadata jsonb (no new columns). `capped` + `guards` back the
+ *  gate_fired_rate measurement. */
+function buildRunMetadata(
+  run: ChatRunRecord,
+  userPreview: ReturnType<typeof redactPII>,
+  assistantPreview: ReturnType<typeof redactPII>,
+): Record<string, any> {
+  const meta: Record<string, any> = {};
+  if (userPreview.redactedAny || assistantPreview.redactedAny) {
+    meta.pii_redacted = true;
+    meta.pii_hits_user = userPreview.hits;
+    meta.pii_hits_assistant = assistantPreview.hits;
+  }
+  if (run.capped !== undefined) meta.capped = run.capped;
+  if (run.guardsFired && run.guardsFired.length > 0) meta.guards = run.guardsFired;
+  return meta;
+}
+
 export async function recordChatRun(run: ChatRunRecord): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return;
   try {
@@ -175,16 +200,12 @@ export async function recordChatRun(run: ChatRunRecord): Promise<void> {
         duration_ms: run.durationMs,
         user_message_preview: userPreview.redacted || null,
         assistant_reply_preview: assistantPreview.redacted || null,
-        // Stash redaction telemetry in metadata so audit log / compliance
-        // reports can show "this row had PII scrubbed" without needing a
-        // new column on chat_runs.
-        metadata: (userPreview.redactedAny || assistantPreview.redactedAny)
-          ? {
-              pii_redacted: true,
-              pii_hits_user: userPreview.hits,
-              pii_hits_assistant: assistantPreview.hits,
-            }
-          : {},
+        // Stash telemetry in metadata (no new columns): PII-redaction flags,
+        // plus the anti-fabrication guard signal. gate_fired_rate on tool-absent
+        // turns = count(metadata.capped=true AND metadata.guards present) /
+        // count(metadata.capped=true) — the measure of whether the guards
+        // reduced fabrication pressure vs. just masked it.
+        metadata: buildRunMetadata(run, userPreview, assistantPreview),
       }),
     });
   } catch (err) {
