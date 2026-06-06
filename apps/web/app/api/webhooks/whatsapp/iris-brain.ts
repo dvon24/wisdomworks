@@ -392,6 +392,10 @@ export async function generateIrisReply(
   let cacheReadTokensIn = 0;
   let totalTokensOut = 0;
   const toolsUsed: string[] = [];
+  // Anti-fabrication guards that fired this turn — persisted to chat_runs.metadata
+  // (with `capped`) so we can measure gate_fired_rate on tool-absent turns: did
+  // the guards reduce fabrication pressure, or are they just masking it?
+  const guardsFired: string[] = [];
   // 2026-05-23 — code-generated state-change confirmations.
   // Each persisting tool that succeeds populates a canonical owner-facing
   // confirmation string (ToolResult.owner_confirmation). We accumulate
@@ -614,6 +618,7 @@ export async function generateIrisReply(
         console.warn(
           `[iris-${surface}] Attribution gate stripped ${hits.length} unsupported claim(s): ${JSON.stringify(hits.map((h) => h.slice(0, 100)))}`,
         );
+        guardsFired.push('attribution');
         if (trace) trace.gates.push({ gate: 'attribution', action: 'stripped', detail: `Removed ${hits.length} unsupported agent-attribution claim(s) (no team-aware tool fired): ${JSON.stringify(hits.map((h) => h.slice(0, 80)))}` });
         assistantMessage = attrStripped;
       }
@@ -798,6 +803,7 @@ export async function generateIrisReply(
       console.warn(
         `[iris-${surface}] Fabrication guard triggered. Phrases: ${JSON.stringify(fabricationHits)} | tools this turn: ${JSON.stringify(toolsUsed)}`,
       );
+      guardsFired.push('fabrication-guard');
       if (trace) trace.gates.push({ gate: 'fabrication-guard', action: 'retry-forced', detail: `"Going forward" / completion-claim phrasing with no persisting tool: ${JSON.stringify(fabricationHits)}. Forced a no-tools rewrite.` });
       // Inject a corrective system-style message and force a retry without
       // tools so the model produces an honest final reply.
@@ -824,6 +830,7 @@ export async function generateIrisReply(
           console.error(
             `[iris-${surface}] Fabrication guard RETRY ALSO FABRICATED — stripped ${removed.length} claim sentence(s) deterministically instead of shipping. Phrases: ${JSON.stringify(retryHits)}`,
           );
+          guardsFired.push('fabrication-guard-strip');
           if (trace) trace.gates.push({ gate: 'fabrication-guard', action: 'stripped-after-retry', detail: `Retry re-fabricated; removed ${removed.length} sentence(s): ${JSON.stringify(removed)}` });
         }
       }
@@ -847,6 +854,7 @@ export async function generateIrisReply(
         console.warn(
           `[iris-${surface}] Delegation guard stripped ${delegationGuard.removed.length} fabricated handoff claim(s) — delegate_to_agent did NOT fire (capped=${expensiveToolsDeferred}). Removed: ${JSON.stringify(delegationGuard.removed)}`,
         );
+        guardsFired.push('delegation-guard');
         if (trace) trace.gates.push({ gate: 'delegation-guard', action: 'stripped', detail: `Removed ${delegationGuard.removed.length} handoff claim(s) with no delegate_to_agent call${expensiveToolsDeferred ? ' (over spend cap)' : ''}: ${JSON.stringify(delegationGuard.removed)}` });
       }
     }
@@ -1119,6 +1127,8 @@ export async function generateIrisReply(
       durationMs: Date.now() - startedAt,
       userMessagePreview: text.slice(0, 200),
       assistantReplyPreview: assistantMessage.slice(0, 200),
+      guardsFired: Array.from(new Set(guardsFired)),
+      capped: expensiveToolsDeferred,
     });
 
     // Owner-disposition mining — Devon's framing: "this should be one
