@@ -74,8 +74,16 @@ export async function upsertAtomWithReason(args: UpsertAtomArgs): Promise<Upsert
     console.warn('[atoms] embed for dedup failed (lexical fallback):', err);
   }
 
-  try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_knowledge_atom`, {
+  // Insert via the RPC. Passing a pgvector value as an RPC ARGUMENT through
+  // PostgREST is fragile (a string→vector coercion on a function param, which
+  // is NOT the same as the proven column-write coercion the backfill uses) —
+  // and the 2026-06-07 incident showed it silently failing EVERY owner save
+  // once an OpenAI key was set (so an embedding started being sent). The
+  // embedding is a dedup optimization; it must NEVER break the save. So: try
+  // WITH the embedding (semantic dedup at insert), and on failure retry
+  // lexical-only, then back-fill the embedding via a direct column write.
+  const callRpc = (withEmbedding: boolean): Promise<Response> =>
+    fetch(`${SUPABASE_URL}/rest/v1/rpc/upsert_knowledge_atom`, {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify({
@@ -88,22 +96,42 @@ export async function upsertAtomWithReason(args: UpsertAtomArgs): Promise<Upsert
         p_owner_confirmed: !!args.ownerConfirmed,
         p_tags: args.tags ?? [],
         p_metadata: args.metadata ?? {},
-        // pgvector input format '[f1,f2,...]' — reliably cast to vector(1536)
-        // through PostgREST (a raw JSON array is finicky to bind).
-        p_embedding: embedding ? `[${embedding.join(',')}]` : null,
+        p_embedding: withEmbedding && embedding ? `[${embedding.join(',')}]` : null,
       }),
     });
+
+  try {
+    let res = await callRpc(!!embedding);
+    let embeddingSent = !!embedding;
+    if (!res.ok && embedding) {
+      // Only the embedding arg differs — retry without it so a fragile vector
+      // bind can't fail the save.
+      console.warn(`[atoms] upsert with embedding failed (${res.status} ${(await res.text()).slice(0, 160)}); retrying lexical-only`);
+      res = await callRpc(false);
+      embeddingSent = false;
+    }
     if (!res.ok) {
       const body = (await res.text()).slice(0, 300);
       console.warn(`[atoms] upsert failed: ${res.status} ${body}`);
-      // Map known RPC failures to a clean, owner-safe reason.
       const error = /too short/i.test(body)
         ? 'the note was too short to save'
         : `the memory store returned an error (${res.status})`;
       return { id: null, error };
     }
     const id = (await res.text()).replace(/"/g, '').trim() || null;
-    return { id, error: id ? null : 'the save returned no id' };
+    if (!id) return { id: null, error: 'the save returned no id' };
+
+    // Lexical-fallback path: back-fill the embedding directly on the row (the
+    // proven column-write — same format the backfill uses) so future semantic
+    // dedup still has it. Fire-and-forget; the save already succeeded.
+    if (embedding && !embeddingSent) {
+      void fetch(`${SUPABASE_URL}/rest/v1/tenant_knowledge_atoms?id=eq.${id}`, {
+        method: 'PATCH',
+        headers: { ...headers(), Prefer: 'return=minimal' },
+        body: JSON.stringify({ embedding: `[${embedding.join(',')}]` }),
+      }).catch(() => {});
+    }
+    return { id, error: null };
   } catch (err: any) {
     console.warn('[atoms] upsert exception:', err);
     return { id: null, error: `the save failed (${(err?.message ?? String(err)).slice(0, 120)})` };
