@@ -251,6 +251,13 @@ export async function GET(request: Request) {
         .reverse()
         .find((o: any) => o.success && (o.output_preview ?? '').length > 50 && !META_TOOLS.has(o.tool ?? ''));
 
+      // A workflow that DELEGATES to an agent (workout, P&L brief, etc.) is one
+      // the owner expects a deliverable from — so a silent failure/empty run is
+      // the betrayal flagged in the 2026-06-06 review. Background monitors
+      // (list_unread_emails, etc.) don't delegate, so they stay quiet on failure
+      // exactly as before — no re-introduction of the morning "✗ 401" spam.
+      const isDeliveryWorkflow = execResult.step_outcomes.some((o: any) => o.tool === 'delegate_to_agent');
+
       if (execResult.outcome === 'success' && lastOk?.output_preview) {
         // Real content to deliver. NO plumbing prefix — owner wants
         // the workout/briefing/recommendation, not "✓ workflow_name —".
@@ -311,15 +318,43 @@ export async function GET(request: Request) {
         );
         console.warn(`[workflow-dispatcher] AUTO-PAUSED ${wf.name} (${wf.id}) after ${AUTO_PAUSE_FAILURE_THRESHOLD} failures: ${errBlurb}`);
       } else if (isFailure) {
-        // Pre-threshold failure — log only, no owner spam.
+        // Pre-threshold failure. For a DELIVERY workflow, tell the owner ONCE
+        // (first failure only) so they aren't left wondering where their 7am
+        // workout went — honest + actionable, never raw telemetry. Subsequent
+        // consecutive failures stay quiet until auto-pause. Monitors stay silent.
+        if (newFailureCount === 1 && isDeliveryWorkflow) {
+          await enqueueWorkflowNotice(
+            wf.tenant_phone,
+            wf.name,
+            '⚠',
+            `I couldn't put this together this time. I'll try again on its next run — or say "run ${wf.name} now" to retry now.`,
+          );
+        }
         console.log(`[workflow-dispatcher] ${wf.name} failed (${newFailureCount}/${AUTO_PAUSE_FAILURE_THRESHOLD}): ${(execResult.error ?? execResult.step_outcomes[0]?.error ?? 'unknown').slice(0, 200)}`);
       } else if (execResult.outcome === 'partial') {
-        // Partial — log only. If the part that ran produced content, the
-        // success branch above would have caught it.
+        // Partial with no deliverable → a delivery workflow ran partway and
+        // produced nothing usable. Tell the owner once; monitors stay quiet.
+        if (isDeliveryWorkflow && !lastOk) {
+          await enqueueWorkflowNotice(
+            wf.tenant_phone,
+            wf.name,
+            '⚠',
+            `I started this but couldn't finish it this time. Say "run ${wf.name} now" to try again.`,
+          );
+        }
         console.log(`[workflow-dispatcher] ${wf.name} partial: ${execResult.steps_completed}/${execResult.steps_total} — ${(execResult.step_outcomes[execResult.steps_completed]?.error ?? 'unknown').slice(0, 200)}`);
       } else {
-        // Success but no substantive content (or final step was a meta-
-        // tool). Log so we can see it ran, don't bother the owner.
+        // Success but no substantive content. For a monitor that's fine (it
+        // found nothing to report — stay quiet). For a DELIVERY workflow it
+        // means the agent produced nothing usable — tell the owner once.
+        if (isDeliveryWorkflow) {
+          await enqueueWorkflowNotice(
+            wf.tenant_phone,
+            wf.name,
+            '⚠',
+            `I ran this but didn't get a usable result to send you. Say "run ${wf.name} now" to try again.`,
+          );
+        }
         console.log(`[workflow-dispatcher] ${wf.name} succeeded silently (${execResult.steps_completed}/${execResult.steps_total} steps, ${Math.round(execResult.duration_ms / 100) / 10}s)`);
       }
 
