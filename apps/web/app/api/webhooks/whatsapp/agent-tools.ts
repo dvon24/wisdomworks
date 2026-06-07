@@ -1510,7 +1510,7 @@ const TOOL_REVOKE_WIDGET_KEY: AnthropicTool = {
 const TOOL_SCHEDULE_EVENT: AnthropicTool = {
   name: 'schedule_event',
   description:
-    "Add an event to the owner's native calendar (works even if no Google/Apple calendar is connected). Use when the owner says 'put X on my calendar', 'I have Y at Z', 'schedule me for W', 'block out time for Q'. The event lands in the owner's daily brief and conflict-detection runs against bookings + connected calendar. If a Google/Apple calendar IS connected, prefer create_calendar_event so it lands in the canonical calendar; use this tool when no external calendar is connected OR when owner explicitly wants a quick local note.",
+    "Add an event to the owner's native calendar (works even if no Google/Apple calendar is connected). Use when the owner says 'put X on my calendar', 'I have Y at Z', 'schedule me for W', 'block out time for Q'. The event lands in the owner's daily brief and conflict-detection runs against bookings + connected calendar. If a Google/Apple calendar IS connected, prefer create_calendar_event so it lands in the canonical calendar; use this tool when no external calendar is connected OR when owner explicitly wants a quick local note.\n\nRECURRING / STANDING TIME-BLOCKS: when the owner states something they do REPEATEDLY at a time ('I work out at 7am every day', 'team standup every weekday at 9', 'D&D every Sunday night'), set recurrence so it becomes a standing block the brief + conflict detection always know about — don't create a one-off or only a memory note. Use 'daily', 'weekdays' (Mon-Fri), or 'weekly' (repeats on the same weekday as start_at). start_at is the FIRST occurrence (sets the time + duration). To stop it later the owner says 'cancel my 7am workout' (cancels the whole series).",
   input_schema: {
     type: 'object',
     properties: {
@@ -1521,6 +1521,8 @@ const TOOL_SCHEDULE_EVENT: AnthropicTool = {
       location: { type: 'string', description: 'Optional location.' },
       all_day: { type: 'boolean', description: 'True for all-day events (birthdays, holidays).' },
       tags: { type: 'array', items: { type: 'string' }, description: "Tags like 'work', 'personal', 'family' for filtering." },
+      recurrence: { type: 'string', enum: ['daily', 'weekdays', 'weekly'], description: "Set for a STANDING block the owner does repeatedly: 'daily', 'weekdays' (Mon-Fri), or 'weekly' (same weekday as start_at). Omit for a one-off event." },
+      recurrence_until: { type: 'string', description: 'Optional ISO date the recurrence stops (inclusive). Omit for indefinite.' },
     },
     required: ['title', 'start_at', 'end_at'],
   },
@@ -5243,12 +5245,20 @@ export async function executeTool(
           allDay: !!call.input.all_day,
           tags: Array.isArray(call.input.tags) ? call.input.tags.map(String) : undefined,
           source: 'owner_defined',
+          recurrence: ['daily', 'weekdays', 'weekly'].includes(call.input.recurrence)
+            ? call.input.recurrence
+            : undefined,
+          recurrenceUntil: call.input.recurrence_until ? String(call.input.recurrence_until) : undefined,
         });
         if (!id) return { content: 'Could not save the event.', success: false };
         const when = new Date(startAt).toLocaleString('en-US', {
           weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
         });
-        return { content: `✓ Scheduled "${title}" for ${when}. It'll appear in your daily brief and I'll flag any conflicts with other commitments.`, success: true };
+        const recur = call.input.recurrence === 'daily' ? ' (repeats daily)'
+          : call.input.recurrence === 'weekdays' ? ' (repeats every weekday)'
+          : call.input.recurrence === 'weekly' ? ' (repeats weekly)'
+          : '';
+        return { content: `✓ Scheduled "${title}" for ${when}${recur}. It'll appear in your daily brief and I'll flag any conflicts with other commitments.`, success: true };
       }
 
       case 'list_my_schedule': {
