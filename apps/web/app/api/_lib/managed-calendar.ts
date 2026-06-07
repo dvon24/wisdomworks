@@ -35,7 +35,13 @@ export interface ManagedEvent {
   tags: string[];
   metadata: Record<string, any>;
   cancelled_at: string | null;
+  /** null = one-off. Otherwise a standing time-block; start_at/end_at is the
+   *  FIRST occurrence and defines the time-of-day + duration. */
+  recurrence: RecurrenceRule | null;
+  recurrence_until: string | null;
 }
+
+export type RecurrenceRule = 'daily' | 'weekly' | 'weekdays';
 
 export interface CreateEventInput {
   tenantPhone: string;
@@ -49,6 +55,11 @@ export interface CreateEventInput {
   source?: 'owner_defined' | 'agent_created' | 'external_sync';
   externalProvider?: string;
   externalId?: string;
+  /** Standing time-block: 'daily' | 'weekly' (same weekday as start) |
+   *  'weekdays' (Mon-Fri). Omit for a one-off event. */
+  recurrence?: RecurrenceRule;
+  /** ISO date/datetime the recurrence stops (inclusive); omit for forever. */
+  recurrenceUntil?: string;
 }
 
 export async function createEvent(input: CreateEventInput): Promise<string | null> {
@@ -71,6 +82,8 @@ export async function createEvent(input: CreateEventInput): Promise<string | nul
         external_provider: input.externalProvider ?? null,
         external_id: input.externalId ?? null,
         tags: input.tags ?? [],
+        recurrence: input.recurrence ?? null,
+        recurrence_until: input.recurrenceUntil ?? null,
       }),
     });
     if (!res.ok) {
@@ -84,8 +97,10 @@ export async function createEvent(input: CreateEventInput): Promise<string | nul
     // Two-way sync — if this event came from an EXTERNAL pull (source =
     // 'external_sync'), don't push it back. Otherwise push to whatever
     // external calendar is connected. Fire-and-forget so the chat reply
-    // doesn't block on it.
-    if ((input.source ?? 'owner_defined') !== 'external_sync') {
+    // doesn't block on it. RECURRING events are kept native-only for now —
+    // pushing a standing block as a single external event would misrepresent
+    // it; real recurrence belongs to the connected calendar's own RRULE.
+    if ((input.source ?? 'owner_defined') !== 'external_sync' && !input.recurrence) {
       void pushToExternalCalendars(cleanPhone, nativeId, input);
     }
 
@@ -147,6 +162,10 @@ export async function cancelEvent(eventId: string, tenantPhone: string): Promise
   if (!SUPABASE_URL || !SUPABASE_KEY) return false;
   try {
     const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+    // A recurring occurrence carries a synthetic "<seriesId>@<date>" id — cancel
+    // the whole series by stripping back to the real row id (MVP: no per-
+    // occurrence exceptions).
+    eventId = eventId.split('@')[0]!;
     // Load the row first so we have the external_id (if any) for the
     // mirrored delete on the external calendar
     const readRes = await fetch(
@@ -191,6 +210,56 @@ async function deleteFromExternalCalendar(
   }
 }
 
+const MAX_OCCURRENCES = 400; // backstop against a runaway expansion
+
+/**
+ * Expand a recurring series into the concrete occurrences that overlap
+ * [fromIso, toIso]. The stored start_at is the first occurrence and defines the
+ * UTC time-of-day + duration. Daily / weekly (same weekday) / weekdays (Mon-Fri).
+ *
+ * UTC-based — a "7am" block recurs at 07:00 UTC each day; DST-perfect local
+ * recurrence is the connected calendar's job (real RRULE). Good enough for the
+ * brief + conflict detection.
+ */
+function expandRecurring(ev: ManagedEvent, fromIso: string, toIso: string): ManagedEvent[] {
+  if (!ev.recurrence) return [];
+  const origStart = new Date(ev.start_at);
+  const origEnd = new Date(ev.end_at);
+  const windowFrom = new Date(fromIso).getTime();
+  const windowTo = new Date(toIso).getTime();
+  if ([origStart.getTime(), origEnd.getTime(), windowFrom, windowTo].some((n) => Number.isNaN(n))) return [];
+
+  const durationMs = Math.max(0, origEnd.getTime() - origStart.getTime());
+  const until = ev.recurrence_until ? new Date(ev.recurrence_until).getTime() : Infinity;
+  const dayMs = 86_400_000;
+
+  // First candidate: the series time-of-day on the window's start date (UTC).
+  const first = new Date(windowFrom);
+  first.setUTCHours(origStart.getUTCHours(), origStart.getUTCMinutes(), origStart.getUTCSeconds(), 0);
+  let startMs = first.getTime();
+  if (startMs < windowFrom) startMs += dayMs; // time-of-day already passed on day 0
+
+  const out: ManagedEvent[] = [];
+  for (let i = 0; i < MAX_OCCURRENCES && startMs <= windowTo; i++, startMs += dayMs) {
+    if (startMs > until) break;
+    if (startMs < origStart.getTime()) continue; // before the series begins
+    const dow = new Date(startMs).getUTCDay(); // 0=Sun … 6=Sat
+    if (ev.recurrence === 'weekly' && dow !== origStart.getUTCDay()) continue;
+    if (ev.recurrence === 'weekdays' && (dow === 0 || dow === 6)) continue;
+    const endMs = startMs + durationMs;
+    if (endMs <= windowFrom) continue; // ended before the window opened
+    const occStart = new Date(startMs).toISOString();
+    out.push({
+      ...ev,
+      id: `${ev.id}@${occStart.slice(0, 10)}`, // synthetic per-occurrence id
+      start_at: occStart,
+      end_at: new Date(endMs).toISOString(),
+      metadata: { ...(ev.metadata ?? {}), recurring: true, series_id: ev.id, rule: ev.recurrence },
+    });
+  }
+  return out;
+}
+
 export async function listEventsInRange(input: {
   tenantPhone: string;
   fromIso: string;
@@ -198,17 +267,31 @@ export async function listEventsInRange(input: {
 }): Promise<ManagedEvent[]> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
   const cleanPhone = input.tenantPhone.replace(/[\s\-+()]/g, '');
+  const out: ManagedEvent[] = [];
   try {
-    // Events that overlap the window: start < to AND end > from
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/tenant_events?tenant_phone=eq.${cleanPhone}&cancelled_at=is.null&start_at=lt.${encodeURIComponent(input.toIso)}&end_at=gt.${encodeURIComponent(input.fromIso)}&order=start_at.asc&select=*`,
+    // 1) One-off events that overlap the window: start < to AND end > from.
+    const oneOff = await fetch(
+      `${SUPABASE_URL}/rest/v1/tenant_events?tenant_phone=eq.${cleanPhone}&cancelled_at=is.null&recurrence=is.null&start_at=lt.${encodeURIComponent(input.toIso)}&end_at=gt.${encodeURIComponent(input.fromIso)}&select=*`,
       { headers: headers() },
     );
-    if (!res.ok) return [];
-    return await res.json();
+    if (oneOff.ok) out.push(...(await oneOff.json()));
+
+    // 2) Recurring series whose lifetime touches the window — then EXPAND into
+    //    concrete occurrences. (The stored start_at/end_at is only the first
+    //    occurrence, so the one-off overlap filter above can't catch later ones.)
+    const recurring = await fetch(
+      `${SUPABASE_URL}/rest/v1/tenant_events?tenant_phone=eq.${cleanPhone}&cancelled_at=is.null&recurrence=not.is.null&start_at=lt.${encodeURIComponent(input.toIso)}&or=(recurrence_until.is.null,recurrence_until.gte.${encodeURIComponent(input.fromIso)})&select=*`,
+      { headers: headers() },
+    );
+    if (recurring.ok) {
+      for (const ev of (await recurring.json()) as ManagedEvent[]) {
+        out.push(...expandRecurring(ev, input.fromIso, input.toIso));
+      }
+    }
   } catch {
-    return [];
+    return out.sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
   }
+  return out.sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
 }
 
 export async function listTodaysEvents(tenantPhone: string): Promise<ManagedEvent[]> {
