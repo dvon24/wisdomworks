@@ -214,6 +214,52 @@ export async function setWorkflowStatus(args: {
   }
 }
 
+/** Bulk-handle every pending_approval workflow at once. For 'active', each
+ *  workflow's next_run_at is recomputed to its NEXT future slot so bulk-approval
+ *  doesn't fire a pile of stale-pending workflows all at once. */
+export async function setAllPendingWorkflows(
+  tenantPhone: string,
+  status: 'active' | 'removed',
+): Promise<{ ok: boolean; count: number; names: string[]; reason?: string }> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ok: false, count: 0, names: [], reason: 'supabase_not_configured' };
+  const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
+  try {
+    const listRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/user_workflows?tenant_phone=eq.${cleanPhone}&status=eq.pending_approval&select=id,name,cron_expr`,
+      { headers: headers() },
+    );
+    if (!listRes.ok) return { ok: false, count: 0, names: [], reason: `${listRes.status}` };
+    const pending: Array<{ id: string; name: string; cron_expr: string | null }> = await listRes.json();
+    if (pending.length === 0) return { ok: true, count: 0, names: [] };
+
+    if (status === 'removed') {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/user_workflows?tenant_phone=eq.${cleanPhone}&status=eq.pending_approval`,
+        { method: 'PATCH', headers: { ...headers(), Prefer: 'return=minimal' }, body: JSON.stringify({ status: 'removed', updated_at: new Date().toISOString() }) },
+      );
+      if (!res.ok) return { ok: false, count: 0, names: [], reason: `${res.status}` };
+      return { ok: true, count: pending.length, names: pending.map((w) => w.name) };
+    }
+
+    // Activate one-by-one so each gets a fresh next_run_at (not an immediate
+    // catch-up fire on a stale pending row).
+    let count = 0;
+    const names: string[] = [];
+    for (const w of pending) {
+      const next = w.cron_expr ? nextRunAfter(w.cron_expr, new Date()) : null;
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/user_workflows?id=eq.${w.id}`, {
+        method: 'PATCH',
+        headers: { ...headers(), Prefer: 'return=minimal' },
+        body: JSON.stringify({ status: 'active', next_run_at: next?.toISOString() ?? null, updated_at: new Date().toISOString() }),
+      });
+      if (res.ok) { count++; names.push(w.name); }
+    }
+    return { ok: true, count, names };
+  } catch (err: any) {
+    return { ok: false, count: 0, names: [], reason: err?.message ?? String(err) };
+  }
+}
+
 export async function getWorkflowByName(args: {
   tenantPhone: string;
   name: string;

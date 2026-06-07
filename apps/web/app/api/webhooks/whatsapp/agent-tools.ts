@@ -27,6 +27,7 @@ import {
   createUserWorkflow,
   listUserWorkflows,
   setWorkflowStatus,
+  setAllPendingWorkflows,
   getWorkflowByName,
 } from '../../_lib/user-workflows';
 import { executeWorkflow } from '../../_lib/workflow-executor';
@@ -597,6 +598,19 @@ const TOOL_PAUSE_WORKFLOW: AnthropicTool = {
     type: 'object',
     properties: { name: { type: 'string', description: "The workflow name." } },
     required: ['name'],
+  },
+};
+
+const TOOL_MANAGE_PENDING_WORKFLOWS: AnthropicTool = {
+  name: 'manage_pending_workflows',
+  description:
+    "Handle ALL of the owner's pending_approval workflows at once. Use ONLY when the owner clearly means all of them — 'approve all my workflows', 'activate everything pending', 'clear out the pending ones', 'delete the unapproved workflows'. action='approve_all' activates them all (each fires at its NEXT scheduled time, never all at once); action='dismiss_all' soft-deletes them. For a single named workflow use approve_workflow / delete_workflow instead.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['approve_all', 'dismiss_all'], description: "'approve_all' = activate every pending workflow; 'dismiss_all' = soft-delete every pending workflow." },
+    },
+    required: ['action'],
   },
 };
 
@@ -2841,6 +2855,7 @@ export function buildToolList(
   tools.push(TOOL_CREATE_WORKFLOW);
   tools.push(TOOL_LIST_WORKFLOWS);
   tools.push(TOOL_APPROVE_WORKFLOW);
+  tools.push(TOOL_MANAGE_PENDING_WORKFLOWS);
   tools.push(TOOL_PAUSE_WORKFLOW);
   tools.push(TOOL_DELETE_WORKFLOW);
   tools.push(TOOL_RUN_WORKFLOW_NOW);
@@ -3899,6 +3914,13 @@ export async function executeTool(
           activate: call.input.activate === true,
         });
         if (!result.ok) return { content: `Couldn't create workflow: ${result.reason}`, success: false };
+        // Duplicate = a NO-OP (the workflow already exists, e.g. Iris re-ran
+        // creation while processing a follow-up message). Don't force a canonical
+        // "✓ you already have it" confirmation — that reads as a confusing
+        // repeat. Hand Iris the info as plain content; she can fold it in or skip.
+        if (result.duplicate) {
+          return { content: result.proposal_summary, success: true };
+        }
         return {
           content: result.proposal_summary,
           success: true,
@@ -3908,6 +3930,23 @@ export async function executeTool(
           // what the workflow library produced.
           owner_confirmation: result.proposal_summary,
         };
+      }
+
+      case 'manage_pending_workflows': {
+        if (!user) return { content: 'Internal: user context required.', success: false };
+        const action = call.input.action;
+        if (action !== 'approve_all' && action !== 'dismiss_all') {
+          return { content: "Specify action: 'approve_all' or 'dismiss_all'.", success: false };
+        }
+        const result = await setAllPendingWorkflows(user.phoneNumber, action === 'approve_all' ? 'active' : 'removed');
+        if (!result.ok) {
+          return { content: `Couldn't ${action === 'approve_all' ? 'activate' : 'clear'} pending workflows: ${result.reason}`, success: false };
+        }
+        if (result.count === 0) return { content: 'No workflows are pending approval right now.', success: true };
+        const verb = action === 'approve_all' ? 'Activated' : 'Cleared';
+        const preview = result.names.slice(0, 8).join(', ') + (result.names.length > 8 ? `, +${result.names.length - 8} more` : '');
+        const msg = `${verb} ${result.count} pending workflow${result.count === 1 ? '' : 's'} (${preview}).${action === 'approve_all' ? " They'll run at their next scheduled times." : ''}`;
+        return { content: msg, success: true, owner_confirmation: `${verb} ${result.count} pending workflow${result.count === 1 ? '' : 's'}.` };
       }
 
       case 'list_workflows': {
