@@ -4280,16 +4280,53 @@ export async function executeTool(
         const safeName = `${filename}${ext}`;
         const startedAt = Date.now();
 
+        // Normalize the doc body. Accept structured sections[], OR coerce a prose
+        // STRING (e.g. a workflow {previous} step's Coach output, which is prose
+        // not a sections array) into a section — otherwise the content is dropped
+        // and we emit a blank page (Devon 2026-06-07: a "weekly workout plan" PDF
+        // with no workout). Bullet/numbered lines become bullets.
+        const proseToSections = (prose: string): DocSection[] => {
+          const paragraphs: string[] = [];
+          const bullets: string[] = [];
+          for (const line of prose.split('\n').map((l) => l.trim()).filter(Boolean)) {
+            if (/^([-*•]|\d+[.)])\s+/.test(line)) bullets.push(line.replace(/^([-*•]|\d+[.)])\s+/, ''));
+            else paragraphs.push(line);
+          }
+          return [{ heading: '', paragraphs, bullets } as DocSection];
+        };
+        let docSections: DocSection[] = Array.isArray(call.input.sections)
+          ? (call.input.sections as DocSection[])
+          : typeof call.input.sections === 'string' && (call.input.sections as string).trim()
+            ? proseToSections(call.input.sections as string)
+            : [];
+        if (docSections.length === 0) {
+          const proseFallback = [call.input.content, call.input.body, call.input.text]
+            .find((v: any) => typeof v === 'string' && v.trim());
+          if (proseFallback) docSections = proseToSections(String(proseFallback));
+        }
+
+        // EGRESS GUARD — never emit a contentless document. If the body came
+        // through empty (a prior workflow step produced nothing), fail HONESTLY
+        // so the run surfaces it (the owner gets a self-announce notice) instead
+        // of attaching a blank file the owner has to discover for themselves.
+        const docHasContent =
+          format === 'pptx' ? Array.isArray(call.input.slides) && (call.input.slides as any[]).length > 0
+          : format === 'xlsx' ? Array.isArray(call.input.sheets) && (call.input.sheets as any[]).length > 0
+          : docSections.some((s) => (s.heading ?? '').trim() || (s.paragraphs ?? []).some((p: string) => (p ?? '').trim()) || (s.bullets ?? []).some((b: string) => (b ?? '').trim()));
+        if (!docHasContent) {
+          return { content: `I did NOT generate "${safeName}" — the document body came through empty (a prior step produced no content). Tell ${user.name} the document couldn't be built and why; do NOT attach or claim to have created a blank file.`, success: false };
+        }
+
         try {
           let buffer: Buffer;
           if (format === 'docx') {
-            buffer = await generateWordDoc(title, (call.input.sections ?? []) as DocSection[]);
+            buffer = await generateWordDoc(title, docSections);
           } else if (format === 'pptx') {
             buffer = await generatePowerPoint(title, (call.input.slides ?? []) as SlideSpec[]);
           } else if (format === 'xlsx') {
             buffer = await generateExcel((call.input.sheets ?? []) as SheetSpec[]);
           } else {
-            buffer = await generatePdf(title, (call.input.sections ?? []) as DocSection[]);
+            buffer = await generatePdf(title, docSections);
           }
           const genMs = Date.now() - startedAt;
           const sizeKb = buffer.length / 1024;
