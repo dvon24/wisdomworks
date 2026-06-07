@@ -95,6 +95,103 @@ export interface CritiqueInput {
   team?: Array<{ name: string; role?: string; description?: string }>;
 }
 
+export interface DeliverableAuditResult {
+  ok: boolean;
+  reason?: string;
+  /** Which tier produced the verdict (0 = deterministic, 1 = Haiku). */
+  tier: 0 | 1;
+}
+
+/**
+ * Audit an owner-facing DELIVERABLE — the actual artifact (a document's content,
+ * an email body, a workflow delivery), NOT the chat message about it. This is
+ * the audit team extended from conversations to OUTPUTS: the fulfillment gate
+ * Devon mandated 2026-06-07 ("if I ask for a workout and there's no workout in
+ * the document, that's not fulfilling the purpose" / "audit everything").
+ *
+ * TIERED so "audit everything" stays affordable:
+ *   Tier 0 (deterministic, free, ALWAYS): the artifact has substantive content.
+ *   Tier 1 (Haiku, ~$0.001, opt-in): does the content actually FULFILL the ask?
+ *
+ * Fail-OPEN on a Tier-1 critic error (never block a real deliverable on an infra
+ * hiccup) — but Tier 0 is local + reliable, so a truly-empty artifact is always
+ * caught regardless.
+ */
+export async function auditDeliverable(input: {
+  /** What was asked for (e.g. the document title, the email intent, the task). */
+  request: string;
+  /** Artifact kind, for the prompt + the owner-facing message. */
+  kind: 'document' | 'email' | 'delivery' | string;
+  /** The actual rendered artifact text. */
+  content: string;
+  /** Run the Tier-1 Haiku fulfillment check (default false → Tier 0 only). */
+  tier1?: boolean;
+  /** For cost attribution on the deck. */
+  tenantPhone?: string;
+}): Promise<DeliverableAuditResult> {
+  const content = (input.content ?? '').trim();
+
+  // ── Tier 0 — deterministic: is there substantive content at all? ──────────
+  if (content.length < 10) {
+    return { ok: false, reason: `the ${input.kind} came through empty`, tier: 0 };
+  }
+  if (!input.tier1 || !ANTHROPIC_API_KEY) return { ok: true, tier: 0 };
+
+  // ── Tier 1 — Haiku: does the artifact actually fulfill the request? ───────
+  const system = `You are the final check before a produced ${input.kind} reaches the owner. Verify it actually FULFILLS what was asked. Be strict but fair — judge the CONTENT, not a surface title match: a "weekly workout plan" must contain an actual workout; an "invoice" must contain amounts; a "summary of X" must summarize X. Return ONLY JSON: { "fulfills": true|false, "reason": "<one sentence — what's missing if it doesn't>" }`;
+  const userBlock = `REQUEST (what was asked for):\n"""${input.request.slice(0, 800)}"""\n\nPRODUCED ${input.kind.toUpperCase()} (the actual content):\n"""${content.slice(0, 4000)}"""\n\nDoes it fulfill the request? Return JSON.`;
+
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: HAIKU_MODEL,
+        max_tokens: 200,
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: userBlock }],
+      }),
+    });
+    if (!res.ok) {
+      console.warn(`[axis-deliverable] tier-1 ${res.status} — passing (fail-open)`);
+      return { ok: true, tier: 0 };
+    }
+    const data = await res.json();
+    if (input.tenantPhone) {
+      void (async () => {
+        try {
+          const { recordLlmCall } = await import('./chat-cost-tracker');
+          await recordLlmCall({
+            tenantPhone: input.tenantPhone!,
+            surface: 'axis-critic',
+            model: HAIKU_MODEL,
+            tokensIn: data.usage?.input_tokens ?? 0,
+            tokensOut: data.usage?.output_tokens ?? 0,
+            cachedTokensIn: data.usage?.cache_read_input_tokens ?? 0,
+            toolsUsed: [],
+          });
+        } catch {}
+      })();
+    }
+    const text = data.content?.[0]?.text ?? '';
+    const s = text.indexOf('{');
+    const e = text.lastIndexOf('}');
+    if (s < 0 || e < s) return { ok: true, tier: 1 }; // unparseable → fail-open
+    const parsed = JSON.parse(text.slice(s, e + 1));
+    if (parsed.fulfills === false) {
+      return {
+        ok: false,
+        reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : `the ${input.kind} doesn't fulfill the request`,
+        tier: 1,
+      };
+    }
+    return { ok: true, tier: 1 };
+  } catch (err) {
+    console.warn('[axis-deliverable] tier-1 exception — passing (fail-open):', err);
+    return { ok: true, tier: 0 };
+  }
+}
+
 /**
  * Per-surface rule sheets. Each rule maps to a specific failure mode
  * observed in production. Add rules sparingly — the critic prompt
