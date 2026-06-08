@@ -198,6 +198,34 @@ export async function GET(request: Request) {
 
   for (const wf of dueWorkflows) {
     try {
+      // CLAIM before running so overlapping cron ticks can't double-fire it.
+      // The worker delegation can take MINUTES, but next_run_at was only
+      // advanced AFTER execution — so every tick in that window re-grabbed the
+      // same still-due row (Devon got the Monday workout TWICE, ~7 min apart,
+      // 2026-06-08). Atomically advance next_run_at, gated on it still being due;
+      // if 0 rows come back, another tick already claimed it — skip. recordRun
+      // below re-sets next_run_at to the same slot (idempotent).
+      const claimNext = wf.cron_expr ? nextRunAfter(wf.cron_expr, now, wf.timezone ?? undefined) : null;
+      let claimedRows: any[] = [];
+      try {
+        const claimRes = await fetch(
+          `${SUPABASE_URL}/rest/v1/user_workflows?id=eq.${wf.id}&next_run_at=lte.${encodeURIComponent(now.toISOString())}`,
+          {
+            method: 'PATCH',
+            headers: { ...supaHeaders(), Prefer: 'return=representation' },
+            body: JSON.stringify({ next_run_at: claimNext?.toISOString() ?? null, updated_at: new Date().toISOString() }),
+          },
+        );
+        claimedRows = claimRes.ok ? await claimRes.json() : [];
+      } catch (err) {
+        console.warn(`[workflow-dispatcher] claim failed for ${wf.name} — skipping to avoid double-fire:`, err);
+        continue;
+      }
+      if (!Array.isArray(claimedRows) || claimedRows.length === 0) {
+        console.log(`[workflow-dispatcher] ${wf.name} already claimed by a concurrent run — skipping`);
+        continue;
+      }
+
       const execResult = await executeWorkflow({
         workflowId: wf.id,
         tenantPhone: wf.tenant_phone,
