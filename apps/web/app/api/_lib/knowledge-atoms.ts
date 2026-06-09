@@ -112,10 +112,16 @@ export async function upsertAtomWithReason(args: UpsertAtomArgs): Promise<Upsert
     }
     if (!res.ok) {
       const body = (await res.text()).slice(0, 300);
-      console.warn(`[atoms] upsert failed: ${res.status} ${body}`);
+      // console.ERROR (not warn) so it's retained in Vercel error logs, and
+      // surface the actual Postgres message in the returned error — remember_this
+      // relays saveResult.error verbatim, so the real cause (e.g. a NOT NULL
+      // violation or PGRST overload) reaches the owner instead of a blank
+      // "system error". Previously the body was read and then DISCARDED.
+      console.error(`[atoms] upsert failed: ${res.status} ${body}`);
+      const detail = body.replace(/\s+/g, ' ').trim().slice(0, 180);
       const error = /too short/i.test(body)
         ? 'the note was too short to save'
-        : `the memory store returned an error (${res.status})`;
+        : `the memory store returned an error (${res.status})${detail ? `: ${detail}` : ''}`;
       return { id: null, error };
     }
     const id = (await res.text()).replace(/"/g, '').trim() || null;
@@ -133,7 +139,7 @@ export async function upsertAtomWithReason(args: UpsertAtomArgs): Promise<Upsert
     }
     return { id, error: null };
   } catch (err: any) {
-    console.warn('[atoms] upsert exception:', err);
+    console.error('[atoms] upsert exception:', err);
     return { id: null, error: `the save failed (${(err?.message ?? String(err)).slice(0, 120)})` };
   }
 }
