@@ -4356,24 +4356,20 @@ export async function executeTool(
           return { content: `I did NOT generate "${safeName}" — the document body came through empty (a prior step produced no content). Tell ${user.name} the document couldn't be built and why; do NOT attach or claim to have created a blank file.`, success: false };
         }
 
- // Tier-1 fulfillment audit — the audit team, extended from chat to the
-          // ARTIFACT: does the document actually fulfill its title (a "Weekly
-          // Workout Plan" must contain a workout)? Fail-open on a critic hiccup;
-          // Tier 0 above already guarantees it isn't blank.
-          try {
-            const deliverableText = docSections
-              .map((s) => [s.heading, ...(s.paragraphs ?? []), ...(s.bullets ??
-  [])].filter(Boolean).join('\n'))
-              .join('\n\n');
-            const { auditDeliverable } = await import('../../_lib/axis-critic');
-            const audit = await auditDeliverable({ request: title, kind: 'document',
-  content: deliverableText, tier1: true, tenantPhone: user.phoneNumber });
-            if (!audit.ok) {
-              return { content: `I did NOT generate "${safeName}" — it wouldn't fulfill
-  the request: ${audit.reason}. Tell ${user.name} honestly that the document was
-  incomplete and why; do NOT attach it or claim it's done.`, success: false };
-            }
-          } catch { /* fail-open — never block a real document on the audit */ }
+        // Tier-1 fulfillment audit — the audit team, extended from chat to the
+        // ARTIFACT: does the document actually fulfill its title (a "Weekly
+        // Workout Plan" must contain a workout)? Fail-open on a critic hiccup;
+        // Tier 0 above already guarantees it isn't blank.
+        try {
+          const deliverableText = docSections
+            .map((s) => [s.heading, ...(s.paragraphs ?? []), ...(s.bullets ?? [])].filter(Boolean).join('\n'))
+            .join('\n\n');
+          const { auditDeliverable } = await import('../../_lib/axis-critic');
+          const audit = await auditDeliverable({ request: title, kind: 'document', content: deliverableText, tier1: true, tenantPhone: user.phoneNumber });
+          if (!audit.ok) {
+            return { content: `I did NOT generate "${safeName}" — it wouldn't fulfill the request: ${audit.reason}. Tell ${user.name} honestly that the document was incomplete and why; do NOT attach it or claim it's done.`, success: false };
+          }
+        } catch { /* fail-open — never block a real document on the audit */ }
         try {
           let buffer: Buffer;
           if (format === 'docx') {
