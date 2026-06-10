@@ -8059,6 +8059,23 @@ export async function executeTool(
           console.warn('[delegate_to_agent] behavioral-RAG seed failed (non-blocking):', err);
         }
 
+        // Deterministic owner-facts injection — the DELIVERY half of
+        // remember_this scoping. The semantic seed above is probabilistic
+        // (top-N by cosine similarity over a cron-lagged index); facts the
+        // owner explicitly scoped to this agent (tags=[agent name]) must
+        // ALWAYS reach it — otherwise "remember my split, scope it to Coach"
+        // saves fine and Coach still guesses. Non-blocking like the RAG seed.
+        // See db/migrations/2026-06-10-atom-scope-delivery.sql.
+        let ownerFactsBlock = '';
+        try {
+          const { recentAtomsForPrompt, renderAtomsForPrompt } = await import('../../_lib/knowledge-atoms');
+          const atoms = await recentAtomsForPrompt(delegCleanPhone, agentConfig.category ?? undefined, 12, targetAgent.name);
+          const rendered = renderAtomsForPrompt(atoms);
+          if (rendered) ownerFactsBlock = `\n${rendered}`;
+        } catch (err) {
+          console.warn('[delegate_to_agent] owner-facts fetch failed (non-blocking):', err);
+        }
+
         // Worker system prompt — persona + task + work-product
         // constraint + capability-honesty constraint (from PRD FR23
         // graceful-fallback principle).
@@ -8084,7 +8101,7 @@ export async function executeTool(
           '- IF YOU CAN\'T COMPLETE THE TASK, say so directly with the reason. Iris will fall back to handling it herself or surfacing the gap to the owner.',
           '',
           'Speak in first person as yourself. The output goes to Iris, who will present it to the owner with your attribution.',
-        ].filter(Boolean).join('\n') + workerContextBlock;
+        ].filter(Boolean).join('\n') + ownerFactsBlock + workerContextBlock;
 
         // Mini tool loop — capped at 4 iterations for cost discipline.
         // 2026-05-28 — first live delegation test (Devon's 7:50 PM

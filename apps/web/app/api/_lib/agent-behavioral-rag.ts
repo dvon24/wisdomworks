@@ -93,6 +93,8 @@ function buildQuerySeed(req: AgentContextRequest): string {
     parts.push('Topics: trends, performance, conversions, traffic, key metrics.');
   } else if (/web|develop|engineer|code/.test(role)) {
     parts.push('Topics: bugs, features, deployments, site changes, audits.');
+  } else if (/coach|fitness|train|health|wellness|nutrition/.test(role)) {
+    parts.push('Topics: workouts, training split, exercises, injuries, recovery, diet, sleep, races.');
   }
   return parts.join(' ');
 }
