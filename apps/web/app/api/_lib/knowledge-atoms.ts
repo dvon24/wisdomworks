@@ -150,7 +150,7 @@ export async function upsertAtom(args: UpsertAtomArgs): Promise<string | null> {
   return (await upsertAtomWithReason(args)).id;
 }
 
-export async function recentAtomsForPrompt(tenantPhone: string, lane?: string, limit = 15): Promise<KnowledgeAtom[]> {
+export async function recentAtomsForPrompt(tenantPhone: string, lane?: string, limit = 15, agentName?: string): Promise<KnowledgeAtom[]> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/recent_atoms_for_prompt`, {
@@ -160,6 +160,10 @@ export async function recentAtomsForPrompt(tenantPhone: string, lane?: string, l
         p_tenant_phone: tenantPhone,
         p_lane: lane ?? null,
         p_limit: limit,
+        // Name-scoped visibility (what remember_this writes). Passing the name
+        // also flips the RPC out of owner-brain mode, so a null-category agent
+        // no longer sees every other agent's scoped facts.
+        p_agent_name: agentName ? agentName.toLowerCase() : null,
       }),
     });
     if (!res.ok) return [];

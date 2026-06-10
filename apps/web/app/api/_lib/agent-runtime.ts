@@ -438,7 +438,7 @@ async function loadLaneInbox(tenantPhone: string, ownLane?: string): Promise<Lan
   }
 }
 
-async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string, agentConfigId?: string): Promise<TickContext> {
+async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?: string, agentConfigId?: string, agentName?: string): Promise<TickContext> {
   const cadence = await computeCadence(tenantPhone);
   if (!SUPABASE_URL || !SUPABASE_KEY) {
     return { orgName: '', orgIndustry: '', documentationText: '', connections: [], recentRunsForAgent: [], cadence, pendingDelegations: [], appliedSkills: [], projects: [], knownPeople: [], teammateNames: [], knowledgeAtoms: [], systemState: { connected_projects: [], connected_services: [], team: [], recent_owner_directives: [], pending_approvals_count: 0, last_owner_interaction_at: null }, teamCapabilities: [], consultInbox: [], consultOutbox: [], laneInbox: [] };
@@ -501,7 +501,11 @@ async function loadTickContext(tenantPhone: string, instanceId: string, ownLane?
       `${SUPABASE_URL}/rest/v1/agent_configs?tenant_phone=eq.${tenantPhone}&select=agent_name`,
       { headers: headers() },
     ).then((r) => r.ok ? r.json() : []).catch(() => []),
-    recentAtomsForPrompt(tenantPhone, ownLane, 15),
+    // Pass the agent NAME too — remember_this scopes atoms by lowercased
+    // agent name (real teams carry null/generic categories), and passing the
+    // name keeps a null-category agent out of the RPC's owner-brain
+    // see-everything mode. See 2026-06-10-atom-scope-delivery.sql.
+    recentAtomsForPrompt(tenantPhone, ownLane, 15, agentName),
     computeTenantSystemState(tenantPhone),
     loadTeamCapabilities(tenantPhone),
     consultInboxForAgent(instanceId),
@@ -1056,7 +1060,7 @@ export async function tickAgent(instance: AgentInstanceRow, config: AgentConfigR
     }
 
     const ownLaneForCtx = config.config?.category;
-    const ctx = await loadTickContext(instance.tenant_phone, instance.id, ownLaneForCtx, config.id);
+    const ctx = await loadTickContext(instance.tenant_phone, instance.id, ownLaneForCtx, config.id, config.agent_name);
 
     // COST GUARD — only EXTERNAL signal counts. Previously an agent's own
     // past escalations passed this check, creating a self-fueling feedback

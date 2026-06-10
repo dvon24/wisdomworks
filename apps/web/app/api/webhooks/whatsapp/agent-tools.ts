@@ -4356,24 +4356,20 @@ export async function executeTool(
           return { content: `I did NOT generate "${safeName}" — the document body came through empty (a prior step produced no content). Tell ${user.name} the document couldn't be built and why; do NOT attach or claim to have created a blank file.`, success: false };
         }
 
- // Tier-1 fulfillment audit — the audit team, extended from chat to the
-          // ARTIFACT: does the document actually fulfill its title (a "Weekly
-          // Workout Plan" must contain a workout)? Fail-open on a critic hiccup;
-          // Tier 0 above already guarantees it isn't blank.
-          try {
-            const deliverableText = docSections
-              .map((s) => [s.heading, ...(s.paragraphs ?? []), ...(s.bullets ??
-  [])].filter(Boolean).join('\n'))
-              .join('\n\n');
-            const { auditDeliverable } = await import('../../_lib/axis-critic');
-            const audit = await auditDeliverable({ request: title, kind: 'document',
-  content: deliverableText, tier1: true, tenantPhone: user.phoneNumber });
-            if (!audit.ok) {
-              return { content: `I did NOT generate "${safeName}" — it wouldn't fulfill
-  the request: ${audit.reason}. Tell ${user.name} honestly that the document was
-  incomplete and why; do NOT attach it or claim it's done.`, success: false };
-            }
-          } catch { /* fail-open — never block a real document on the audit */ }
+        // Tier-1 fulfillment audit — the audit team, extended from chat to the
+        // ARTIFACT: does the document actually fulfill its title (a "Weekly
+        // Workout Plan" must contain a workout)? Fail-open on a critic hiccup;
+        // Tier 0 above already guarantees it isn't blank.
+        try {
+          const deliverableText = docSections
+            .map((s) => [s.heading, ...(s.paragraphs ?? []), ...(s.bullets ?? [])].filter(Boolean).join('\n'))
+            .join('\n\n');
+          const { auditDeliverable } = await import('../../_lib/axis-critic');
+          const audit = await auditDeliverable({ request: title, kind: 'document', content: deliverableText, tier1: true, tenantPhone: user.phoneNumber });
+          if (!audit.ok) {
+            return { content: `I did NOT generate "${safeName}" — it wouldn't fulfill the request: ${audit.reason}. Tell ${user.name} honestly that the document was incomplete and why; do NOT attach it or claim it's done.`, success: false };
+          }
+        } catch { /* fail-open — never block a real document on the audit */ }
         try {
           let buffer: Buffer;
           if (format === 'docx') {
@@ -8063,6 +8059,23 @@ export async function executeTool(
           console.warn('[delegate_to_agent] behavioral-RAG seed failed (non-blocking):', err);
         }
 
+        // Deterministic owner-facts injection — the DELIVERY half of
+        // remember_this scoping. The semantic seed above is probabilistic
+        // (top-N by cosine similarity over a cron-lagged index); facts the
+        // owner explicitly scoped to this agent (tags=[agent name]) must
+        // ALWAYS reach it — otherwise "remember my split, scope it to Coach"
+        // saves fine and Coach still guesses. Non-blocking like the RAG seed.
+        // See db/migrations/2026-06-10-atom-scope-delivery.sql.
+        let ownerFactsBlock = '';
+        try {
+          const { recentAtomsForPrompt, renderAtomsForPrompt } = await import('../../_lib/knowledge-atoms');
+          const atoms = await recentAtomsForPrompt(delegCleanPhone, agentConfig.category ?? undefined, 12, targetAgent.name);
+          const rendered = renderAtomsForPrompt(atoms);
+          if (rendered) ownerFactsBlock = `\n${rendered}`;
+        } catch (err) {
+          console.warn('[delegate_to_agent] owner-facts fetch failed (non-blocking):', err);
+        }
+
         // Worker system prompt — persona + task + work-product
         // constraint + capability-honesty constraint (from PRD FR23
         // graceful-fallback principle).
@@ -8088,7 +8101,7 @@ export async function executeTool(
           '- IF YOU CAN\'T COMPLETE THE TASK, say so directly with the reason. Iris will fall back to handling it herself or surfacing the gap to the owner.',
           '',
           'Speak in first person as yourself. The output goes to Iris, who will present it to the owner with your attribution.',
-        ].filter(Boolean).join('\n') + workerContextBlock;
+        ].filter(Boolean).join('\n') + ownerFactsBlock + workerContextBlock;
 
         // Mini tool loop — capped at 4 iterations for cost discipline.
         // 2026-05-28 — first live delegation test (Devon's 7:50 PM
