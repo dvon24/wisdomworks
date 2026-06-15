@@ -60,7 +60,7 @@ interface OutboundRow {
   priority: 'chat_reply' | 'urgent' | 'digest';
   body: string;
   source: string;
-  media: { type: 'video' | 'image'; url: string } | null;
+  media: { type: 'video' | 'image' | 'document'; url: string; filename?: string } | null;
   status: 'pending' | 'deferred' | 'sent' | 'failed' | 'merged';
   deferred_until: string | null;
   created_at: string;
@@ -194,6 +194,7 @@ export async function GET(request: Request) {
       for (const r of urgent) {
         const res = await deliverOne(r);
         if (res === 'sent') sent++;
+        else if (res === 'deferred') deferred++;
         else failed++;
       }
 
@@ -217,6 +218,7 @@ export async function GET(request: Request) {
       if (digests.length === 1) {
         const res = await deliverOne(digests[0]!);
         if (res === 'sent') sent++;
+        else if (res === 'deferred') deferred++;
         else failed++;
       } else {
         // Merge: build a single body listing all pending digests.
@@ -229,8 +231,10 @@ export async function GET(request: Request) {
         // "primary" — its id will be marked sent. The others get
         // status='merged' with merged_into pointing at the primary.
         const primary = digests[0]!;
-        const primaryBody = mergedBody.slice(0, 4096);
-        const res = await deliverOne({ ...primary, body: primaryBody });
+        // Full merged body — no 4096 slice. deliverOutboundFromQueue chunks
+        // it into sequential sends, so absorbed rows aren't silently lost past
+        // the limit (they used to be sliced off AND marked 'merged' = gone).
+        const res = await deliverOne({ ...primary, body: mergedBody });
         if (res === 'sent') {
           sent++;
           merged += digests.length - 1;
@@ -245,6 +249,10 @@ export async function GET(request: Request) {
               }),
             });
           }
+        } else if (res === 'deferred') {
+          // Primary deferred for retry; absorbed rows stay 'pending' and
+          // re-merge on the next drain — nothing lost.
+          deferred++;
         } else {
           failed++;
         }
@@ -273,7 +281,12 @@ export async function GET(request: Request) {
   }
 }
 
-async function deliverOne(row: OutboundRow): Promise<'sent' | 'failed'> {
+// A transient Graph hiccup must not permanently lose the deliverable. Retry
+// via the existing 'deferred' reactivation (no schema change — attempts ride
+// in metadata) with backoff, and only mark 'failed' after exhausting them.
+const MAX_DELIVERY_ATTEMPTS = 4;
+
+async function deliverOne(row: OutboundRow): Promise<'sent' | 'failed' | 'deferred'> {
   const result = await deliverOutboundFromQueue({
     tenantPhone: row.tenant_phone,
     body: row.body,
@@ -292,12 +305,34 @@ async function deliverOne(row: OutboundRow): Promise<'sent' | 'failed'> {
     });
     return 'sent';
   }
+
+  const priorAttempts = typeof row.metadata?.delivery_attempts === 'number' ? row.metadata.delivery_attempts : 0;
+  const attempts = priorAttempts + 1;
+  if (attempts < MAX_DELIVERY_ATTEMPTS) {
+    const backoffMin = Math.min(30, 2 ** attempts); // 2, 4, 8 min
+    const deferUntil = new Date(Date.now() + backoffMin * 60_000).toISOString();
+    await fetch(`${SUPABASE_URL}/rest/v1/outbound_messages?id=eq.${row.id}`, {
+      method: 'PATCH',
+      headers: { ...headers(), Prefer: 'return=minimal' },
+      body: JSON.stringify({
+        status: 'deferred',
+        deferred_until: deferUntil,
+        metadata: { ...row.metadata, delivery_attempts: attempts, last_error: result.error?.slice(0, 500) ?? 'unknown' },
+      }),
+    });
+    console.warn(`[outbound-drainer] deferred ${row.id} (attempt ${attempts}/${MAX_DELIVERY_ATTEMPTS}, retry in ${backoffMin}m): ${result.error?.slice(0, 200)}`);
+    return 'deferred';
+  }
+
+  // Exhausted — mark failed AND make it loud (don't lose content silently).
+  console.error(`[outbound-drainer] PERMANENT delivery failure for ${row.id} after ${attempts} attempts (source=${row.source}): ${result.error}`);
   await fetch(`${SUPABASE_URL}/rest/v1/outbound_messages?id=eq.${row.id}`, {
     method: 'PATCH',
     headers: { ...headers(), Prefer: 'return=minimal' },
     body: JSON.stringify({
       status: 'failed',
       last_error: result.error?.slice(0, 1000) ?? 'unknown',
+      metadata: { ...row.metadata, delivery_attempts: attempts },
     }),
   });
   return 'failed';

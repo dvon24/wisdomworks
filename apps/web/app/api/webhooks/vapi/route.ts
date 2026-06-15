@@ -115,7 +115,7 @@ async function handleToolCall(input: {
   const { loadConnectionsForPhone } = await import('@wisdomworks/shared');
   const { loadUserContext } = await import('../whatsapp/context-store');
   const connections = await loadConnectionsForPhone(input.tenantPhone);
-  const user = await loadUserContext(input.tenantPhone, 'Voice Caller');
+  const user = await loadUserContext(input.tenantPhone); // system caller — keep the real owner name
 
   const results = [];
   for (const tc of calls) {

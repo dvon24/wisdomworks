@@ -916,7 +916,7 @@ async function callAnthropicForTick(
   if (hasTools && tenantPhone) {
     try {
       const { loadUserContext } = await import('../webhooks/whatsapp/context-store');
-      userCtxForTools = await loadUserContext(tenantPhone, 'agent-tick');
+      userCtxForTools = await loadUserContext(tenantPhone); // system caller — keep the real owner name
     } catch {
       // Non-fatal — most READ tools don't need full user context.
     }

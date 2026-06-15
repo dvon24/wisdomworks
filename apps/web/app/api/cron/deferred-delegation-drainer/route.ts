@@ -71,7 +71,9 @@ export async function GET(request: Request) {
     let user: any = null;
     try {
       connections = await loadConnectionsForPhone(tenant);
-      user = await loadUserContext(tenant, 'WisdomWorks');
+      // No name arg — system caller. The store falls back to the persisted
+      // row.name so worker prompts say "Owner: Devon", not "Owner: WisdomWorks".
+      user = await loadUserContext(tenant);
     } catch (err) {
       console.warn('[deferred-drainer] context load failed for', tenant, err);
       continue;
@@ -83,15 +85,39 @@ export async function GET(request: Request) {
       if (ran >= MAX_PER_RUN) break;
       const r = await runOneDeferred(row, { executeTool, connections, user });
       ran++;
+      // FULL content — an 800-char clip here shipped truncated deliverables
+      // to the owner (the PR #43 bug shape on a new path). Length handling
+      // belongs to the outbound layer.
       results.push(r.ok
-        ? `From ${row.target_agent}:\n${r.content.slice(0, 800)}`
+        ? `From ${row.target_agent}:\n${r.content}`
         : `⚠️ ${row.target_agent} couldn't complete the queued task: ${r.content.slice(0, 200)}`);
     }
 
     if (results.length > 0) {
+      const body = `✅ Budget reset — I ran the ${results.length} task${results.length === 1 ? '' : 's'} you had queued:\n\n${results.join('\n\n')}`;
+      // Observe-only Axis audit before delivery — same iris-chat rule sheet as
+      // the workflow-dispatcher, so queued worker output gets the same honesty
+      // check that live chat does (it shipped unaudited before). Non-blocking.
+      try {
+        const { critiqueResponse, persistCritique } = await import('../../_lib/axis-critic');
+        const critique = await critiqueResponse({
+          surface: 'iris-chat',
+          ownerMessage: 'Queued delegations run after budget reset (proactive cron — no specific owner question this turn).',
+          draft: body,
+          recentTurns: [],
+          toolsUsedThisTurn: ['delegate_to_agent'],
+          tenantPhone: tenant,
+        });
+        void persistCritique({ tenantPhone: tenant, surface: 'iris-chat', critique, sourceMessage: 'deferred-delegation', draft: body, revisionAttempted: false });
+        if (!critique.passes) {
+          console.warn(`[deferred-drainer] Axis flagged ${critique.violations.length} on queued delivery for ${tenant}`);
+        }
+      } catch (e: any) {
+        console.warn('[deferred-drainer] Axis audit failed (non-blocking):', e?.message ?? String(e));
+      }
       await sendOwnerMessage({
         tenantPhone: tenant,
-        body: `✅ Budget reset — I ran the ${results.length} task${results.length === 1 ? '' : 's'} you had queued:\n\n${results.join('\n\n')}`,
+        body,
         source: 'deferred-delegation',
       }).catch((e) => console.warn('[deferred-drainer] owner notify failed:', e));
     }

@@ -147,12 +147,19 @@ async function supabaseQuery(
 
 /**
  * Load user context — checks cache, then Supabase, then creates new.
+ *
+ * `name` is a HINT, not an override: pass it only when you have the real
+ * person's name (webhook payloads do). Cron/system callers must OMIT it —
+ * previously they passed placeholders ('WisdomWorks', 'workflow-runner',
+ * 'agent-tick') which overwrote a warm cache's real name AND landed in
+ * worker prompts as "Owner: workflow-runner". The persisted row.name (saved
+ * on every saveUserContext) is the cold-start fallback.
  */
-export async function loadUserContext(phoneNumber: string, name: string): Promise<UserContext> {
+export async function loadUserContext(phoneNumber: string, name?: string): Promise<UserContext> {
   // Check cache first
   const cached = cache.get(phoneNumber);
   if (cached) {
-    cached.name = name;
+    if (name) cached.name = name;
     cached.lastSeen = new Date().toISOString();
     cached.messageCount++;
     return cached;
@@ -169,7 +176,7 @@ export async function loadUserContext(phoneNumber: string, name: string): Promis
       const row = rows[0];
       const ctx: UserContext = {
         phoneNumber,
-        name,
+        name: name ?? row.name ?? 'there',
         tenantId: row.tenant_id,
         businessType: row.business_type,
         businessName: row.business_name,
@@ -188,7 +195,7 @@ export async function loadUserContext(phoneNumber: string, name: string): Promis
   // New user
   const ctx: UserContext = {
     phoneNumber,
-    name,
+    name: name ?? 'there',
     isOwner: phoneNumber === '491703604562', // Devon
     conversationHistory: [],
     profile: { preferences: {}, activeTopics: [] },
