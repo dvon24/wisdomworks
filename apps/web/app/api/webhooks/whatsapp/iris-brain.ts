@@ -752,6 +752,12 @@ export async function generateIrisReply(
       'connect_automation_webhook',
       'add_tool_to_agent',
       'delegate_to_agent',
+      // PR #46: recurring standing time-blocks — "repeats daily from now on"
+      // is TRUE after this fires; omitting it made the guard rewrite a true
+      // claim (honesty inversion).
+      'schedule_event',
+      // PR #49: bulk-activates pending workflows — same going-forward shape.
+      'manage_pending_workflows',
     ]);
     const FABRICATION_PATTERNS: RegExp[] = [
       // Morning-brief specific (original patterns from 4c7df5e).
@@ -844,9 +850,14 @@ export async function generateIrisReply(
     // 2026-06-06. No extra model call (correct when over the spend cap). Runs
     // BEFORE the Axis critic so the critic audits the already-honest reply.
     {
+      // ALL tools that genuinely hand work to agents ground a handoff claim —
+      // whitelisting only delegate_to_agent made the guard strip TRUE
+      // statements after queue_delegation ("queued for Marcus") and replace
+      // them with a false "I haven't handed this off" denial.
+      const HANDOFF_TOOLS = ['delegate_to_agent', 'queue_delegation', 'run_queued_delegations', 'dispatch_to_agents'];
       const delegationGuard = guardDelegationClaim({
         message: assistantMessage,
-        delegatedThisTurn: toolsUsed.includes('delegate_to_agent'),
+        delegatedThisTurn: toolsUsed.some((t) => HANDOFF_TOOLS.includes(t)),
         capped: expensiveToolsDeferred,
       });
       if (delegationGuard.removed.length > 0) {

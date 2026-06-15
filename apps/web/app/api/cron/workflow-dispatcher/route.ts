@@ -23,7 +23,12 @@ import { nextRunAfter } from '../../_lib/cron-next';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+// 300, not 60 — a scheduled run with a worker delegation can take minutes
+// (the claim comment below says as much). At 60 Vercel killed long runs
+// AFTER the claim advanced next_run_at but BEFORE delivery: the slot's
+// output vanished with no self-announce (same shape as the webhook 504
+// incident, PR #2). 300 matches the webhook route's budget.
+export const maxDuration = 300;
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;

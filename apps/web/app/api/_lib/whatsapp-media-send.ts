@@ -11,8 +11,6 @@
  *   - URL must be public HTTPS (we don't upload — link mode only)
  */
 
-const GRAPH_API = 'https://graph.facebook.com/v25.0';
-
 export async function sendWhatsAppVideo(input: {
   to: string;
   videoUrl: string;
@@ -45,37 +43,18 @@ export async function sendWhatsAppDocument(input: {
   filename: string;
   caption?: string;
 }): Promise<{ ok: boolean; messageId?: string; error?: string }> {
-  const phoneId = process.env.WHATSAPP_PHONE_ID;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!phoneId || !accessToken) return { ok: false, error: 'WhatsApp not configured' };
   if (!input.documentUrl.startsWith('https://')) return { ok: false, error: 'documentUrl must be HTTPS' };
-
-  const cleanTo = input.to.replace(/[\s\-+()]/g, '');
-  try {
-    const res = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: cleanTo,
-        type: 'document',
-        document: {
-          link: input.documentUrl,
-          filename: input.filename.slice(0, 240),
-          ...(input.caption ? { caption: input.caption.slice(0, 1024) } : {}),
-        },
-      }),
-    });
-    if (!res.ok) {
-      const errBody = await res.text();
-      console.warn('[whatsapp-media] document send failed:', res.status, errBody);
-      return { ok: false, error: errBody };
-    }
-    const data = await res.json();
-    return { ok: true, messageId: data.messages?.[0]?.id };
-  } catch (err: any) {
-    return { ok: false, error: err?.message ?? String(err) };
-  }
+  // Route through sendOwnerMessage like the video/image siblings so the
+  // generated-doc attachment also lands in Iris's conversation history — she
+  // forgot her own document sends before this (the "Iris re-sends what she
+  // already sent" bug class, since this used to POST Graph API directly).
+  const { sendOwnerMessage } = await import('./owner-message');
+  return sendOwnerMessage({
+    tenantPhone: input.to,
+    body: input.caption ?? input.filename,
+    source: 'iris',
+    media: { type: 'document', url: input.documentUrl, filename: input.filename },
+  });
 }
 
 export async function sendWhatsAppImage(input: {

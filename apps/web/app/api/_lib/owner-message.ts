@@ -31,6 +31,46 @@ const supaHeaders = () => ({
   'Content-Type': 'application/json',
 });
 
+const WHATSAPP_TEXT_LIMIT = 4096;
+
+/** Split a long body into ≤4096-char chunks on the nicest available boundary
+ *  (paragraph → line → space → hard cut). WhatsApp's text limit silently
+ *  dropped everything past 4096 before this — a full P&L or merged digest got
+ *  truncated with no marker. Sequential sends preserve the whole deliverable. */
+export function splitForWhatsApp(body: string): string[] {
+  if (body.length <= WHATSAPP_TEXT_LIMIT) return [body];
+  const chunks: string[] = [];
+  let remaining = body;
+  const floor = Math.floor(WHATSAPP_TEXT_LIMIT * 0.5);
+  while (remaining.length > WHATSAPP_TEXT_LIMIT) {
+    let cut = remaining.lastIndexOf('\n\n', WHATSAPP_TEXT_LIMIT);
+    if (cut < floor) cut = remaining.lastIndexOf('\n', WHATSAPP_TEXT_LIMIT);
+    if (cut < floor) cut = remaining.lastIndexOf(' ', WHATSAPP_TEXT_LIMIT);
+    if (cut < floor) cut = WHATSAPP_TEXT_LIMIT; // no boundary — hard cut
+    chunks.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+/** Build the Graph API message payload for text or media. Documents carry a
+ *  filename in the WhatsApp file card; video/image take a caption only. One
+ *  place so every send path (sync + drainer) handles media identically. */
+function buildGraphPayload(
+  cleanTo: string,
+  body: string,
+  media?: { type: 'video' | 'image' | 'document'; url: string; filename?: string },
+): Record<string, unknown> {
+  if (!media) {
+    return { messaging_product: 'whatsapp', to: cleanTo, type: 'text', text: { body: body.slice(0, 4096) } };
+  }
+  const mediaObj: Record<string, unknown> = { link: media.url };
+  if (body) mediaObj.caption = body.slice(0, 1024);
+  if (media.type === 'document') mediaObj.filename = (media.filename ?? 'document').slice(0, 240);
+  return { messaging_product: 'whatsapp', to: cleanTo, type: media.type, [media.type]: mediaObj };
+}
+
 /**
  * Identifies the agent / cron that produced this message. Useful for
  * memory inspection ("which agent said X yesterday") and dashboards.
@@ -55,10 +95,12 @@ export interface SendOwnerMessageInput {
   /** The message text the owner sees. For media, this becomes the caption. */
   body: string;
   source: OwnerMessageSource;
-  /** Optional: send a video/image instead of plain text. body becomes caption. */
+  /** Optional: send a video/image/document instead of plain text. body becomes
+   *  the caption. Documents require filename (shown in the WhatsApp file card). */
   media?: {
-    type: 'video' | 'image';
+    type: 'video' | 'image' | 'document';
     url: string;
+    filename?: string;
   };
   /**
    * Set true if the caller is already responsible for appending to
@@ -124,25 +166,7 @@ export async function sendOwnerMessage(input: SendOwnerMessageInput): Promise<Se
   // Synchronous path — chat_reply + urgent both deliver now.
 
   // 1. Build the Graph API payload
-  let payload: Record<string, unknown>;
-  if (input.media) {
-    payload = {
-      messaging_product: 'whatsapp',
-      to: cleanTo,
-      type: input.media.type,
-      [input.media.type]: {
-        link: input.media.url,
-        ...(input.body ? { caption: input.body.slice(0, 1024) } : {}),
-      },
-    };
-  } else {
-    payload = {
-      messaging_product: 'whatsapp',
-      to: cleanTo,
-      type: 'text',
-      text: { body: input.body.slice(0, 4096) },
-    };
-  }
+  const payload = buildGraphPayload(cleanTo, input.body, input.media);
 
   // 2. Send
   let messageId: string | undefined;
@@ -195,7 +219,7 @@ export async function enqueueOutboundMessage(input: {
   tenantPhone: string;
   body: string;
   source: OwnerMessageSource;
-  media?: { type: 'video' | 'image'; url: string };
+  media?: { type: 'video' | 'image' | 'document'; url: string; filename?: string };
   priority?: 'chat_reply' | 'urgent' | 'digest';
 }): Promise<SendOwnerMessageResult> {
   if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -237,7 +261,7 @@ export async function deliverOutboundFromQueue(input: {
   tenantPhone: string;
   body: string;
   source: OwnerMessageSource;
-  media?: { type: 'video' | 'image'; url: string };
+  media?: { type: 'video' | 'image' | 'document'; url: string; filename?: string };
 }): Promise<SendOwnerMessageResult> {
   const phoneId = process.env.WHATSAPP_PHONE_ID;
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
@@ -246,38 +270,30 @@ export async function deliverOutboundFromQueue(input: {
   }
   const cleanTo = input.tenantPhone.replace(/[\s\-+()]/g, '');
 
-  let payload: Record<string, unknown>;
-  if (input.media) {
-    payload = {
-      messaging_product: 'whatsapp',
-      to: cleanTo,
-      type: input.media.type,
-      [input.media.type]: {
-        link: input.media.url,
-        ...(input.body ? { caption: input.body.slice(0, 1024) } : {}),
-      },
-    };
-  } else {
-    payload = {
-      messaging_product: 'whatsapp',
-      to: cleanTo,
-      type: 'text',
-      text: { body: input.body.slice(0, 4096) },
-    };
-  }
+  // Text-only long bodies → sequential chunks (no silent 4096 truncation).
+  // Media is one message (caption-limited), so it never chunks here.
+  const sendChunks = input.media ? [input.body] : splitForWhatsApp(input.body);
 
   try {
-    const res = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const errBody = await res.text();
-      return { ok: false, error: errBody };
+    let lastMessageId: string | undefined;
+    for (let i = 0; i < sendChunks.length; i++) {
+      const payload = i === 0
+        ? buildGraphPayload(cleanTo, sendChunks[i]!, input.media)
+        : buildGraphPayload(cleanTo, sendChunks[i]!, undefined);
+      const res = await fetch(`${GRAPH_API}/${phoneId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const errBody = await res.text();
+        // Partial-send: earlier chunks already landed. Report failure so the
+        // drainer doesn't mark the row delivered, but note what got through.
+        return { ok: false, error: errBody, messageId: lastMessageId };
+      }
+      const data = await res.json();
+      lastMessageId = data.messages?.[0]?.id;
     }
-    const data = await res.json();
-    const messageId = data.messages?.[0]?.id;
 
     void appendAssistantMessageToHistory({
       tenantPhone: cleanTo,
@@ -287,7 +303,7 @@ export async function deliverOutboundFromQueue(input: {
     });
     void stampLastAssistantMessageAt(cleanTo);
 
-    return { ok: true, messageId };
+    return { ok: true, messageId: lastMessageId };
   } catch (err: any) {
     return { ok: false, error: err?.message ?? String(err) };
   }

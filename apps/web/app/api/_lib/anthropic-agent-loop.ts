@@ -213,6 +213,11 @@ export async function runAgentToolLoop(p: AgentToolLoopParams): Promise<AgentToo
       messages,
     };
     const fr = await callAnthropicJSON(p.apiKey, finalBody, undefined);
+    if (!fr.ok) {
+      // A transient failure here ships the stale preamble as the worker's
+      // answer — make it observable instead of silent.
+      console.error(`[agent-loop] forced final-answer call failed: ${fr.status} ${fr.rawBody?.slice(0, 300)}`);
+    }
     if (fr.ok) {
       tokensIn += fr.json?.usage?.input_tokens ?? 0;
       tokensOut += fr.json?.usage?.output_tokens ?? 0;

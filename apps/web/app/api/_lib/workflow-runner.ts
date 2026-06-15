@@ -165,7 +165,7 @@ export async function runWorkflow(
 ): Promise<WorkflowResult> {
   const totalStart = Date.now();
   const cleanPhone = tenantPhone.replace(/[\s\-+()]/g, '');
-  const user = await loadUserContext(cleanPhone, 'workflow-runner');
+  const user = await loadUserContext(cleanPhone); // system caller — keep the real owner name
   const connections = await loadConnectionsForPhone(cleanPhone);
   const context: Record<string, any> = {};
 
