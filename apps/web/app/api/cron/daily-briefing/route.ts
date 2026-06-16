@@ -142,8 +142,13 @@ export async function GET(request: Request) {
           console.warn(`[daily-briefing] Axis audit failed (non-blocking): ${err?.message ?? String(err)}`);
         }
 
-        await sendWhatsApp(user.phone_number, auditedBriefing);
-        if (deliveredIds.length > 0) {
+        const sent = await sendWhatsApp(user.phone_number, auditedBriefing);
+        // Only retire the bundled notifications if the briefing ACTUALLY went
+        // out (or got queued). When muted, sendWhatsApp returns false and does
+        // neither — marking them delivered there lost the items permanently
+        // (they never reach a future briefing). Leave them pending so the next
+        // unmuted briefing carries them.
+        if (sent && deliveredIds.length > 0) {
           await markDelivered(deliveredIds);
         }
         briefed++;
@@ -454,14 +459,17 @@ Rules:
   }
 }
 
-async function sendWhatsApp(to: string, message: string): Promise<void> {
-  // Honor DND — briefings are proactive, so they wait until the user is back
+async function sendWhatsApp(to: string, message: string): Promise<boolean> {
+  // Honor DND — briefings are proactive, so they wait until the user is back.
+  // Returns false when suppressed so the caller does NOT retire the bundled
+  // notifications (they must survive to the next unmuted briefing).
   const { isMuted } = await import('../../_lib/mute-state');
   const mute = await isMuted(to);
   if (mute.muted) {
     console.log(`[daily-briefing] suppressed for ${to} (muted${mute.reason ? `: ${mute.reason}` : ''})`);
-    return;
+    return false;
   }
   const { sendOwnerMessage } = await import('../../_lib/owner-message');
   await sendOwnerMessage({ tenantPhone: to, body: message, source: 'daily-briefing' });
+  return true;
 }

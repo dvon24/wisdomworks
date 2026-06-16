@@ -74,6 +74,22 @@ const SIDE_EFFECT_TOOLS = new Set([
 const GROUNDING_TOOLS = new Set([...PERSISTING_TOOLS, ...SIDE_EFFECT_TOOLS]);
 
 /**
+ * Per-CATEGORY grounding — a completion claim of a given KIND is only
+ * supported if a tool of that kind fired. Prevents one real action from
+ * whitelisting an unrelated fabrication: a worker that genuinely called
+ * create_calendar_event shouldn't get a free pass on "and I emailed it to
+ * your accountant" when no send tool ran. Patterns are claim-shaped (object
+ * required), so domain prose ("sent your heart rate up") doesn't match.
+ */
+const CLAIM_CATEGORIES: Array<{ test: RegExp; tools: string[] }> = [
+  { test: /\b(sent|emailed|e-?mailed|replied to)\b.{0,30}\b(it|that|the email|your email|them|the message)\b/i, tools: ['send_email', 'reply_to_instagram_comment'] },
+  { test: /\b(scheduled|booked|added).{0,30}\b(appointment|calendar|meeting|event|time block|standing block)\b/i, tools: ['create_calendar_event', 'schedule_event', 'book_appointment', 'cancel_event'] },
+  { test: /\b(saved|remembered|stored|noted).{0,30}\b(preference|note|fact|this for you|that for you)\b/i, tools: ['remember_this'] },
+  { test: /\b(invoiced|charged|created (an? )?invoice|sent (an? )?invoice|payment link)\b/i, tools: ['qbo_create_invoice', 'create_payment_link'] },
+  { test: /\b(posted|published)\b.{0,30}\b(reel|post|instagram|facebook|story)\b/i, tools: ['publish_instagram_post', 'publish_instagram_reel', 'publish_facebook_post', 'approve_marketing_draft'] },
+];
+
+/**
  * Pre-filter regex — does the worker output contain ANY completion /
  * persistence-shaped language at all? Worker-domain-aware (broader
  * than Iris's tuned patterns).
@@ -89,15 +105,27 @@ const COMPLETION_LANGUAGE = new RegExp(
     /\bstarting (tomorrow|today)\b/.source,
     /\blocked in\b/.source,
     /\bbaked into\b/.source,
-    // Worker-domain claims of completion
-    /\bi[' ]ve (scheduled|added|created|set|updated|filed|booked|sent|posted|published|saved|locked|registered|configured|installed|enabled|disabled)\b/.source,
-    /\b(scheduled|added|created|set|updated|filed|booked|sent|posted|published|saved|registered|configured|installed|enabled|disabled) (it|that|the|your|to|for)\b/.source,
-    /\byour [a-z]{2,30} is now\b/.source,
+    // FIRST-PERSON completion claims (any verb) — "I've scheduled", "I have set".
+    // The fabrication shape is the worker asserting IT did something. This is
+    // intentionally first-person/perfective: a bare imperative cue like "Set the
+    // incline to 30" or "Add 10 lbs" is an INSTRUCTION to the owner, not a
+    // completion claim, and must NOT be stripped (it's the actual artifact —
+    // 2026-06-10 review: workouts were being mangled here).
+    /\bi(?:['’ ]?ve| have)\s+(scheduled|added|created|set|updated|filed|booked|sent|posted|published|saved|locked|registered|configured|installed|enabled|disabled)\b/.source,
+    // BARE-verb completions — ONLY verbs that never appear as exercise/instruction
+    // cues, so "set/added/updated" (common in domain content) are excluded here
+    // and only caught via the first-person/passive forms.
+    /\b(scheduled|booked|sent|posted|published|filed|registered|invoiced) (it|that|the|your|you)\b/.source,
+    // PASSIVE / PERFECTIVE state assertions — "has been scheduled", "is now set".
+    /\b(has|have|had) been (scheduled|added|created|set|booked|sent|posted|published|saved|registered|configured|enabled|disabled)\b/.source,
+    /\byour [a-z]{2,30} (is|are) now (set|scheduled|added|active|live|ready|locked|configured|enabled|booked)\b/.source,
     /\b(added|put) (it|that|this) (to|on|in) your\b/.source,
     // Possessive-with-completion phrasings
     /\b(workout|plan|schedule|calendar|brief|note|reminder) (is now|has been|was) (set|added|scheduled|created|locked|saved|updated)\b/.source,
-    // Standalone "done"/✓-shaped
-    /(^|\n)\s*(✓|done|completed?|locked\s+in)[\s.:,!]/i.source,
+    // Strong standalone fabrication markers ONLY. "✓"/"done"/"completed" are
+    // deliberately NOT here — they collide with workout checklists ("✓ Warm-up",
+    // "Done: 3 sets") and the verb patterns above already catch real claims.
+    /(^|\n)\s*(locked\s+in|all set)\b/i.source,
   ].join('|'),
   'i',
 );
@@ -170,13 +198,28 @@ export interface BoundaryGateResult {
  */
 export function workerBoundaryGate(output: WorkerOutput): BoundaryGateResult {
   const raw_text = output.text;
+  const firedTools = new Set(output.toolsUsed);
   const firedGroundingTool = output.toolsUsed.some((t) => GROUNDING_TOOLS.has(t));
 
   let gated_text = raw_text;
   const stripped_sentences: string[] = [];
 
-  // Step 1+2+3: completion-claim gating.
-  if (!firedGroundingTool && COMPLETION_LANGUAGE.test(raw_text)) {
+  // A sentence is an UNSUPPORTED completion claim when:
+  //  (a) it makes a CATEGORY-specific claim (emailed/scheduled/invoiced/…) and
+  //      no tool of that category fired — even if some OTHER grounding tool did
+  //      (so one real action can't whitelist an unrelated fabrication); OR
+  //  (b) it's a generic persistence claim ("going forward", "locked in") and
+  //      NO grounding tool fired at all.
+  const isUnsupportedClaim = (s: string): boolean => {
+    for (const cat of CLAIM_CATEGORIES) {
+      if (cat.test.test(s)) return !cat.tools.some((t) => firedTools.has(t));
+    }
+    return !firedGroundingTool && COMPLETION_LANGUAGE.test(s);
+  };
+
+  // Pre-filter: only walk sentences if there's any claim-shaped language at all.
+  const hasCategoryClaim = CLAIM_CATEGORIES.some((c) => c.test.test(raw_text));
+  if ((!firedGroundingTool && COMPLETION_LANGUAGE.test(raw_text)) || hasCategoryClaim) {
     // Split into sentences. Conservative regex — splits on . ! ? and
     // newline boundaries; preserves bullets and short fragments.
     const sentences = raw_text
@@ -185,21 +228,25 @@ export function workerBoundaryGate(output: WorkerOutput): BoundaryGateResult {
 
     const keptSentences: string[] = [];
     for (const s of sentences) {
-      if (COMPLETION_LANGUAGE.test(s)) {
+      if (isUnsupportedClaim(s)) {
         stripped_sentences.push(s.trim());
       } else {
         keptSentences.push(s);
       }
     }
 
-    // Join with newlines (preserves readable structure even when
-    // some sentences were removed).
-    gated_text = keptSentences.join('\n').trim();
-
-    // Edge case: every sentence was a fabrication. Replace the whole
-    // output with an honest framing rather than returning empty text.
-    if (gated_text.length < 20) {
-      gated_text = `[Worker output was entirely unsupported completion claims with no grounding tool calls; suppressed by the boundary gate. Owner should re-prompt.]`;
+    // Only rebuild the text if we actually removed something — otherwise leave
+    // raw_text byte-for-byte so a clean output isn't reflowed (whitespace,
+    // tables) by the sentence split/join.
+    if (stripped_sentences.length > 0) {
+      // Join with newlines (preserves readable structure even when
+      // some sentences were removed).
+      gated_text = keptSentences.join('\n').trim();
+      // Edge case: every sentence was a fabrication. Replace the whole
+      // output with an honest framing rather than returning empty text.
+      if (gated_text.length < 20) {
+        gated_text = `[Worker output was entirely unsupported completion claims with no grounding tool calls; suppressed by the boundary gate. Owner should re-prompt.]`;
+      }
     }
   }
 

@@ -205,8 +205,11 @@ export async function GET(request: Request) {
             : `Reply "publish it" to post as an Instagram Reel, or "regenerate with <new angle>" to try again.`;
           await sendOwnerMessage({
             tenantPhone: job.tenant_phone,
+            // source 'marketing-loop', NOT 'iris' — 'iris' maps to chat_reply
+            // priority, which bypasses the outbound queue, the active-chat
+            // hold AND the mute check for what is cron output.
             body: `✓ Video preview above. Quality: ${job.quality} · est. $${Number(job.estimated_cost_usd).toFixed(2)}${styleLine}\n\n${nextStep}`,
-            source: 'iris',
+            source: 'marketing-loop',
           });
         } else {
           failed++;
@@ -256,7 +259,8 @@ async function markJob(id: string, patch: Record<string, unknown>): Promise<void
 
 async function notifyOwner(job: PendingJob, message: string): Promise<void> {
   try {
-    await sendOwnerMessage({ tenantPhone: job.tenant_phone, body: message, source: 'iris' });
+    // 'marketing-loop' not 'iris' — cron output must not ride chat_reply priority.
+    await sendOwnerMessage({ tenantPhone: job.tenant_phone, body: message, source: 'marketing-loop' });
   } catch (err) {
     console.warn('[video-job-poller] notifyOwner failed:', err);
   }

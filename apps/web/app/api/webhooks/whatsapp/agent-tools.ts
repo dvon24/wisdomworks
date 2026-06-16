@@ -4215,7 +4215,13 @@ export async function executeTool(
             ? `partial — ${result.steps_completed}/${result.steps_total} steps before failure: ${result.step_outcomes[result.steps_completed]?.error ?? 'unknown'}`
             : `failed at step 1: ${result.step_outcomes[0]?.error ?? result.error ?? 'unknown'}`;
         const badge = result.outcome === 'success' ? '✓' : result.outcome === 'partial' ? '⚠' : '✗';
-        return { content: `${badge} "${wf.name}" ran — ${summary}`, success: result.outcome === 'success' };
+        // Include the DELIVERABLE, not just plumbing. "Run my workout now"
+        // used to come back as "✓ ran — 2/2 steps in 95s" with the actual
+        // workout discarded (step_outcomes[].full_content was never read).
+        const lastContent = [...result.step_outcomes].reverse().find((o: any) => o?.success && typeof o.full_content === 'string' && o.full_content.trim());
+        const lastFull: string = (lastContent?.full_content ?? '').trim();
+        const deliverable = lastFull ? `\n\n${lastFull}` : '';
+        return { content: `${badge} "${wf.name}" ran — ${summary}${deliverable}`, success: result.outcome === 'success' };
       }
 
       case 'provision_axis': {
@@ -4361,9 +4367,24 @@ export async function executeTool(
         // Workout Plan" must contain a workout)? Fail-open on a critic hiccup;
         // Tier 0 above already guarantees it isn't blank.
         try {
-          const deliverableText = docSections
-            .map((s) => [s.heading, ...(s.paragraphs ?? []), ...(s.bullets ?? [])].filter(Boolean).join('\n'))
-            .join('\n\n');
+          // Serialize the artifact PER FORMAT — pptx/xlsx content lives in
+          // slides/sheets, not sections. Building this from docSections alone
+          // fed the audit an empty string for every deck/spreadsheet, and the
+          // Tier-0 "came through empty" check then hard-rejected ALL pptx/xlsx
+          // generations (ok:false is a verdict, not an exception — fail-open
+          // never fired).
+          const deliverableText =
+            format === 'pptx'
+              ? ((call.input.slides ?? []) as SlideSpec[])
+                  .map((sl) => [sl.title, sl.body, ...(sl.bullets ?? []), sl.notes].filter(Boolean).join('\n'))
+                  .join('\n\n')
+              : format === 'xlsx'
+                ? ((call.input.sheets ?? []) as SheetSpec[])
+                    .map((sh) => [sh.name, ...sh.rows.slice(0, 40).map((r) => r.map((c) => c ?? '').join(' | '))].join('\n'))
+                    .join('\n\n')
+                : docSections
+                    .map((s) => [s.heading, ...(s.paragraphs ?? []), ...(s.bullets ?? [])].filter(Boolean).join('\n'))
+                    .join('\n\n');
           const { auditDeliverable } = await import('../../_lib/axis-critic');
           const audit = await auditDeliverable({ request: title, kind: 'document', content: deliverableText, tier1: true, tenantPhone: user.phoneNumber });
           if (!audit.ok) {
@@ -6760,7 +6781,21 @@ export async function executeTool(
         if (!user) return { content: 'Internal: user context required.', success: false };
         const cleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
         const kindArg = call.input.kind ? String(call.input.kind) as AtomKind : undefined;
-        const atoms = await listAllAtoms(cleanPhone, kindArg);
+        let atoms = await listAllAtoms(cleanPhone, kindArg);
+        // SCOPE for delegated workers — listAllAtoms has no tag filter, so
+        // without this any worker could read every agent's scoped facts,
+        // contradicting remember_this's owner-facing "only that agent sees
+        // it." Mirrors recent_atoms_for_prompt visibility: untagged/'general'
+        // → everyone; name-tagged → that agent; platform facts → everyone.
+        // Iris (no _workerAgentName) keeps the unfiltered owner-brain view.
+        const workerName = (user as any)._workerAgentName?.toLowerCase?.();
+        if (workerName) {
+          atoms = atoms.filter((a) => {
+            const tags = a.tags ?? [];
+            if (tags.length === 0 || tags.includes('general') || tags.includes(workerName)) return true;
+            return a.kind === 'fact' && ['platform', 'roadmap', 'known_gap'].some((t) => tags.includes(t));
+          });
+        }
         if (atoms.length === 0) {
           return { content: kindArg ? `Nothing remembered yet under ${kindArg}.` : "I haven't picked up any durable facts yet. Tell me about your business, goals, competitors, preferences, or constraints and I'll remember.", success: true };
         }
@@ -6919,8 +6954,12 @@ export async function executeTool(
         const lines: string[] = [];
         for (const row of pending) {
           const r = await runOneDeferred(row, { executeTool, connections, user });
+          // FULL content, no slice — Iris must present worker output VERBATIM
+          // (her prompt forbids paraphrasing), so a 700-char clip here was the
+          // 500-char-preview bug shape (PR #43) reintroduced on the queued path.
+          // The outbound layer owns length handling.
           lines.push(r.ok
-            ? `From ${row.target_agent}:\n${r.content.slice(0, 700)}`
+            ? `From ${row.target_agent}:\n${r.content}`
             : `⚠️ ${row.target_agent} couldn't complete it: ${r.content.slice(0, 200)}`);
         }
         return {
@@ -7867,9 +7906,10 @@ export async function executeTool(
         const personaLines = [
           `You are ${manager.name}, ${manager.role}.`,
           manager.description ? `Your remit: ${manager.description}` : '',
-          manager.tools?.length ? `Your current tools: ${manager.tools.join(', ')}.` : '',
+          manager.tools?.length ? `Services your team connects to (context only): ${manager.tools.join(', ')}.` : '',
           manager.subTeam?.count ? `You manage ${manager.subTeam.count} ${manager.subTeam.label || 'specialists'}.` : '',
           `Business context: ${user.businessName ?? 'this business'} — ${user.businessType ?? 'unknown industry'}.`,
+          'You have NO tools in this consultation — give an OPINION only; never claim you did, scheduled, or persisted anything.',
           '',
           'A teammate is asking your opinion on a proposed change to the team. Give a short, direct take (under 80 words):',
           '- Does it overlap with your scope? Should it report to you?',
@@ -7889,7 +7929,11 @@ export async function executeTool(
           if (!r.ok) {
             return { content: `${manager.name} consultation failed: ${r.rawBody.slice(0, 200)}`, success: false };
           }
-          const reply = r.json?.content?.find((b: any) => b.type === 'text')?.text ?? '(no response)';
+          const rawReply = r.json?.content?.find((b: any) => b.type === 'text')?.text ?? '(no response)';
+          // Gate the manager's reply too — it's a tool-less consultation, so any
+          // "I scheduled/added/saved…" is unsupported. Mirrors delegate_to_agent.
+          const { workerBoundaryGate: gateConsult } = await import('../../_lib/worker-boundary-gate');
+          const reply = gateConsult({ text: rawReply, toolsUsed: [] }).gated_text;
           return { content: `${manager.name} (${manager.role}) says:\n${reply}`, success: true };
         } catch (err) {
           return { content: `${manager.name} consultation error: ${err}`, success: false };
@@ -7952,7 +7996,16 @@ export async function executeTool(
         // workouts" double-delivery (2026-06-05 transcript) and saves a worker
         // run. Keyed by tenant + agent + normalized task signature.
         const delegCleanPhone = user.phoneNumber.replace(/[\s\-+()]/g, '');
-        const taskSig = task.toLowerCase().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
+        // Signature = readable prefix + a djb2 hash of the FULL normalized task.
+        // A bare 80-char prefix collided: Iris is trained to open delegations
+        // with shared boilerplate ("Generate today's workout for Devon. Week 2
+        // post-100k…"), so two genuinely different tasks within the 10-min
+        // window deduped to the first result. Hashing the whole task fixes that
+        // while keeping the prefix for human-readable rows.
+        const taskNorm = task.toLowerCase().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim();
+        let taskHash = 5381;
+        for (let i = 0; i < taskNorm.length; i++) taskHash = ((taskHash << 5) + taskHash + taskNorm.charCodeAt(i)) | 0;
+        const taskSig = `${taskNorm.slice(0, 60)}#${(taskHash >>> 0).toString(36)}`;
         if (SUPABASE_URL && SUPABASE_KEY) {
           try {
             const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -8099,6 +8152,7 @@ export async function executeTool(
           '- NO META-COMMENTARY. Don\'t add "let me know if you need adjustments" / "happy to refine" / closers. Iris handles owner-facing framing; you produce the artifact.',
           '- OPEN WITH THE ARTIFACT — NO PREAMBLE. The owner sees your output directly. Do NOT begin by restating the task or context ("Good, I have what I need", "Today is Thursday, which puts you at Week 2...", "Recovery context:..."). Start with the deliverable itself (the workout\'s first line, the summary, the draft body). Context-restatement preamble is internal thinking — keep it out of the output.',
           '- IF YOU CAN\'T COMPLETE THE TASK, say so directly with the reason. Iris will fall back to handling it herself or surfacing the gap to the owner.',
+          '- FORMAT FOR WHATSAPP. Your output is relayed to the owner\'s WhatsApp verbatim: plain text, line breaks and dash lists only — no markdown headers (#), no **bold**, no tables. Single *asterisks* for emphasis are fine.',
           '',
           'Speak in first person as yourself. The output goes to Iris, who will present it to the owner with your attribution.',
         ].filter(Boolean).join('\n') + ownerFactsBlock + workerContextBlock;
@@ -8127,7 +8181,7 @@ export async function executeTool(
         // flag marks the context so a worker calling a write tool isn't misread
         // elsewhere as the owner acting.
         const { runAgentToolLoop } = await import('../../_lib/anthropic-agent-loop');
-        const workerUser = { ...user, _isDelegatedWorker: true } as any;
+        const workerUser = { ...user, _isDelegatedWorker: true, _workerAgentName: targetAgent.name } as any;
         let workerRun;
         try {
           workerRun = await runAgentToolLoop({
@@ -8312,8 +8366,12 @@ export async function executeTool(
               const personaLines = [
                 `You are ${a.name}, ${a.role}.`,
                 a.description ? `Your remit: ${a.description}` : '',
-                a.tools?.length ? `Your tools: ${a.tools.join(', ')}.` : '',
+                // Consultation only — this call wires NO tools, so never tell
+                // the persona "Your tools: X" (it then claims actions it cannot
+                // take). Same honesty floor as delegated workers.
+                a.tools?.length ? `Services your team connects to (context only): ${a.tools.join(', ')}.` : '',
                 `Business context: ${user.businessName ?? 'this business'}${user.businessType ? ` (${user.businessType})` : ''}.`,
+                'You have NO tools in this consultation — you cannot send, schedule, save, or persist anything. RECOMMEND actions; never claim you did or will do them.',
                 '',
                 ctxBlock.text ? ctxBlock.text + '\n' : '',
                 `Urgency: ${urgency}. Iris has dispatched a signal to you and other teammates in parallel. Give your take in first person — be SHORT, SPECIFIC, and ACTIONABLE.`,
@@ -8331,7 +8389,11 @@ export async function executeTool(
               if (!r.ok) {
                 return { name: a.name, role: a.role, reply: `(${a.name} couldn't respond — ${r.status}: ${r.rawBody.slice(0, 100)})`, ok: false };
               }
-              const reply = r.json?.content?.find((b: any) => b.type === 'text')?.text?.trim() ?? '(no response)';
+              const rawReply = r.json?.content?.find((b: any) => b.type === 'text')?.text?.trim() ?? '(no response)';
+              // Gate each persona's reply — tool-less consultation, so strip any
+              // unsupported "I did X" before it laundters into Iris's context.
+              const { workerBoundaryGate: gateDispatch } = await import('../../_lib/worker-boundary-gate');
+              const reply = gateDispatch({ text: rawReply, toolsUsed: [] }).gated_text;
               return { name: a.name, role: a.role, reply, ok: true };
             } catch (err: any) {
               return { name: a.name, role: a.role, reply: `(${a.name} hit an error — ${err?.message ?? String(err)})`, ok: false };

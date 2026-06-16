@@ -182,12 +182,11 @@ export async function executeWorkflow(args: {
     };
   }
 
-  // Load tenant context + connections once for the whole run.
-  // loadUserContext takes (phoneNumber, name) — the name is only used on
-  // first-message bootstrap to seed an empty context. For workflow runs
-  // the context always exists (owner can't create a workflow without
-  // having gone through onboarding), so any name string works.
-  const user = await loadUserContext(cleanPhone, 'workflow-runner');
+  // Load tenant context + connections once for the whole run. No name arg —
+  // system caller; the store keeps the cached/persisted owner name (passing
+  // 'workflow-runner' here used to overwrite it and leak into worker prompts
+  // as "Owner: workflow-runner").
+  const user = await loadUserContext(cleanPhone);
   if (!user) {
     return {
       ok: false,
@@ -271,7 +270,10 @@ export async function executeWorkflow(args: {
       tool: step.tool,
       success: result.success,
       output_preview: (result.content ?? '').slice(0, 500),
-      full_content: result.success ? (result.content ?? '') : undefined,
+      // Strip delegate_to_agent's internal "[<name>'s response]" header — it's
+      // plumbing for Iris's chat turn, but scheduled deliveries ship
+      // full_content verbatim and the bracket line was reaching the owner.
+      full_content: result.success ? (result.content ?? '').replace(/^\[[^\]\n]{1,60}'s response\]\s*\n/, '') : undefined,
       error: result.success ? undefined : (result.content ?? '').slice(0, 500),
     });
 
