@@ -24,6 +24,7 @@
  */
 
 import { nextRunAfter } from './cron-next';
+import { findRedundantWorkflow } from './user-workflows';
 import { getAgentCanonicalRole, setAgentCanonicalRole } from './role-catalog';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -218,15 +219,23 @@ export async function seedRoleTemplatesForAgent(args: {
     };
   }
 
-  // Existing workflow names for this tenant — skip dups.
+  // Existing workflows for this tenant — skip dups by NAME and by SCHEDULE
+  // OVERLAP. Name-only dedup let a seeded 'coach-weekday-workout' coexist with
+  // an owner-created 'coach-daily-workout-3pm-cet' (same steps, overlapping
+  // schedule, different name) → stacked workouts. Reuse the shared overlap
+  // check so the seeder and create_workflow agree on what "duplicate" means.
   const existingRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/user_workflows?tenant_phone=eq.${cleanPhone}&select=name`,
+    `${SUPABASE_URL}/rest/v1/user_workflows?tenant_phone=eq.${cleanPhone}&status=neq.removed&select=name,status,cron_expr,steps`,
     { headers: headers() },
   );
   const existingNames = new Set<string>();
+  const existingWorkflows: Array<{ name: string; status: any; cron_expr: string | null; steps: any[] }> = [];
   if (existingRes.ok) {
     const rows = await existingRes.json();
-    for (const r of rows) existingNames.add(r.name);
+    for (const r of rows) {
+      existingNames.add(r.name);
+      existingWorkflows.push({ name: r.name, status: r.status, cron_expr: r.cron_expr ?? null, steps: r.steps ?? [] });
+    }
   }
 
   let created = 0;
@@ -244,6 +253,14 @@ export async function seedRoleTemplatesForAgent(args: {
     const concreteSteps = JSON.parse(
       serialized.replace(/\{\{agent_name\}\}/g, args.agentName),
     );
+
+    // Skip if a non-removed workflow already runs the same steps on an
+    // overlapping schedule (even under a different name).
+    const conflict = findRedundantWorkflow(existingWorkflows, tpl.cron_expr ?? null, concreteSteps);
+    if (conflict) {
+      skipped.push({ name: workflowName, reason: `overlaps existing "${conflict.name}" (same steps, overlapping schedule)` });
+      continue;
+    }
 
     const nextRun = tpl.cron_expr ? nextRunAfter(tpl.cron_expr, new Date()) : null;
 
@@ -263,6 +280,10 @@ export async function seedRoleTemplatesForAgent(args: {
       });
       if (insertRes.ok) {
         created++;
+        // Track within this run so a second template can't overlap the one we
+        // just seeded.
+        existingNames.add(workflowName);
+        existingWorkflows.push({ name: workflowName, status: 'pending_approval', cron_expr: tpl.cron_expr ?? null, steps: concreteSteps });
       } else {
         const text = await insertRes.text();
         skipped.push({ name: workflowName, reason: `${insertRes.status}: ${text.slice(0, 100)}` });

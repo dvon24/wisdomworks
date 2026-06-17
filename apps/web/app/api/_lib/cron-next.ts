@@ -76,6 +76,37 @@ export function parseCronExpression(expr: string): ParsedCron | null {
   }
 }
 
+function setsIntersect(a: Set<number>, b: Set<number>): boolean {
+  // iterate the smaller set
+  const [small, big] = a.size <= b.size ? [a, b] : [b, a];
+  for (const v of small) if (big.has(v)) return true;
+  return false;
+}
+
+/**
+ * Do two cron schedules ever fire in the same minute? True when every field's
+ * value-set intersects (there exists a minute matching both). Used to catch
+ * near-duplicate workflows whose cron STRINGS differ but whose schedules
+ * overlap — e.g. a daily '0 14 * * *' and a weekday '0 14 * * 1-5' both fire
+ * Mon–Fri at 14:00 (the stacked-workout bug). On-demand (null) workflows never
+ * auto-fire, so they never schedule-overlap. Conservative: when both dom AND
+ * dow are restricted (cron's rare OR-semantics) this may under-detect, which is
+ * safe — it only ever skips a dedup, never falsely blocks a distinct workflow.
+ */
+export function cronsOverlap(exprA: string | null | undefined, exprB: string | null | undefined): boolean {
+  if (!exprA || !exprB) return false;
+  const a = parseCronExpression(exprA);
+  const b = parseCronExpression(exprB);
+  if (!a || !b) return false;
+  return (
+    setsIntersect(a.minute.values, b.minute.values) &&
+    setsIntersect(a.hour.values, b.hour.values) &&
+    setsIntersect(a.dom.values, b.dom.values) &&
+    setsIntersect(a.month.values, b.month.values) &&
+    setsIntersect(a.dow.values, b.dow.values)
+  );
+}
+
 // Cron fields (minute / hour / day-of-month / month / day-of-week) for `date`
 // evaluated in `timeZone` (IANA, e.g. 'Europe/Berlin'). This lets a workflow's
 // schedule track LOCAL wall-clock across DST instead of drifting with UTC —

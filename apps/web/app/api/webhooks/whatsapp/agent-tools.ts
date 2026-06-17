@@ -572,7 +572,7 @@ const TOOL_CREATE_WORKFLOW: AnthropicTool = {
 const TOOL_LIST_WORKFLOWS: AnthropicTool = {
   name: 'list_workflows',
   description:
-    "Show all of the owner's saved workflows with their status (pending_approval / active / paused), schedule, and last-run outcome. Use when the owner asks 'what workflows do I have?', 'what's scheduled?', 'show my routines'.",
+    "Show all of the owner's saved workflows with their status (pending_approval / active / paused), schedule, and last-run outcome. These scheduled workflows ARE the owner's \"crons\" / scheduled jobs — when they ask 'what crons do I have?', 'what's scheduled?', 'show my routines', 'which jobs are running?', this is the tool. Also the right FIRST step when they report duplicate or unexpected scheduled messages — list, find the overlap, then pause/delete.",
   input_schema: { type: 'object', properties: {}, required: [] },
   allowed_callers: PTC_READ_CALLERS,
 };
@@ -593,7 +593,7 @@ const TOOL_APPROVE_WORKFLOW: AnthropicTool = {
 const TOOL_PAUSE_WORKFLOW: AnthropicTool = {
   name: 'pause_workflow',
   description:
-    "Temporarily stop a workflow from firing without deleting it. Sets status to 'paused'. Use when the owner says 'pause <name>', 'stop the daily brief for now', 'hold <name>'.",
+    "Temporarily stop a scheduled workflow (the owner's \"cron\" / scheduled job) from firing without deleting it. Sets status to 'paused'. YOU CAN DO THIS DIRECTLY — never tell the owner you can't turn a scheduled job on/off or that it needs a backend/ops change. Use when the owner says 'pause <name>', 'turn off the <name> cron', 'stop that scheduled job', 'hold <name>'.",
   input_schema: {
     type: 'object',
     properties: { name: { type: 'string', description: "The workflow name." } },
@@ -617,7 +617,7 @@ const TOOL_MANAGE_PENDING_WORKFLOWS: AnthropicTool = {
 const TOOL_DELETE_WORKFLOW: AnthropicTool = {
   name: 'delete_workflow',
   description:
-    "Soft-delete a workflow (sets status to 'removed'). The row stays in the database for audit but the dispatcher ignores it. Use when the owner says 'delete <name>', 'remove the X workflow', 'I don't need that anymore'. Removed workflows can't be undone in MVP — confirm with the owner before firing.",
+    "Soft-delete a scheduled workflow / \"cron\" (sets status to 'removed'). The row stays in the database for audit but the dispatcher ignores it. YOU CAN DO THIS DIRECTLY — it does not need Marcus, ops, or a backend change. Use when the owner says 'delete <name>', 'remove the X workflow', 'kill the duplicate cron', 'I don't need that anymore'. The common case: two overlapping scheduled jobs firing at the same time (e.g. a weekday one and a daily one both at 3pm) — list_workflows to find them, then delete the redundant one. Removed workflows can't be undone in MVP — confirm with the owner before firing.",
   input_schema: {
     type: 'object',
     properties: { name: { type: 'string', description: "The workflow name." } },
