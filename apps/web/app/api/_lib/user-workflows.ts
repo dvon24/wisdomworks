@@ -9,7 +9,7 @@
  * pattern, not a new approval-queue table.
  */
 
-import { nextRunAfter, parseCronExpression } from './cron-next';
+import { nextRunAfter, parseCronExpression, cronsOverlap } from './cron-next';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -52,15 +52,38 @@ export interface CreateWorkflowResult {
   proposal_summary: string;
 }
 
-/** Dedup key: schedule + ordered agent→tool step sequence (arg VALUES are
- *  ignored, so two genuinely-distinct flows that merely share a time still
- *  differ). This is what catches "Coach → delegate_to_agent @ 13:00" created
- *  twice across two turns. */
-function workflowSignature(cronExpr: string | null | undefined, steps: WorkflowStep[]): string {
-  const stepSig = (steps ?? [])
+/** Ordered agent→tool step sequence (arg VALUES ignored, so two genuinely-
+ *  distinct flows that merely share a time still differ on steps). */
+function stepSignature(steps: WorkflowStep[]): string {
+  return (steps ?? [])
     .map((s) => `${(s.agent ?? '').trim().toLowerCase()}→${(s.tool ?? '').trim().toLowerCase()}`)
     .join('|');
-  return `${(cronExpr ?? 'on-demand').trim()}::${stepSig}`;
+}
+
+/**
+ * A new workflow is a REDUNDANT duplicate of an existing one when they run the
+ * SAME steps AND their schedules collide — either the exact same cron string OR
+ * a schedule overlap (daily vs weekday at the same time). Exact-string matching
+ * alone missed the real bug: `coach-daily-workout-3pm-cet` ('0 14 * * *') and
+ * `weekday-workout-delivery` ('0 14 * * 1-5') have identical steps and both fire
+ * Mon–Fri at 3pm, but different cron strings AND different names — so neither the
+ * signature dedup here nor the name dedup in the seeder caught them, and the
+ * owner got stacked workouts. Returns the conflicting existing workflow, if any.
+ */
+export function findRedundantWorkflow(
+  existing: Pick<UserWorkflow, 'name' | 'status' | 'cron_expr' | 'steps'>[],
+  cronExpr: string | null | undefined,
+  steps: WorkflowStep[],
+): Pick<UserWorkflow, 'name' | 'status' | 'cron_expr' | 'steps'> | undefined {
+  const sig = stepSignature(steps);
+  const normCron = (cronExpr ?? '').trim();
+  return existing.find((w) => {
+    if (stepSignature(w.steps ?? []) !== sig) return false;
+    const wCron = (w.cron_expr ?? '').trim();
+    // same exact schedule (incl. both on-demand) OR overlapping cron schedules
+    if (normCron === wCron) return true;
+    return cronsOverlap(cronExpr ?? null, w.cron_expr ?? null);
+  });
 }
 
 /**
@@ -114,14 +137,13 @@ export async function createUserWorkflow(args: {
     );
     if (existingRes.ok) {
       const existing: UserWorkflow[] = await existingRes.json();
-      const proposedSig = workflowSignature(args.cronExpr ?? null, args.steps);
-      const dup = existing.find((w) => workflowSignature(w.cron_expr, w.steps ?? []) === proposedSig);
+      const dup = findRedundantWorkflow(existing, args.cronExpr ?? null, args.steps);
       if (dup) {
         return {
           ok: true,
           duplicate: true,
-          workflow: dup,
-          proposal_summary: `You already have "${dup.name}" [${dup.status}] on the same schedule (${args.cronExpr ?? 'on-demand'}) running the same steps — not creating a duplicate. Reply "tweak ${dup.name}" to change it, or "remove ${dup.name}" first if you want to recreate it.`,
+          workflow: dup as UserWorkflow,
+          proposal_summary: `You already have "${dup.name}" [${dup.status}] running the same steps on an overlapping schedule (it: ${dup.cron_expr ?? 'on-demand'}; requested: ${args.cronExpr ?? 'on-demand'}) — not creating a duplicate. Reply "tweak ${dup.name}" to change it, or "remove ${dup.name}" first if you want to recreate it.`,
         };
       }
     }
