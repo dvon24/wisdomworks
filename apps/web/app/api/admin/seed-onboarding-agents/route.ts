@@ -38,6 +38,43 @@ export async function POST(request: Request) {
   if (!phone) return Response.json({ error: 'phone required' }, { status: 400 });
 
   const report = await bindAndSeedTenantAgents(phone);
+
+  // Ping the PLATFORM owner when a NEW tenant onboards. Fire only on the
+  // service-key path — that's the website's deploy-complete callback (a real
+  // onboard); the owner-token path is a manual backfill the owner already knows
+  // about. Devon flagged he has no signal when a friend self-onboards. The
+  // report's `unmatched` is surfaced so a role that shipped without routines is
+  // visible immediately. Non-blocking — never let the notify failure 500 the bind.
+  const viaServiceKey = !!serviceKey && token === serviceKey;
+  if (viaServiceKey && report.bound_count > 0) {
+    void (async () => {
+      try {
+        const ownerPhone = (process.env.PLATFORM_OWNER_PHONE ?? '491703604562').replace(/[\s\-+()]/g, '');
+        let biz = phone;
+        try {
+          const r = await fetch(
+            `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${phone}&select=business_name,business_type&limit=1`,
+            { headers: { apikey: process.env.SUPABASE_SERVICE_ROLE_KEY!, Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}` } },
+          );
+          if (r.ok) {
+            const rows = await r.json();
+            if (rows[0]?.business_name) biz = `${rows[0].business_name}${rows[0].business_type ? ` (${rows[0].business_type})` : ''}`;
+          }
+        } catch { /* name is cosmetic */ }
+        const agentList = report.agents.filter((a) => a.bound).map((a) => `${a.agent_name} → ${a.role_slug}`).join(', ');
+        const unmatchedNote = report.unmatched.length ? `\n⚠️ Unmatched (shipped WITHOUT routines): ${report.unmatched.join(', ')}` : '';
+        const { sendOwnerMessage } = await import('../../_lib/owner-message');
+        await sendOwnerMessage({
+          tenantPhone: ownerPhone,
+          body: `🎉 New tenant onboarded: ${biz} [${phone}]\nProvisioned ${report.bound_count} agent${report.bound_count === 1 ? '' : 's'}: ${agentList || '(none)'}.${unmatchedNote}\nThey still need to approve their workflows to go live.`,
+          source: 'manual',
+        });
+      } catch (err) {
+        console.warn('[seed-onboarding-agents] owner onboard-notify failed (non-blocking):', err);
+      }
+    })();
+  }
+
   // Always 200 — `unmatched` carries the soft failures (a role with no catalog
   // match); the owner/gap-loop can resolve those. The report is the signal.
   return Response.json(report, { status: 200 });
