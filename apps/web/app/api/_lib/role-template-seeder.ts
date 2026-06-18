@@ -113,7 +113,11 @@ export function inferRoleSlug(agentRole: string | undefined | null): string | nu
   if (has('medication', 'pharmacy', 'prescription', 'meds')) return 'medication-tracker';
   if (has('fitness log', 'workout log', 'activity track')) return 'fitness-logger';
   if (has('language coach', 'language tutor', 'esl')) return 'language-coach';
-  if (has('life coach', 'wellness coach', 'mindfulness', 'habit')) return 'life-coach';
+  // Therapy/counseling labels route here too: we deliberately have NO clinical-
+  // therapist catalog role (regulated — the agent must not present as a licensed
+  // therapist), so life-coach is the safe, non-mute landing for wellness/
+  // emotional-support intent. Binding only — the persona stays coaching, not clinical.
+  if (has('life coach', 'wellness coach', 'mindfulness', 'habit', 'therapist', 'therapy', 'counselor', 'counseling', 'mental health', 'emotional support', 'wellbeing', 'well-being')) return 'life-coach';
 
   // ── Education ──
   if (has('tutor', 'teacher', 'homeschool', 'curriculum', 'instructor', 'education')) return 'tutor';
