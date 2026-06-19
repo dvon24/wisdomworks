@@ -14,6 +14,7 @@ import { NextResponse, after } from 'next/server';
 import { loadUserContext, type UserContext } from './context-store';
 import { generateIrisReply } from './iris-brain';
 import { claimMessage } from '../../_lib/message-idempotency';
+import { bufferOwnerMessage, flushOwnerMessages } from '../../_lib/owner-message-debounce';
 import { downloadWhatsAppMedia } from '../../_lib/whatsapp-media';
 import { uploadClientPhoto } from '../../_lib/photo-storage';
 import { analyzePhoto, saveClientPhoto } from '../../_lib/photo-analysis';
@@ -518,9 +519,25 @@ export async function POST(request: Request) {
     // total silence.
     await markReadAndShowTyping(message.id);
 
+    // Shotgun debounce: buffer this message, then in after() wait a short window
+    // and run the brain ONCE on all of the owner's back-to-back messages
+    // combined — so two rapid texts get one reply that accounts for both, not
+    // two replies that each ignore the other (Devon 2026-06-17). Falls back to
+    // processing this single message if the buffer is unavailable.
+    const debouncePhone = from.replace(/[\s\-+()]/g, '');
+    const buffered = await bufferOwnerMessage({ tenantPhone: debouncePhone, messageId: message.id, text });
+
     after(async () => {
       try {
-        const agentResponse = await generateIrisReply(text, user, 'whatsapp');
+        let inputText = text;
+        if (buffered) {
+          const flush = await flushOwnerMessages(debouncePhone);
+          // null = a concurrent flush already claimed this burst → this
+          // invocation does nothing (the winner replies for all of them).
+          if (!flush) return;
+          inputText = flush.combinedText;
+        }
+        const agentResponse = await generateIrisReply(inputText, user, 'whatsapp');
         await sendWhatsAppReply(from, agentResponse, 'iris');
       } catch (brainErr: any) {
         const detail = (brainErr?.message ?? String(brainErr ?? 'unknown')).toString().split('\n')[0].slice(0, 300);
