@@ -8554,9 +8554,13 @@ export async function executeTool(
           };
         }
         const phone = user?.phoneNumber ?? '';
-        const url = `${APP_BASE_URL}${cfg.route}?phone=${encodeURIComponent(phone)}${service ? `&service=${encodeURIComponent(service)}` : ''}`;
+        // Link to the /connect interstitial, NOT straight to the OAuth route:
+        // WhatsApp opens links in an embedded webview and Google/Microsoft block
+        // OAuth there. The interstitial detects the webview and steers the user
+        // into a real browser first (and just shows a Continue button otherwise).
+        const url = `${APP_BASE_URL}/connect?provider=${encodeURIComponent(provider)}&phone=${encodeURIComponent(phone)}${service ? `&service=${encodeURIComponent(service)}` : ''}`;
         return {
-          content: `Connect ${provider}${service ? ` (${service})` : ''} here: ${url}\nThe link opens the OAuth flow for the user's account.`,
+          content: `Connect ${provider}${service ? ` (${service})` : ''} here: ${url}\nTell the user to tap the link — if it opens inside WhatsApp and ${provider} says the browser isn't secure, they should open it in Safari/Chrome (the page shows how). I'll confirm here once it's connected.`,
           success: true,
         };
       }

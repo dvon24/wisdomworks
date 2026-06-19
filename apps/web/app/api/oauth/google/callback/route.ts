@@ -8,7 +8,7 @@
 
 import { NextResponse } from 'next/server';
 import { verifySessionToken } from '../../../_lib/api-auth';
-import { saveOAuthConnection, callbackBaseUrl } from '../../_lib/save-connection';
+import { saveOAuthConnection, callbackBaseUrl, notifyOwnerOfConnection } from '../../_lib/save-connection';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -98,6 +98,10 @@ export async function GET(request: Request) {
     }
 
     console.log(`[google-oauth] Connected ${user.email} for ${cleanPhone} — services: ${grantedServices.join(', ')}`);
+
+    // Close the loop back to WhatsApp so the owner (who's now in a browser tab)
+    // and Iris both know it worked. Awaited so it sends before the function ends.
+    await notifyOwnerOfConnection({ phone: cleanPhone, provider: 'google', services: grantedServices, accountEmail: user.email });
 
     return Response.redirect(
       `${baseUrl}/?oauth=success&provider=google&services=${encodeURIComponent(grantedServices.join(','))}&email=${encodeURIComponent(user.email)}`,

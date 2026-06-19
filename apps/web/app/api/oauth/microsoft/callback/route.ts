@@ -8,7 +8,7 @@
 
 import { NextResponse } from 'next/server';
 import { verifySessionToken } from '../../../_lib/api-auth';
-import { saveOAuthConnection, callbackBaseUrl } from '../../_lib/save-connection';
+import { saveOAuthConnection, callbackBaseUrl, notifyOwnerOfConnection } from '../../_lib/save-connection';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -92,6 +92,8 @@ export async function GET(request: Request) {
     }
 
     console.log(`[ms-oauth] Connected ${email} for ${cleanPhone} — services: ${grantedServices.join(', ')}`);
+
+    await notifyOwnerOfConnection({ phone: cleanPhone, provider: 'microsoft', services: grantedServices, accountEmail: email });
 
     return Response.redirect(
       `${baseUrl}/?oauth=success&provider=microsoft&services=${encodeURIComponent(grantedServices.join(','))}&email=${encodeURIComponent(email)}`,
