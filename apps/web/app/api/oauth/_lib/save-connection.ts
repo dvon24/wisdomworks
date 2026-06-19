@@ -108,3 +108,37 @@ export function callbackBaseUrl(request: Request): string {
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;
 }
+
+const PROVIDER_LABEL: Record<string, string> = {
+  google: 'Google', microsoft: 'Microsoft', quickbooks: 'QuickBooks', square: 'Square',
+  stripe: 'Stripe', calendly: 'Calendly', mindbody: 'Mindbody', meta: 'Meta',
+};
+
+/**
+ * Close the connect loop back to WhatsApp. The OAuth callback finishes in a
+ * browser tab, so without this the owner bounces away and Iris never learns the
+ * connection happened. Sends one confirmation per connect (call ONCE per callback
+ * with the full granted-services list, not per service). Best-effort — a send
+ * failure must never affect the OAuth result. Routes through sendOwnerMessage so
+ * it lands in Iris's conversation history (she'll know the service is live).
+ */
+export async function notifyOwnerOfConnection(args: {
+  phone: string;
+  provider: string;
+  services: string[];
+  accountEmail?: string | null;
+}): Promise<void> {
+  try {
+    const label = PROVIDER_LABEL[args.provider] ?? args.provider;
+    const svc = args.services.length ? ` (${args.services.join(', ')})` : '';
+    const acct = args.accountEmail ? ` — ${args.accountEmail}` : '';
+    const { sendOwnerMessage } = await import('../../_lib/owner-message');
+    await sendOwnerMessage({
+      tenantPhone: args.phone,
+      body: `✅ ${label}${svc} connected${acct}. You're all set — ask me to use it anytime.`,
+      source: 'manual',
+    });
+  } catch (err) {
+    console.warn('[oauth-save] owner connect-notify failed (non-blocking):', err);
+  }
+}
