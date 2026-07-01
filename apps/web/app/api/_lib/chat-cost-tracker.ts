@@ -81,6 +81,9 @@ interface ModelPricing {
 }
 
 const PRICING: Record<string, ModelPricing> = {
+  // Sonnet 5 — Iris's brain as of the 2026-07 migration. Same $3/$15 as Sonnet
+  // 4.6 (intro $2/$10 through 2026-08-31 makes standard rates a safe over-estimate).
+  'claude-sonnet-5': { in: 3, out: 15, cacheRead: 0.30, cacheWrite: 3.75 },
   'claude-sonnet-4-6': { in: 3, out: 15, cacheRead: 0.30, cacheWrite: 3.75 },
   // Opus 4.8 is the LIVE Opus (model-registry.ts). It was MISSING here, so
   // estimateLlmCost fell back to Sonnet and undercounted every Opus call ~5x.
