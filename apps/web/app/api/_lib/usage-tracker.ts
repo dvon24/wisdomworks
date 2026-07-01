@@ -28,6 +28,8 @@ interface ModelPrice {
 const MODEL_PRICES: Record<string, ModelPrice> = {
   'claude-opus-4-8': { inPerMillion: 15, outPerMillion: 75, cachedInPerMillion: 1.5 },
   'claude-opus-4-7': { inPerMillion: 15, outPerMillion: 75, cachedInPerMillion: 1.5 },
+  // Sonnet 5 (Iris's brain, 2026-07) — same $3/$15 as Sonnet 4.6.
+  'claude-sonnet-5': { inPerMillion: 3, outPerMillion: 15, cachedInPerMillion: 0.3 },
   'claude-sonnet-4-6': { inPerMillion: 3, outPerMillion: 15, cachedInPerMillion: 0.3 },
   'claude-haiku-4-5-20251001': { inPerMillion: 1, outPerMillion: 5, cachedInPerMillion: 0.1 },
   'claude-haiku-4-5': { inPerMillion: 1, outPerMillion: 5, cachedInPerMillion: 0.1 },

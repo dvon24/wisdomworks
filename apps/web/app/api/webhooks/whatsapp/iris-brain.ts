@@ -117,15 +117,20 @@ export function createIrisTrace(surface: string): IrisTrace {
 }
 
 const MAX_ITERATIONS = 8;
-// Sonnet 4.6 — same $3/$15 per MTok as Sonnet 4 but supports adaptive
-// thinking + interleaved thinking between tool calls. Pure capability
-// upgrade at zero cost change.
-const SONNET_MODEL = 'claude-sonnet-4-6';
-// Adaptive thinking budget. Claude decides how much of this to spend
-// on thinking vs final text. 4096 gives plenty of headroom for
-// multi-step reasoning without runaway latency on simple chats.
-const MAX_TOKENS = 4096;
-// Anthropic Sonnet 4.6 published rates per 1M tokens.
+// Sonnet 5 — Iris's brain. Drop-in upgrade over Sonnet 4.6 (2026-07 migration):
+// adaptive thinking is on by default (we already set it), sampling params +
+// manual budget_tokens are removed (we use neither), and it ships a new
+// tokenizer that produces ~30% more tokens for the same text. Same $3/$15 per
+// MTok standard ($2/$10 intro through 2026-08-31). Workers + crons stay on
+// claude-sonnet-4-6 — this constant only drives iris-brain's own calls.
+const SONNET_MODEL = 'claude-sonnet-5';
+// Adaptive thinking budget. Claude decides how much of this to spend on
+// thinking vs final text (max_tokens caps thinking + text combined). Bumped
+// 4096 → 6144 for Sonnet 5's ~30%-more-tokens tokenizer so a reasoning-heavy
+// turn doesn't truncate; unused headroom is free (it's a ceiling, not a spend).
+const MAX_TOKENS = 6144;
+// Sonnet 5 published rates per 1M tokens (unchanged from Sonnet 4.6: $3/$15;
+// intro $2/$10 through 2026-08-31 makes this a slight, safe over-estimate).
 // Per docs: cache writes are 1.25× base, cache reads are 0.1× base.
 const SONNET_IN_PER_M = 3;
 const SONNET_OUT_PER_M = 15;
