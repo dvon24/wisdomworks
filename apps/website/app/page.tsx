@@ -1372,7 +1372,7 @@ export default function HomePage() {
                 Your team is live.
               </div>
               <div style={{ marginTop: 8, color: 'var(--text-dim)', fontSize: 14 }}>
-                Check WhatsApp — {hierarchyAgents[0]?.label || 'your assistant'} just introduced themselves.
+                One last step — tap below to say hi to {hierarchyAgents[0]?.label || 'your assistant'} on WhatsApp and start.
               </div>
             </div>
 
@@ -1394,26 +1394,51 @@ export default function HomePage() {
               />
             </div>
 
-            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: '1.5rem' }}>
-              <button
-                type="button"
-                className="btn primary"
-                style={{ padding: '12px 28px', fontSize: 14 }}
-                onClick={() => {
-                  const savedPhone = typeof window !== 'undefined' ? localStorage.getItem('wisdomworks_phone') : null;
-                  // In dev (localhost), route to local Command Deck on port 3000.
-                  // In prod, use NEXT_PUBLIC_COMMAND_DECK_URL or fall back to wisdomworks.vercel.app.
-                  const isLocal = typeof window !== 'undefined' && window.location.hostname === 'localhost';
-                  const base = isLocal
-                    ? 'http://localhost:3000'
-                    : (process.env.NEXT_PUBLIC_COMMAND_DECK_URL || 'https://wisdomworks.vercel.app');
-                  const url = savedPhone ? `${base}?phone=${encodeURIComponent(savedPhone)}` : base;
-                  window.open(url, '_blank', 'noopener');
-                }}
-              >
-                Open Command Deck
-              </button>
-            </div>
+            {(() => {
+              // The WhatsApp welcome message can't be business-initiated to a
+              // brand-new contact (Meta blocks free-form messages outside the
+              // 24h window opened by the USER texting first — templates aside).
+              // So the customer must send the FIRST message. This click-to-chat
+              // link opens WhatsApp with a prefilled hello, which opens the
+              // window; Iris then replies with full tenant context. NEXT_PUBLIC_
+              // WHATSAPP_NUMBER = the business number, digits only (e.g. 15551234567).
+              const waNumber = (process.env.NEXT_PUBLIC_WHATSAPP_NUMBER || '').replace(/[^0-9]/g, '');
+              const assistant = hierarchyAgents[0]?.label || 'your assistant';
+              const prefill = `Hi ${assistant}, I just set up my WisdomWorks team.`;
+              return (
+                <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: '1.5rem', flexWrap: 'wrap' }}>
+                  {waNumber && (
+                    <a
+                      href={`https://wa.me/${waNumber}?text=${encodeURIComponent(prefill)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn primary"
+                      style={{ padding: '12px 28px', fontSize: 14, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                    >
+                      Message {assistant} on WhatsApp →
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    className={waNumber ? 'btn' : 'btn primary'}
+                    style={{ padding: '12px 28px', fontSize: 14 }}
+                    onClick={() => {
+                      const savedPhone = typeof window !== 'undefined' ? localStorage.getItem('wisdomworks_phone') : null;
+                      // In dev (localhost), route to local Command Deck on port 3000.
+                      // In prod, use NEXT_PUBLIC_COMMAND_DECK_URL or fall back to wisdomworks.vercel.app.
+                      const isLocal = typeof window !== 'undefined' && window.location.hostname === 'localhost';
+                      const base = isLocal
+                        ? 'http://localhost:3000'
+                        : (process.env.NEXT_PUBLIC_COMMAND_DECK_URL || 'https://wisdomworks.vercel.app');
+                      const url = savedPhone ? `${base}?phone=${encodeURIComponent(savedPhone)}` : base;
+                      window.open(url, '_blank', 'noopener');
+                    }}
+                  >
+                    Open Command Deck
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         )}
       </main>
