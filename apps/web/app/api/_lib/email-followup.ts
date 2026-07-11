@@ -116,19 +116,27 @@ export function detectFollowupCandidates(sent: SentEmail[], inbox: SeenInboxEmai
     const recipientAddr = primary.address.toLowerCase();
     const sentAt = new Date(email.date);
 
-    // 2. Reply detection: did the recipient email back about THIS THREAD
-    // since the sent date? Match by sender AND normalized subject so a
-    // reply to a different thread doesn't false-positive.
+    // 2. Reply detection. Look at every inbound message on THIS thread
+    // (match by sender AND normalized subject so a different thread can't
+    // false-positive), then suppress the follow-up in two cases:
+    //   (a) the recipient replied AFTER our latest send — nothing to chase.
+    //   (b) our latest send is itself a REPLY to something they sent earlier
+    //       (an inbound exists BEFORE our send) — the owner has already done
+    //       their part. Nudging "follow up" here is wrong: it reads to the
+    //       owner as "you have unanswered threads" when they've in fact been
+    //       corresponding (e.g. replying to their attorney's filings). This
+    //       is the "is it not looking at my sent?" fix — a sent reply means
+    //       the thread is answered. The follow-up nudge is only for genuinely
+    //       one-sided cold sends that never drew any engagement.
     const sentNormSubject = normalizeSubject(email.subject);
-    const replied = inbox.some((inboxMsg) => {
+    const inboundOnThread = inbox.filter((inboxMsg) => {
       if (!inboxMsg.from) return false;
       if (inboxMsg.from.toLowerCase() !== recipientAddr) return false;
-      if (new Date(inboxMsg.date) <= sentAt) return false;
-      // Subject match — both should normalize to the same thread
-      if (normalizeSubject(inboxMsg.subject) !== sentNormSubject) return false;
-      return true;
+      return normalizeSubject(inboxMsg.subject) === sentNormSubject;
     });
-    if (replied) continue;
+    const repliedAfter = inboundOnThread.some((m) => new Date(m.date) > sentAt);
+    const ownerAlreadyReplied = inboundOnThread.some((m) => new Date(m.date) < sentAt);
+    if (repliedAfter || ownerAlreadyReplied) continue;
 
     const ageDays = Math.floor((Date.now() - sentAt.getTime()) / (1000 * 60 * 60 * 24));
     candidates.push({
