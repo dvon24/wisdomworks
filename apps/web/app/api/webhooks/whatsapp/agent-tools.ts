@@ -8129,6 +8129,36 @@ export async function executeTool(
           console.warn('[delegate_to_agent] owner-facts fetch failed (non-blocking):', err);
         }
 
+        // Recent owner conversation — the DELIVERY of "honor what the owner
+        // just told us." Behavioral RAG (cron-lagged) + scoped atoms cover
+        // durable facts, but a same-day agreement the owner never asked us to
+        // "remember" lives ONLY in conversation_history. Concrete failure
+        // (2026-07-11): Fri evening the owner agreed with Coach to swap
+        // Saturday's tri for a run (pool closed); the Sat 7am scheduled cron
+        // ran the default brick anyway because the delegated worker never saw
+        // that turn. Inject the last turns so changes/agreements/constraints
+        // stated in chat OVERRIDE the default template. Non-blocking.
+        let recentConvoBlock = '';
+        try {
+          const cRes = await fetch(
+            `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/whatsapp_contexts?phone_number=eq.${delegCleanPhone}&select=conversation_history`,
+            { headers: { apikey: process.env.SUPABASE_SERVICE_ROLE_KEY!, Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}` } },
+          );
+          if (cRes.ok) {
+            const rows = await cRes.json();
+            const hist = (rows?.[0]?.conversation_history ?? []) as Array<{ role: string; content: string }>;
+            const recent = hist.slice(-12).filter((t) => t?.content);
+            if (recent.length > 0) {
+              const rendered = recent
+                .map((t) => `[${t.role === 'user' ? 'owner' : 'assistant'}] ${String(t.content).replace(/\s+/g, ' ').slice(0, 500)}`)
+                .join('\n');
+              recentConvoBlock = `\n\nRECENT CONVERSATION WITH THE OWNER (most recent last). If the owner stated a change, agreement, or constraint here that affects your task — a swapped session, a skipped day, a new preference — HONOR IT; it overrides any default plan or template:\n${rendered}`;
+            }
+          }
+        } catch (err) {
+          console.warn('[delegate_to_agent] recent-conversation fetch failed (non-blocking):', err);
+        }
+
         // Worker system prompt — persona + task + work-product
         // constraint + capability-honesty constraint (from PRD FR23
         // graceful-fallback principle).
@@ -8155,7 +8185,7 @@ export async function executeTool(
           '- FORMAT FOR WHATSAPP. Your output is relayed to the owner\'s WhatsApp verbatim: plain text, line breaks and dash lists only — no markdown headers (#), no **bold**, no tables. Single *asterisks* for emphasis are fine.',
           '',
           'Speak in first person as yourself. The output goes to Iris, who will present it to the owner with your attribution.',
-        ].filter(Boolean).join('\n') + ownerFactsBlock + workerContextBlock;
+        ].filter(Boolean).join('\n') + ownerFactsBlock + recentConvoBlock + workerContextBlock;
 
         // Mini tool loop — capped at 4 iterations for cost discipline.
         // 2026-05-28 — first live delegation test (Devon's 7:50 PM
